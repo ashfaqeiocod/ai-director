@@ -78,3 +78,37 @@ Last updated: 2026-10-08 19:30
 
 ## Next action
 MVP 1 complete. See TESTING.md.
+
+---
+
+# MVP 2 — Live Story Reader
+Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
+
+## Status
+| Step | Status | Notes |
+|---|---|---|
+| 0. Plan + environment | in progress | packages installed, YAMNet OK, MVP 1 check OK. Waiting for GEMINI_API_KEY |
+| 1. Intake + live player | not started | |
+| 2. Fast layer | not started | |
+| 3. Story engine + logs | not started | |
+| 4. Smart layer (Gemini) | not started | |
+| 5. Memory layer | not started | |
+| 6. Specialist (Colab) | not started | |
+| 7. Fusion, score, modes | not started | |
+| 8. Story tab UI | not started | |
+| 9. Proof mode | not started | |
+| 10. Docs | not started | |
+
+## Key results (MVP 2)
+
+## Decisions made (MVP 2)
+- `google-genai` pinned to 2.8.0: newer versions need pydantic ≥ 2.12.5, but Roboflow `inference` (MVP 1)
+  needs pydantic < 2.12. 2.8.0 has everything we need (structured output, inline video, VideoMetadata fps).
+- MediaPipe 1.1.0 runs YAMNet on the M1 CPU in ~4 ms per second of audio. Model in `models_cache/yamnet/` (gitignored).
+- Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
+
+## Problems / open issues (MVP 2)
+- `.env` has no GEMINI_API_KEY yet.
+
+## Next action (MVP 2)
+Step 1.

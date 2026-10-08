@@ -106,3 +106,72 @@ dashboard:
   program_max_width: 1280
   ws_max_rate: 10 # per-frame state messages per second
   run_log: "outputs/run_log.jsonl"
+
+# =====================================================================================
+# MVP 2 — Live Story Reader (spec: docs/MVP2_STORY_SPEC.md). Separate from MVP 1 above.
+# Dashboard: venv/bin/python -m dashboard.server  ->  http://localhost:8000/story
+# =====================================================================================
+story:
+  mode: hybrid # fast_only | specialist_only | gemini_only | hybrid  (also selectable in the dashboard)
+  send_audio_to_llm: true # false = "honest test": the AI can't just repeat the TV commentator
+  sport: soccer
+  clips_dir: "data/clips" # data/clips/<name>/clip.mp4 + audio.wav (+ truth.csv for proof mode)
+  outputs_dir: "outputs/story" # outputs/story/<clip>/<run_id>/ logs per run
+  intake:
+    max_height: 720 # normalized clip: at most 720p ...
+    fps: 25 # ... at 25 fps, H.264 + AAC
+    audio_rate: 16000 # audio.wav: 16 kHz mono (what YAMNet expects)
+    max_minutes: 120 # refuse longer uploads (protects the 8 GB Mac)
+  playhead:
+    max_lag_s: 3.0 # backend more than this behind the video -> skip ahead and log the lag
+  fast:
+    tick_s: 1.0
+    yamnet_model: "models_cache/yamnet/yamnet.tflite"
+    yamnet_url: "https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite"
+    audio_classes: [Cheering, Crowd, Applause, Whistle, Chant, Roar, Shout, Yell]
+    loudness_window_s: 30 # loudness is compared with the median of the last N seconds (past only)
+    excitement_trigger_jump: 0.25 # excitement this much above the last few seconds -> CHEER trigger
+    whistle_min_score: 0.35
+    whistle_band_hz: [2000, 4500] # referee whistles are a strong, narrow tone in this band
+    whistle_min_gap_s: 2.0 # don't report the same whistle twice
+    sample_fps: 10 # frames per second read for motion + scene cuts (small, grayscale)
+    motion_width: 160 # frames are shrunk to this width first (cheap)
+    motion_scale: 25.0 # mean pixel difference that counts as "full motion" (1.0)
+    cut_threshold: 0.45 # histogram distance above this = hard scene cut
+    replay_window_s: 8.0 # this many cuts within this window -> replay hint
+    replay_min_cuts: 3
+    replay_hold_s: 6.0 # keep the replay hint on this long after the last cut
+  specialist:
+    enabled: true
+    server_url: "" # pasted from Colab (ngrok / cloudflared URL), also editable in the dashboard
+    send_fps: null # null = read from the model config returned by /health
+    frame_height: 224
+    stride_s: 2.0
+    min_confidence: 0.3
+    dedupe_window_s: 2.0
+    jpeg_quality: 80
+    connect_timeout_s: 10
+  llm:
+    provider: gemini
+    model: "" # empty = auto-pick the newest Flash model available to the key (python -m story.check_gemini)
+    window_s: 6.0
+    interval_s: 8.0 # normal cadence
+    trigger_min_gap_s: 3.0 # extra calls on triggers, but never closer than this
+    max_requests_per_minute: 8 # stay under the free tier; adjust after checking AI Studio limits
+    video_height: 360
+    video_fps: 2 # frames per second Gemini looks at inside the window clip
+    timeout_s: 30
+    backoff_start_s: 10 # first wait after HTTP 429, doubles each time
+    backoff_max_s: 120
+    recent_events_s: 60 # events from the last N seconds go into the prompt
+  memory:
+    interval_s: 60
+  fusion:
+    intensity_weights: { audio: 0.4, motion: 0.2, specialist: 0.2, llm: 0.2 }
+    dedupe_window_s: 4.0 # same event type from any layer within this many seconds = one event
+    dedupe_overrides: { goal: 60, kickoff: 30, card_red: 30 } # a goal can't really happen twice in a minute
+    goal_min_confidence: 0.6 # a goal counts for the score only above this fused confidence
+    llm_intensity_hold_s: 12 # an LLM intensity reading fades out over this many seconds
+    specialist_hold_s: 6 # a specialist event boosts intensity for this many seconds
+  eval:
+    match_window_s: 10

@@ -19,3 +19,6 @@ models_cache/
 # Your own test videos (see docs/USING_YOUR_OWN_VIDEOS.md). Only the README is shared.
 clips/*
 !clips/README.md
+# MVP 2: audio files and the YAMNet audio model
+*.wav
+*.tflite

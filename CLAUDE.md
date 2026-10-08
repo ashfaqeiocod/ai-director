@@ -1,4 +1,18 @@
-# AI Sports Director — MVP 1
+# AI Sports Director
+
+## Phases
+- **MVP 1 (camera switching): DONE** (Steps 1–9 below). Its rules still apply and it must keep working:
+  run the quick check in `TESTING.md` (section 1) after any change that could touch it.
+- **MVP 2 (Live Story Reader): CURRENT.** Full spec: `docs/MVP2_STORY_SPEC.md` (read it fully before working on MVP 2).
+  All MVP 2 code lives in `story/` (plus a Story tab in the dashboard and `colab/`). Its non-negotiable rules
+  (spec section 2) apply at all times: never read video/audio beyond the playhead (`CausalReader`), the browser
+  `<video>` is the master clock, store `event_time` + `logged_at` for every story item, don't break MVP 1,
+  never commit `.env`, clips, model weights or outputs. Progress is tracked in the "MVP 2" section of `PROGRESS.md`.
+  Secrets: `GEMINI_API_KEY` in `.env` (stop and ask the user if it is missing or fails).
+
+The rest of this file is the MVP 1 brief; the Working mode, Hardware rules and Coding style sections apply to MVP 2 too.
+
+# MVP 1 — camera switching (done)
 
 ## Goal
 Build an offline Python prototype that:
@@ -201,7 +215,7 @@ Done when: I open the page, click Start, and see the 3 cams and the program play
 - No shot shorter than 2 s.
 - Runs on M1 8 GB without crashing.
 
-## Out of scope for now (do not add)
+## Out of scope for MVP 1 (MVP 2 adds its own scope, see the spec)
 Streaming to the internet, OBS, PTZ control, training custom models, team classification, event detection, replays of highlights, authentication, deployment, any UI other than the local dashboard.
 
 ## Coding style

@@ -12,3 +12,12 @@ fastapi==0.141.1              # dashboard web server
 uvicorn[standard]==0.54.0    # runs the FastAPI app (includes WebSocket support)
 yt-dlp==2026.8.19               # downloads the YouTube clip (Step 2)
 imageio-ffmpeg==0.6.0       # ships an ffmpeg binary, so no system ffmpeg is needed
+# --- MVP 2: Live Story Reader ---
+google-genai==2.8.0          # Gemini API. Newer versions need pydantic>=2.12, which `inference` (MVP 1) does not allow
+mediapipe==1.1.0             # YAMNet audio classifier (crowd noise, whistle)
+pydantic==2.11.10            # story data model (kept <2.12 for `inference`)
+typing-extensions==4.15.0    # kept <=4.15 for `inference`
+websockets==16.1.1           # talks to the Colab specialist server
+python-multipart==0.0.32     # file uploads in the dashboard
+scipy==1.18.1                # reads the 16 kHz wav without loading it all into memory
+pytest==9.1.1                # unit tests in tests/
