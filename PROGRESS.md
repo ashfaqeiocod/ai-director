@@ -90,7 +90,7 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 0. Plan + environment | in progress | packages installed, YAMNet OK, MVP 1 check OK. Waiting for GEMINI_API_KEY |
 | 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
 | 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
-| 3. Story engine + logs | not started | |
+| 3. Story engine + logs | done | engine cadence (fast 1 s, story 8 s + triggers, memory 60 s), template narrator, fusion events/score, logs in outputs/story/<clip>/<run_id>/; tests 17/17 |
 | 4. Smart layer (Gemini) | not started | |
 | 5. Memory layer | not started | |
 | 6. Specialist (Colab) | not started | |
@@ -119,6 +119,10 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - CHEER = excitement ≥ 0.45 and ≥ 0.25 above the quietest of the last 4 s, max once per 6 s, not in the first 10 s.
 - Replay hint = ≥ 3 hard cuts within 8 s. On edited highlights this also fires on normal fast editing, so it is
   only a hint; Gemini's `is_replay` is the main replay signal when Gemini runs.
+- Engine: AI calls run in a worker thread; `logged_at` = playhead when the answer ARRIVED. Templates (no AI) are
+  used in fast_only/specialist_only and whenever Gemini is unavailable, so the commentary never stops.
+- Fusion dedupe: same type within 4 s = one event (goals 60 s, so a goal shown again later can't count twice);
+  confidences combine noisy-or; `logged_at` keeps the first report.
 - Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
 
 ## Problems / open issues (MVP 2)
@@ -126,4 +130,4 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - `.env` has no GEMINI_API_KEY yet.
 
 ## Next action (MVP 2)
-Step 3.
+Step 4 (needs GEMINI_API_KEY).

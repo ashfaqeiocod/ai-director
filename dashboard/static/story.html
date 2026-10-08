@@ -313,7 +313,7 @@ $("video").addEventListener("seeking", () => {
 });
 let lastGood = 0;
 $("video").addEventListener("timeupdate", () => { if (!$("video").seeking) lastGood = $("video").currentTime; });
-$("video").addEventListener("ended", async () => { if (running) { addLog("INFO", "clip ended", duration); await stopRun(); } });
+$("video").addEventListener("ended", async () => { if (running) { sendTick(); setTimeout(() => stopRun("clip ended"), 1500); } });
 
 // ================= controls =================
 $("btnLive").onclick = async () => {
@@ -329,8 +329,8 @@ $("btnLive").onclick = async () => {
   } catch (e) { addLog("ERROR", e.message); }
 };
 $("btnPause").onclick = () => $("video").pause();
-$("btnStop").onclick = () => stopRun();
-async function stopRun() { $("video").pause(); try { applyStatus(await post("/story/stop")); } catch (e) { addLog("ERROR", e.message); } }
+$("btnStop").onclick = () => stopRun("stopped by user");
+async function stopRun(reason) { $("video").pause(); try { applyStatus(await post("/story/stop", { reason: reason || "stopped by user" })); } catch (e) { addLog("ERROR", e.message); } }
 $("btnMute").onclick = () => { const v = $("video"); v.muted = !v.muted; $("btnMute").textContent = v.muted ? "🔇" : "🔊"; };
 $("btnColab").onclick = async () => {
   try { applySpecialist(await post("/story/specialist", { url: $("colabUrl").value.trim() })); }

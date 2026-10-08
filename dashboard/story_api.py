@@ -14,7 +14,9 @@ How it works (frontend-dev view):
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
+import time
 import threading
 import traceback
 import uuid
@@ -25,7 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from src.download import InputError
 from story import intake
-from story.common import clips_dir, load_config
+from story.common import clips_dir, load_config, outputs_dir
 from story.engine import StoryEngine
 
 STATIC = Path(__file__).parent / "static"
@@ -43,6 +45,7 @@ class StoryController:
         self.engine: StoryEngine | None = None
         self.clip: str | None = None
         self.intake_jobs: dict[str, dict] = {}     # job id -> {"status", "message", "name"}
+        self.specialist_url: str = load_config()["story"]["specialist"]["server_url"] or ""
         self.lock = threading.Lock()
 
     # ----- messages to browsers (thread-safe: engine threads call this too)
@@ -57,6 +60,7 @@ class StoryController:
         return {"type": "status", "running": self.engine is not None, "clip": self.clip,
                 "mode": self.engine.mode if self.engine else cfg["mode"],
                 "send_audio": self.engine.send_audio if self.engine else cfg["send_audio_to_llm"],
+                "run_id": self.engine.run_id if self.engine else None, "specialist_url": self.specialist_url,
                 "clips": intake.list_clips(), "intake_jobs": list(self.intake_jobs.values())}
 
     # ----- clip intake (runs in a background thread: downloads and ffmpeg take a while)
@@ -96,17 +100,17 @@ class StoryController:
         with self.lock:
             self.stop_run()
             cfg = load_config()["story"]
-            self.engine = StoryEngine(folder, cfg, mode, self.publish, send_audio=send_audio)
+            self.engine = StoryEngine(folder, cfg, mode, self.publish, send_audio=send_audio,
+                                      specialist_url=self.specialist_url)
             self.clip = clip
             self.engine.start()
-        self.publish({"type": "run_started", "clip": clip, "mode": mode, "send_audio": send_audio})
         self.publish(self.status())
         return self.status()
 
-    def stop_run(self) -> None:
-        if self.engine is not None:
-            self.engine.stop()
-            self.engine = None
+    def stop_run(self, reason: str = "stopped") -> None:
+        engine, self.engine = self.engine, None
+        if engine is not None:
+            engine.stop(reason)
             self.publish(self.status())
 
     def on_message(self, message: dict) -> None:
@@ -198,9 +202,35 @@ def start(body: dict) -> dict:
 
 
 @router.post("/stop")
-def stop() -> dict:
-    ctl.stop_run()
+def stop(body: dict | None = None) -> dict:
+    ctl.stop_run(str((body or {}).get("reason", "stopped by user")))
     return ctl.status()
+
+
+@router.post("/score")
+def score(body: dict) -> dict:
+    """Manual score correction: {"team": "white", "delta": 1 or -1}."""
+    if ctl.engine is None:
+        raise HTTPException(400, "no run in progress")
+    team, delta = str(body.get("team", "")).strip(), int(body.get("delta", 0))
+    if not team or delta not in (1, -1):
+        raise HTTPException(400, "send a team name and delta 1 or -1")
+    return ctl.engine.adjust_score(team, delta)
+
+
+@router.post("/rate")
+def rate(body: dict) -> dict:
+    """👍 / 👎 on a commentary line: {"run_id", "story_id", "rating": 1 or -1}. Saved in ratings.jsonl."""
+    run_id, story_id, rating = str(body.get("run_id", "")), str(body.get("story_id", "")), int(body.get("rating", 0))
+    if rating not in (1, -1) or not story_id:
+        raise HTTPException(400, "rating must be 1 or -1, with a story_id")
+    folders = [f for f in outputs_dir().glob(f"*/{run_id}") if f.is_dir()] if run_id else []
+    if not folders:
+        raise HTTPException(404, "run not found")
+    item = {"wall_time": time.time(), "story_id": story_id, "rating": rating}
+    with open(folders[0] / "ratings.jsonl", "a") as f:
+        f.write(json.dumps(item) + "\n")
+    return {"ok": True}
 
 
 @router.get("/status")
