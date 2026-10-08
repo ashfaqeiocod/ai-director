@@ -99,6 +99,7 @@ class StoryController:
             self.engine = StoryEngine(folder, cfg, mode, self.publish, send_audio=send_audio)
             self.clip = clip
             self.engine.start()
+        self.publish({"type": "run_started", "clip": clip, "mode": mode, "send_audio": send_audio})
         self.publish(self.status())
         return self.status()
 
@@ -111,7 +112,8 @@ class StoryController:
     def on_message(self, message: dict) -> None:
         """A message from the page. Ticks go straight to the engine."""
         if message.get("type") == "tick" and self.engine is not None:
-            self.engine.on_tick(float(message.get("t", 0.0)), bool(message.get("paused", True)))
+            self.engine.on_tick(float(message.get("t", 0.0)), bool(message.get("paused", True)),
+                                bool(message.get("ended", False)))
 
 
 def _offer(queue: asyncio.Queue, message: dict) -> None:

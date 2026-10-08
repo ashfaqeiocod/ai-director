@@ -89,7 +89,7 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 |---|---|---|
 | 0. Plan + environment | in progress | packages installed, YAMNet OK, MVP 1 check OK. Waiting for GEMINI_API_KEY |
 | 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
-| 2. Fast layer | not started | |
+| 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
 | 3. Story engine + logs | not started | |
 | 4. Smart layer (Gemini) | not started | |
 | 5. Memory layer | not started | |
@@ -103,11 +103,22 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - Test clips: `eng-cze` (England 3-0 Czechia highlights, 201 s broadcast, youtube kJEY-UFTDk8), `pano` (MVP 1 panoramic, 30 s, no commentary).
 - Intake: 201 s YouTube clip downloaded + normalized in 67 s; 30 s local file in 3 s.
 - Browser → backend playhead: ~5 ticks/s, follows play / pause (checked with headless Chrome).
+- eng-cze goals (from the on-screen score): 1-0 at ~60 s, 2-0 at ~93 s, 3-0 at ~146 s. Fast layer CHEER triggers at
+  63, 96, 150 s (+ big chances at 26, 39, 126 s; intro jingle at 10 s). Live run: lag ≤ 0.5 s.
+- Whistle check: a synthetic referee whistle at commentary level is caught in 198/200 seconds; on the clean
+  clip only 4/200 seconds fire (end music / final whistle area).
 
 ## Decisions made (MVP 2)
 - `google-genai` pinned to 2.8.0: newer versions need pydantic ≥ 2.12.5, but Roboflow `inference` (MVP 1)
   needs pydantic < 2.12. 2.8.0 has everything we need (structured output, inline video, VideoMetadata fps).
 - MediaPipe 1.1.0 runs YAMNet on the M1 CPU in ~4 ms per second of audio. Model in `models_cache/yamnet/` (gitignored).
+- Fast layer, audio: YAMNet hears mostly "Speech" on TV highlights (crowd classes ≤ 0.09), so excitement is
+  35% crowd classes (x3 gain) + 65% loudness vs the median of the last 30 s (past only). YAMNet "Whistle"
+  was 0 on the whole clip, so the whistle needs a strict tone check: one narrow peak (≥ 50% of the 2–4.5 kHz
+  band energy, ≥ 25 dB above the band median) for ≥ 4 frames in a row. Speech harmonics fail it.
+- CHEER = excitement ≥ 0.45 and ≥ 0.25 above the quietest of the last 4 s, max once per 6 s, not in the first 10 s.
+- Replay hint = ≥ 3 hard cuts within 8 s. On edited highlights this also fires on normal fast editing, so it is
+  only a hint; Gemini's `is_replay` is the main replay signal when Gemini runs.
 - Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
 
 ## Problems / open issues (MVP 2)
@@ -115,4 +126,4 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - `.env` has no GEMINI_API_KEY yet.
 
 ## Next action (MVP 2)
-Step 2.
+Step 3.
