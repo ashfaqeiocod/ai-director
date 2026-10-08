@@ -92,8 +92,8 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
 | 3. Story engine + logs | done | engine cadence (fast 1 s, story 8 s + triggers, memory 60 s), template narrator, fusion events/score, logs in outputs/story/<clip>/<run_id>/; tests 17/17 |
 | 4. Smart layer (Gemini) | in progress | code + unit tests (fake client) done; no-key fallback verified in browser. Live check waits for GEMINI_API_KEY |
-| 5. Memory layer | not started | |
-| 6. Specialist (Colab) | not started | |
+| 5. Memory layer | in progress | wired in engine (every 60 s), template summary verified; Gemini summary waits for the key |
+| 6. Specialist (Colab) | in progress | notebook + server + client built; model runs (CPU test: 0 missing keys, shots found at 37 s / 60 s live); waiting for the user to run Colab |
 | 7. Fusion, score, modes | not started | |
 | 8. Story tab UI | not started | |
 | 9. Proof mode | not started | |
@@ -123,9 +123,21 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
   used in fast_only/specialist_only and whenever Gemini is unavailable, so the commentary never stops.
 - Fusion dedupe: same type within 4 s = one event (goals 60 s, so a goal shown again later can't count twice);
   confidences combine noisy-or; `logged_at` keeps the first report.
+- Specialist model facts (read from opensportslib 0.3.1 source + the HF config.yaml): frames 224x398 RGB, /255,
+  ImageNet mean/std; stride int(25 / extract_fps 2) = 12 -> ~2.08 fps; clip_len 100 (~48 s); output per frame =
+  softmax over background + 12 classes. Server calls `E2EModel.predict()` on a rolling buffer (only frames already
+  sent = past). The GRU looks both ways in time, so a frame is reported once it is `report_delay_s` (2 s) old.
+- Server code lives in `colab/specialist_server.py` (tested locally on CPU, same code path as Colab) and is copied
+  into the self-contained notebook by `colab/build_notebook.py`. Tunnel: ngrok (secret NGROK_AUTHTOKEN) or a
+  Cloudflare quick tunnel without an account.
+- Only Gemini's `is_replay` blocks new events. The scene-cut replay hint fired on normal highlight editing and
+  would have dropped the specialist's 37 s shot (`fusion.fast_replay_blocks_events: false`).
 - Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
 
 ## Problems / open issues (MVP 2)
+- Specialist on the M1 CPU: 12–23 s per 48 s window (RTF 6–11): too slow for live, hence Colab.
+- The spotting model never fires GOAL on eng-cze (offline, full context): it finds the SHOT for goals 1 and 3,
+  misses goal 2. Goals therefore rely on Gemini (or specialist SHOT + Gemini goal).
 - Seeking is blocked during a run (live means live; the AI already "saw" that part). The Playhead only moves forward.
 - `.env` has no GEMINI_API_KEY yet.
 

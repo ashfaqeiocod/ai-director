@@ -148,11 +148,13 @@ story:
   specialist:
     enabled: true
     server_url: "" # pasted from Colab (ngrok / cloudflared URL), also editable in the dashboard
-    send_fps: null # null = read from the model config returned by /health
-    frame_height: 224
+    send_fps: null # null = read from the model config returned by /health (~2.08 fps for this model)
+    frame_height: 224 # frames are sent as 398x224, the size the model was trained on
     stride_s: 2.0
     min_confidence: 0.3
     dedupe_window_s: 2.0
+    report_delay_s: 2.0 # the model looks both ways in time: report a frame only once it is this old
+    nms_s: 1.0 # one peak per class within +-this many seconds (on the server)
     jpeg_quality: 80
     connect_timeout_s: 10
   llm:
@@ -179,5 +181,7 @@ story:
     goal_min_confidence: 0.6 # a goal counts for the score only above this fused confidence
     llm_intensity_hold_s: 12 # an LLM intensity reading fades out over this many seconds
     specialist_hold_s: 6 # a specialist event boosts intensity for this many seconds
+    fast_replay_blocks_events: false # true = the scene-cut replay hint also blocks events (noisy on edited
+    #                                  highlights). Gemini's is_replay always blocks them.
   eval:
     match_window_s: 10

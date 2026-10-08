@@ -72,7 +72,8 @@ class StoryEngine:
         self.updates: list[StoryUpdate] = []
         self.memory: Memory | None = None
         self.teams: dict[str, str] = {}
-        self.is_replay = False                    # latest replay status (Gemini, or the fast hint)
+        self.is_replay = False                    # latest replay status (Gemini, or the fast hint) — shown in UI
+        self.llm_replay = False                   # Gemini's latest is_replay (blocks new events)
         self.replay_from_llm_at = -999.0
         self.story_busy = self.memory_busy = False
         self.next_story_at = cfg["llm"]["interval_s"]
@@ -169,12 +170,24 @@ class StoryEngine:
 
     def _setup_specialist(self) -> None:
         if not self.layers["specialist"]:
+            self.publish({"type": "specialist", "state": "off", "message": f"not used in mode {self.mode}"})
             return
         if not self.specialist_url:
             self.log("SPECIALIST", "no Colab URL: running without the specialist layer")
             self.publish({"type": "specialist", "state": "off", "message": "no Colab URL (paste it and Connect)"})
             return
+        self.connect_specialist(self.specialist_url)
+
+    def connect_specialist(self, url: str) -> None:
+        """Start (or restart) the Colab connection. Also used when Connect is pressed mid-run."""
+        if not self.layers["specialist"]:
+            return
         from story.specialist_client import SpecialistClient
+
+        if self.specialist:
+            self.specialist.stop()
+        self.specialist_url = url
+        self.log_file.write_meta(specialist_url=url)
 
         self.specialist = SpecialistClient(self.cfg, self.reader, self.specialist_url,
                                            on_event=self._on_specialist_event, on_status=self._on_specialist_status,
@@ -246,10 +259,21 @@ class StoryEngine:
             self.log("CUT", f"{r.cuts} scene cut(s)" + (" → replay hint" if r.replay else ""), r.t)
 
     # ------------------------------------------------------------------ events (all layers)
+    def blocking_replay(self) -> bool:
+        """Is a replay on screen right now, sure enough to ignore new events?
+
+        Gemini's is_replay (if recent) decides. The scene-cut hint alone only blocks events if
+        fusion.fast_replay_blocks_events is on: on edited highlights it also fires on normal editing.
+        """
+        llm_recent = self.playhead.now() - self.replay_from_llm_at <= self.cfg["llm"]["interval_s"] * 1.5
+        if llm_recent:
+            return self.llm_replay
+        return self.is_replay and self.cfg["fusion"]["fast_replay_blocks_events"]
+
     def add_event(self, event: Event, is_replay: bool | None = None) -> FusedEvent | None:
         """Hand one event to fusion; publish + log what changed."""
         with self.lock:
-            replay = self.is_replay if is_replay is None else is_replay
+            replay = self.blocking_replay() if is_replay is None else is_replay
             fused, is_new = self.fusion.add_event(event, replay)
             if fused is None:
                 if replay and event.type != "none":
@@ -259,7 +283,8 @@ class StoryEngine:
                 self.log("SCORE", f"goal counted for {fused.team or '?'} → {self.fusion.score_text()}")
                 self.publish(self.fusion.score_message())
             item = {**fused.to_dict(), "new": is_new}
-        self.publish({"type": "event", **item})
+        # "type" is the message type for the page; the event's own type travels as "event_type".
+        self.publish({**item, "type": "event", "event_type": item["type"]})
         self.log_file.append("events", {**item, "from": event.model_dump()})
         return fused
 
@@ -341,7 +366,7 @@ class StoryEngine:
                 self.counters["story_gemini"] += 1
                 self.delays.append(update.logged_at - update.window_end)
                 self.fusion.note_llm_intensity(update.logged_at, update.intensity)
-                self.is_replay = update.is_replay
+                self.is_replay = self.llm_replay = update.is_replay
                 self.replay_from_llm_at = update.logged_at
                 for team in filter(None, [update.team_in_control, *[e.team for e in update.events]]):
                     self.fusion.add_team(team)
@@ -425,9 +450,12 @@ class StoryEngine:
                       "avg_delay": round(sum(self.delays) / len(self.delays), 2) if self.delays else None})
 
     # ------------------------------------------------------------------ specialist (Colab)
-    def _on_specialist_event(self, event: Event, strength: float) -> None:
+    def _on_specialist_event(self, event: Event | None, strength: float, name: str) -> None:
+        """An answer from the specialist. event is None for low-priority "play" signals (PASS, DRIVE...)."""
         with self.lock:
-            self.fusion.note_specialist(event.logged_at, strength)
+            self.fusion.note_specialist(self.playhead.now(), strength)
+        if event is None:
+            return
         if event.type in ("shot", "goal", "free_kick"):
             self.pending_triggers.append(f"specialist:{event.type}")
         self.log("SPECIALIST", f"{event.type} @{event.event_time:.1f}s ({event.confidence:.2f})", event.logged_at)

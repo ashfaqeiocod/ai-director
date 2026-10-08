@@ -206,7 +206,7 @@ const ICONS = { goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "
 const SENTIMENT = { calm: ["😌", "#334155"], building: ["🙂", "#1e3a5f"], tense: ["😬", "#713f12"],
   excited: ["🤩", "#7c2d12"], joy: ["🥳", "#14532d"], frustration: ["😣", "#7f1d1d"], anger: ["😡", "#7f1d1d"],
   disappointment: ["😞", "#3b0764"], relief: ["😮‍💨", "#134e4a"], unknown: ["🤔", "#1e293b"] };
-const PHASE_EMOJI = { goal: "⚽", celebration: "🎉", chance: "💥", attack: "⚡", build_up: "🔁", replay: "🔁",
+const PHASE_EMOJI = { goal: "⚽", celebration: "🎉", chance: "💥", attack: "⚡", build_up: "🧩", replay: "🔁",
   foul: "✋", set_piece: "🚩", stoppage: "⏸️", injury: "🩹", break: "☕", unknown: "🤔" };
 
 let clip = null, clips = [], duration = 0, running = false, runId = null, live = false, replayOpen = null;
@@ -438,9 +438,9 @@ function placeEvent(e) {
     eventNodes[e.id] = node;
   }
   node.style.left = `${(e.event_time / duration) * 100}%`;
-  node.querySelector(".i").textContent = ICONS[e.type] || "•";
+  node.querySelector(".i").textContent = ICONS[e.event_type] || "•";
   node.querySelector(".tip").textContent =
-    `${e.type} @${fmt1(e.event_time)} · logged ${fmt1(e.logged_at)} (+${(e.logged_at - e.event_time).toFixed(1)}s) · ${e.sources.join("+")} · ${(e.confidence * 100).toFixed(0)}%${e.team ? " · " + e.team : ""}`;
+    `${e.event_type} @${fmt1(e.event_time)} · logged ${fmt1(e.logged_at)} (+${(e.logged_at - e.event_time).toFixed(1)}s) · ${e.sources.join("+")} · ${(e.confidence * 100).toFixed(0)}%${e.team ? " · " + e.team : ""}`;
 }
 function markReplay(t, on) {
   if (!duration) return;
@@ -546,7 +546,7 @@ function handle(m) {
     case "fast": applyFast(m); break;
     case "log": addLog(m.kind, m.message, m.t); break;
     case "story": applyStory(m); break;
-    case "event": placeEvent(m); if (m.headline && m.new) addLog("EVENT", `${ICONS[m.type] || ""} ${m.type}${m.team ? " (" + m.team + ")" : ""} @${fmt1(m.event_time)} via ${m.sources.join("+")} · ${(m.confidence * 100).toFixed(0)}%`, m.logged_at); break;
+    case "event": placeEvent(m); if (m.headline && m.new) addLog("EVENT", `${ICONS[m.event_type] || ""} ${m.event_type}${m.team ? " (" + m.team + ")" : ""} @${fmt1(m.event_time)} via ${m.sources.join("+")} · ${(m.confidence * 100).toFixed(0)}%`, m.logged_at); break;
     case "memory": applyMemory(m); break;
     case "score": applyScore(m); break;
     case "gemini": applyGemini(m); break;

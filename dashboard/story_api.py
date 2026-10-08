@@ -233,6 +233,33 @@ def rate(body: dict) -> dict:
     return {"ok": True}
 
 
+@router.post("/specialist")
+def specialist(body: dict) -> dict:
+    """Save the Colab URL and test it (GET /health). Used on the next Go Live, or right away if a run
+    with the specialist layer is in progress."""
+    from story.specialist_client import check_health, normalize_url
+
+    url = normalize_url(str(body.get("url", "")))
+    if not url:
+        ctl.specialist_url = ""
+        return {"state": "off", "message": "no URL"}
+    try:
+        health = check_health(url)
+    except Exception as error:
+        status = {"state": "error", "url": url, "message": f"can't reach {url}/health: {type(error).__name__}: {error}"}
+        ctl.publish({"type": "specialist", **status})
+        return status
+    ctl.specialist_url = url
+    status = {"state": "connected", "url": url,
+              "message": f"{health['model'].split('/')[-1]} on {health.get('gpu')} · {health['fps']:.2f} fps"}
+    if ctl.engine is not None and ctl.engine.layers["specialist"]:
+        ctl.engine.connect_specialist(url)
+    else:
+        status["message"] += " · used on the next Go Live (mode with specialist)"
+    ctl.publish({"type": "specialist", **status})
+    return status
+
+
 @router.get("/status")
 def status() -> dict:
     return ctl.status()
