@@ -138,6 +138,7 @@ story:
     whistle_min_score: 0.35
     whistle_band_hz: [2000, 4500] # referee whistles are a strong, narrow tone in this band
     whistle_min_gap_s: 2.0 # don't report the same whistle twice
+    whistle_max_music: 0.5 # no whistles while YAMNet's "Music" score is above this (intros/outros)
     sample_fps: 10 # frames per second read for motion + scene cuts (small, grayscale)
     motion_width: 160 # frames are shrunk to this width first (cheap)
     motion_scale: 25.0 # mean pixel difference that counts as "full motion" (1.0)

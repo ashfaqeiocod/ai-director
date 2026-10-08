@@ -137,6 +137,9 @@ class AudioAnalyzer:
         else:   # fallback: loudness + band energy only
             excitement = loud
             whistle = tonal
+        # Music (intros, outros, ads) is full of pure tones: no whistles while YAMNet hears music.
+        if scores.get("Music", 0.0) > self.cfg["whistle_max_music"]:
+            whistle = 0.0
         top = sorted(scores.items(), key=lambda kv: -kv[1])[:3]
         return {"audio": float(excitement), "crowd": crowd, "loudness_db": round(db, 1),
                 "whistle": float(whistle), "tonal": tonal,

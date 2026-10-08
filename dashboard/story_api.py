@@ -91,7 +91,7 @@ class StoryController:
         return job
 
     # ----- runs
-    def start_run(self, clip: str, mode: str, send_audio: bool) -> dict:
+    def start_run(self, clip: str, mode: str, send_audio: bool, proof: bool = False) -> dict:
         folder = intake.clip_dir(clip)
         if not (folder / "meta.json").exists():
             raise HTTPException(404, f"clip '{clip}' not found")
@@ -101,7 +101,7 @@ class StoryController:
             self.stop_run()
             cfg = load_config()["story"]
             self.engine = StoryEngine(folder, cfg, mode, self.publish, send_audio=send_audio,
-                                      specialist_url=self.specialist_url)
+                                      specialist_url=self.specialist_url, proof=proof)
             self.clip = clip
             self.engine.start()
         self.publish(self.status())
@@ -198,7 +198,7 @@ def intake_url(body: dict) -> dict:
 def start(body: dict) -> dict:
     cfg = load_config()["story"]
     return ctl.start_run(str(body.get("clip", "")), body.get("mode", cfg["mode"]),
-                         bool(body.get("send_audio", cfg["send_audio_to_llm"])))
+                         bool(body.get("send_audio", cfg["send_audio_to_llm"])), bool(body.get("proof", False)))
 
 
 @router.post("/stop")

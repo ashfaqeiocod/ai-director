@@ -210,7 +210,7 @@ const PHASE_EMOJI = { goal: "⚽", celebration: "🎉", chance: "💥", attack: 
   foul: "✋", set_piece: "🚩", stoppage: "⏸️", injury: "🩹", break: "☕", unknown: "🤔" };
 
 let clip = null, clips = [], duration = 0, running = false, runId = null, live = false, replayOpen = null;
-let delays = [];
+let delays = [], settingsLoaded = false;
 
 // ================= signal log =================
 const visible = Object.fromEntries(KINDS.map((k) => [k, true]));
@@ -344,7 +344,8 @@ function applyStatus(s) {
   clips = s.clips || clips;
   if (s.clip && !clip) { const c = clips.find((x) => x.name === s.clip); if (c) selectClip(c); }
   if (s.intake_jobs) { for (const j of s.intake_jobs) jobs[j.id] = j; renderJobs(Object.values(jobs)); }
-  if (!running) { $("mode").value = s.mode; $("sendAudio").checked = s.send_audio; }
+  // Settings come from the server once (config.yaml defaults, or the running run); after that they are yours.
+  if (!settingsLoaded || running) { $("mode").value = s.mode; $("sendAudio").checked = s.send_audio; settingsLoaded = true; }
   if (s.specialist_url && !$("colabUrl").value) $("colabUrl").value = s.specialist_url;
   $("runStatus").textContent = running ? `live · ${s.mode.replace("_", " ")}` : "idle";
   $("liveBadge").classList.toggle("hidden", !running); $("liveBadge").classList.toggle("flex", running);
@@ -541,8 +542,13 @@ function handle(m) {
     case "intake": jobs[m.id] = m; renderJobs(Object.values(jobs)); break;
     case "run_started": runId = m.run_id; $("runId").textContent = `run ${m.run_id}`;
       addLog("INFO", `run ${m.run_id} started · mode ${m.mode} · model ${m.model || "–"} · audio to AI ${m.send_audio}`, 0);
-      if (m.truth) applyTruth(m.truth); break;
-    case "run_stopped": addLog("INFO", `run stopped: ${m.reason || ""}`, m.t); if (m.truth) applyTruth(m.truth); break;
+      if (m.proof) addLog("INFO", `proof mode: ${m.truth_events} truth events (markers appear as the clip plays)`, 0);
+      else if ($("proof").checked) addLog("ERROR", "proof mode: this clip has no truth.csv", 0);
+      chart.options.scales.x.max = m.duration; duration = m.duration; break;
+    case "run_stopped": {
+      const sm = m.summary || {};
+      addLog("INFO", `run stopped (${m.reason || ""}): ${sm.headline_events ?? 0} headline events, ${sm.story_updates ?? 0} story updates, avg AI delay ${sm.avg_llm_delay ?? "–"} s · logs in outputs/story/${clip?.name}/${m.run_id}/`, m.t);
+      break; }
     case "fast": applyFast(m); break;
     case "log": addLog(m.kind, m.message, m.t); break;
     case "story": applyStory(m); break;

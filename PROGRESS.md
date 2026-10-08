@@ -94,13 +94,17 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 4. Smart layer (Gemini) | in progress | code + unit tests (fake client) done; no-key fallback verified in browser. Live check waits for GEMINI_API_KEY |
 | 5. Memory layer | in progress | wired in engine (every 60 s), template summary verified; Gemini summary waits for the key |
 | 6. Specialist (Colab) | in progress | notebook + server + client built; model runs (CPU test: 0 missing keys, shots found at 37 s / 60 s live); waiting for the user to run Colab |
-| 7. Fusion, score, modes | not started | |
-| 8. Story tab UI | not started | |
-| 9. Proof mode | not started | |
+| 7. Fusion, score, modes | in progress | dedupe/noisy-or/replay guard/goal count/manual score + specialist triggers + 4 modes done and unit-tested; hybrid vs gemini_only check waits for the key |
+| 8. Story tab UI | in progress | full layout done; full 201 s clip ran with no freeze, lag ≤ 0.2 s, auto-stop at end, works with Colab off; Gemini parts wait for the key |
+| 9. Proof mode | in progress | story.evaluate + soccernet importer + live truth markers done; report generated (specialist_only, CPU); final reports need Gemini + Colab runs |
 | 10. Docs | not started | |
 
 ## Key results (MVP 2)
 - Test clips: `eng-cze` (England 3-0 Czechia highlights, 201 s broadcast, youtube kJEY-UFTDk8), `pano` (MVP 1 panoramic, 30 s, no commentary).
+- Ground truth `data/clips/eng-cze/truth.csv`: DRAFT written by Claude from frames + on-screen score
+  (13 events: 3 goals at 61.5 / 94.0 / 148.5 s, 6 shots, 2 saves, 1 free kick, 1 corner). Please verify.
+- specialist_only on the Mac CPU (not live-capable): shots at 37 s and 92.6 s and 123.8 s found; RTF ~7, delay ~35 s.
+  6 of 7 truth events up to 100 s had intensity in the run's top 20%.
 - Intake: 201 s YouTube clip downloaded + normalized in 67 s; 30 s local file in 3 s.
 - Browser → backend playhead: ~5 ticks/s, follows play / pause (checked with headless Chrome).
 - eng-cze goals (from the on-screen score): 1-0 at ~60 s, 2-0 at ~93 s, 3-0 at ~146 s. Fast layer CHEER triggers at
@@ -142,4 +146,5 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - `.env` has no GEMINI_API_KEY yet.
 
 ## Next action (MVP 2)
-Step 4 (needs GEMINI_API_KEY).
+Waiting for the user: GEMINI_API_KEY in .env, and the Colab notebook running (URL pasted in the dashboard).
+Then: Step 0 Gemini check, Step 4/5 live checks, Step 6 RTF check, Step 7 hybrid vs gemini_only, Step 9 reports, Step 10 docs.

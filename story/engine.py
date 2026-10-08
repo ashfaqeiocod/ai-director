@@ -43,7 +43,7 @@ Publish = Callable[[dict], None]
 
 class StoryEngine:
     def __init__(self, clip_folder: Path, cfg: dict, mode: str, publish: Publish, send_audio: bool = True,
-                 specialist_url: str = ""):
+                 specialist_url: str = "", proof: bool = False):
         self.cfg = cfg
         self.mode = mode
         self.layers = MODE_LAYERS[mode]
@@ -85,6 +85,32 @@ class StoryEngine:
         self.stop_flag = threading.Event()
         self.thread = threading.Thread(target=self._loop, daemon=True, name="story-engine")
         self.started_wall = time.time()
+        # Proof mode: ground truth from data/clips/<clip>/truth.csv, shown as markers on the timeline.
+        # It is only ever compared with what the system already logged; it never feeds the AI.
+        self.truth = self._load_truth() if proof else []
+        self.last_truth_publish = -999.0
+
+    def _load_truth(self) -> list[dict]:
+        from story.evaluate import load_truth
+
+        try:
+            return load_truth(self.clip)
+        except SystemExit:
+            return []
+
+    def _publish_truth(self, force: bool = False) -> None:
+        """Proof mode: matched / missed / pending / false alarm, judged only up to the playhead."""
+        if not self.truth or (not force and time.time() - self.last_truth_publish < 2):
+            return
+        from story.evaluate import truth_status
+
+        self.last_truth_publish = time.time()
+        with self.lock:
+            found = [e.to_dict() for e in self.fusion.events]
+        now = self.playhead.now()
+        items = truth_status([t for t in self.truth if t["time_s"] <= now], found,
+                             self.cfg["eval"]["match_window_s"], until=now)
+        self.publish({"type": "truth", "items": items})
 
     # ------------------------------------------------------------------ control
     def start(self) -> None:
@@ -94,10 +120,12 @@ class StoryEngine:
             run_id=self.run_id, clip=self.clip, mode=self.mode, send_audio_to_llm=self.send_audio,
             model=getattr(self.llm, "model", None), llm_state=self.llm_state,
             specialist_url=self.specialist_url or None, started_at=datetime.now().isoformat(timespec="seconds"),
-            clip_duration=self.reader.duration, audio_model=self.fast.audio.model_name, config=self.cfg)
+            clip_duration=self.reader.duration, audio_model=self.fast.audio.model_name, proof=bool(self.truth),
+            config=self.cfg)
         self.publish({"type": "run_started", "run_id": self.run_id, "clip": self.clip, "mode": self.mode,
                       "send_audio": self.send_audio, "model": getattr(self.llm, "model", None),
-                      "duration": self.reader.duration})
+                      "duration": self.reader.duration, "proof": bool(self.truth),
+                      "truth_events": len(self.truth)})
         self._publish_llm_state()
         self.publish(self.fusion.score_message())
         self.thread.start()
@@ -119,6 +147,7 @@ class StoryEngine:
             self.specialist.stop()
         self.pool.shutdown(wait=False, cancel_futures=True)
         summary = self.summary()
+        self._publish_truth(force=True)
         self.log_file.write_meta(ended_at=datetime.now().isoformat(timespec="seconds"), end_reason=reason,
                                  summary=summary)
         self.publish({"type": "run_stopped", "run_id": self.run_id, "reason": reason, "t": self.playhead.now(),
@@ -243,6 +272,7 @@ class StoryEngine:
                       "crowd": round(r.crowd, 3), "whistle": round(r.whistle, 2), "loudness_db": r.loudness_db,
                       "cuts": r.cuts, "replay": self.is_replay, "intensity": intensity, "lag": round(lag, 2),
                       "audio_model": r.audio_model})
+        self._publish_truth()
         self.log_file.intensity_row({"t": round(r.t, 2), "audio": round(r.audio, 3), "crowd": round(r.crowd, 3),
                                      "loudness_db": r.loudness_db, "motion": round(r.motion, 3), "cuts": r.cuts,
                                      "replay": int(self.is_replay), "whistle": round(r.whistle, 2),
