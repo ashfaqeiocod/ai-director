@@ -1,0 +1,18 @@
+# Python virtual environment and caches
+venv/
+__pycache__/
+*.pyc
+# Secrets
+.env
+# Videos and generated outputs (footage shows minors: never commit)
+data/
+outputs/
+*.mp4
+*.mov
+*.webm
+# Model weights and model caches
+*.pt
+*.onnx
+models_cache/
+.yolo_config/
+.claude/

@@ -1,0 +1,58 @@
+# config.yaml — every tunable number for the AI Sports Director lives here.
+# Change a value, re-run, and the pipeline picks it up. Nothing is hard-coded in src/.
+
+video:
+  url: "https://www.youtube.com/watch?v=RVWMU6p0hDQ"
+  source: "data/raw/source.mp4"     # downloaded clip
+  cams_dir: "data/cams"              # cam1.mp4, cam2.mp4, cam3.mp4 go here
+  max_height: 1080                   # never work above 1080p
+  num_cams: 3
+
+detection:
+  # Primary detector: Roboflow pretrained football model (classes: ball, goalkeeper, player, referee)
+  model_id: "football-players-detection-3zvbc/11"
+  # Ball-only model, used only if the ball rate is poor (see Step 4)
+  ball_model_id: "football-ball-detection-rejhg/4"
+  use_ball_model: false              # set by Step 4 experiment
+  use_slicer: false                  # tile the image so the ball looks bigger (slower)
+  slicer_tile: 640
+  ball_confidence: 0.15              # low: the ball is small and blurry
+  player_confidence: 0.3
+  # Fallback detector if Roboflow fails (COCO: person=0, sports ball=32)
+  fallback_model: "yolo11s.pt"
+  device: "mps"                      # Apple GPU; falls back to cpu on error
+  detections_dir: "outputs/detections"
+
+ball_tracker:
+  buffer_size: 10                    # remember the last N ball centers
+  max_jump_px: 150                   # reject a detection further than this from the recent average
+  max_predict_frames: 10             # predict a missing ball for this many frames, then "lost"
+
+director:
+  score_detected: 100
+  score_predicted: 60
+  score_center_max: 30               # bonus when the ball is near the horizontal center of the cam
+  score_per_player: 1
+  score_players_max: 10
+  min_shot_seconds: 2.0              # never cut sooner than this
+  hysteresis_seconds: 0.5            # another cam must win this long in a row before we cut
+  lost_fallback_seconds: 2.0         # no ball anywhere this long -> go to the fallback cam
+  fallback_cam: 2
+  start_cam: 2
+  log_csv: "outputs/director_log.csv"
+
+render:
+  program_path: "outputs/program.mp4"
+  debug_path: "outputs/debug.mp4"
+  program_width: 1280
+  program_height: 720
+  trail_length: 15                   # ball trail points in debug view
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  jpeg_quality: 70
+  cam_max_width: 640
+  program_max_width: 1280
+  ws_max_rate: 10                    # per-frame state messages per second
+  run_log: "outputs/run_log.jsonl"

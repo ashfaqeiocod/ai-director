@@ -1,0 +1,14 @@
+# Python packages for the AI Sports Director prototype.
+# Install inside the project venv:  venv/bin/pip install -r requirements.txt
+inference            # Roboflow models (ball + player detection)
+supervision          # tracking (ByteTrack), drawing, video read/write helpers
+ultralytics          # fallback detector (YOLO), only used if Roboflow fails
+torch                # needed by ultralytics; uses Apple "mps" GPU on M1
+opencv-python        # image/video processing
+numpy
+pyyaml               # read config.yaml
+python-dotenv        # read ROBOFLOW_API_KEY from .env
+fastapi              # dashboard web server
+uvicorn[standard]    # runs the FastAPI app (includes WebSocket support)
+yt-dlp               # downloads the YouTube clip (Step 2)
+imageio-ffmpeg       # ships an ffmpeg binary (no Homebrew build needed); linked as venv/bin/ffmpeg
