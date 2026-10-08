@@ -39,6 +39,7 @@ from src.director import DecisionLog
 from src.engine import LIVE, REPLAY, Engine
 from src.prepare import is_up_to_date
 from src.render import Renderer
+from dashboard.story_api import router as story_router   # MVP 2: the Story tab (/story)
 
 STATIC = Path(__file__).parent / "static"
 STREAMS = ["program", "cam1", "cam2", "cam3"]
@@ -311,6 +312,7 @@ class RunStats:
 
 # ---------------------------------------------------------------- web app
 app = FastAPI(title="AI Sports Director")
+app.include_router(story_router)
 ctl = Controller()
 
 
@@ -415,5 +417,5 @@ def files(name: str) -> FileResponse:
 
 if __name__ == "__main__":
     dash = ctl.cfg["dashboard"]
-    print(f"Dashboard: http://localhost:{dash['port']}")
+    print(f"Dashboard: http://localhost:{dash['port']}   (Story tab: http://localhost:{dash['port']}/story)")
     uvicorn.run(app, host=dash["host"], port=dash["port"], log_level="warning")

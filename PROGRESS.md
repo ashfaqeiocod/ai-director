@@ -88,7 +88,7 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | Step | Status | Notes |
 |---|---|---|
 | 0. Plan + environment | in progress | packages installed, YAMNet OK, MVP 1 check OK. Waiting for GEMINI_API_KEY |
-| 1. Intake + live player | not started | |
+| 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
 | 2. Fast layer | not started | |
 | 3. Story engine + logs | not started | |
 | 4. Smart layer (Gemini) | not started | |
@@ -100,6 +100,9 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 10. Docs | not started | |
 
 ## Key results (MVP 2)
+- Test clips: `eng-cze` (England 3-0 Czechia highlights, 201 s broadcast, youtube kJEY-UFTDk8), `pano` (MVP 1 panoramic, 30 s, no commentary).
+- Intake: 201 s YouTube clip downloaded + normalized in 67 s; 30 s local file in 3 s.
+- Browser → backend playhead: ~5 ticks/s, follows play / pause (checked with headless Chrome).
 
 ## Decisions made (MVP 2)
 - `google-genai` pinned to 2.8.0: newer versions need pydantic ≥ 2.12.5, but Roboflow `inference` (MVP 1)
@@ -108,7 +111,8 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
 
 ## Problems / open issues (MVP 2)
+- Seeking is blocked during a run (live means live; the AI already "saw" that part). The Playhead only moves forward.
 - `.env` has no GEMINI_API_KEY yet.
 
 ## Next action (MVP 2)
-Step 1.
+Step 2.

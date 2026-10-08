@@ -1,0 +1,565 @@
+<!doctype html>
+<!--
+  story.html — MVP 2 "Live Story Reader" tab (one static page, no build step).
+  - The <video> plays the clip WITH SOUND and is the master clock: every ~200 ms its currentTime
+    is sent to the backend over the WebSocket /story/ws ("tick"). The backend never reads past it.
+  - Everything the AI produces comes back over the same WebSocket and is drawn here.
+  - Plain fetch() for upload, URL import, start/stop, score buttons, ratings and settings.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Story Reader</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .light { display: inline-block; width: .6rem; height: .6rem; border-radius: 9999px; background: #475569; }
+    .light.ok { background: #22c55e; } .light.warn { background: #f59e0b; } .light.bad { background: #ef4444; }
+    .light.off { background: #475569; }
+    .k-CHEER { color: #4ade80; } .k-WHISTLE { color: #facc15; } .k-CUT { color: #94a3b8; }
+    .k-REPLAY { color: #c084fc; } .k-LAG { color: #fb923c; } .k-INFO { color: #64748b; }
+    .k-ERROR { color: #f43f5e; font-weight: 600; } .k-LLM { color: #38bdf8; } .k-SPECIALIST { color: #f472b6; }
+    .k-MEMORY { color: #a78bfa; } .k-SCORE { color: #fbbf24; } .k-EVENT { color: #e2e8f0; }
+    #dropzone.over { border-color: #38bdf8; background: rgba(56, 189, 248, .08); }
+    button:disabled, select:disabled, input:disabled { opacity: .4; cursor: not-allowed; }
+    .ev { position: absolute; transform: translateX(-50%); font-size: 18px; line-height: 1; cursor: default; }
+    .ev .tip { display: none; position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%);
+      white-space: nowrap; background: #020617; border: 1px solid #334155; padding: 2px 6px; border-radius: 4px;
+      font-size: 11px; z-index: 10; }
+    .ev:hover .tip { display: block; }
+    .truth { position: absolute; transform: translateX(-50%); font-size: 12px; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+<div class="max-w-[1600px] mx-auto p-4 space-y-3">
+
+  <!-- Header + status bar -->
+  <header class="flex flex-wrap items-center gap-3 justify-between">
+    <div class="flex items-center gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">Story Reader</h1>
+      <a href="/" class="text-xs text-slate-400 hover:text-white border border-slate-700 rounded px-2 py-0.5">← Camera director (MVP 1)</a>
+      <span id="runStatus" class="mono text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300">connecting…</span>
+    </div>
+    <div class="flex flex-wrap items-center gap-4 text-xs mono text-slate-400">
+      <span title="Gemini (smart layer)"><span id="lGemini" class="light"></span> Gemini <span id="sGemini" class="text-slate-500"></span></span>
+      <span title="Colab specialist (action spotting)"><span id="lColab" class="light"></span> Colab <span id="sColab" class="text-slate-500"></span></span>
+      <span title="Audio model (YAMNet)"><span id="lAudio" class="light"></span> Audio <span id="sAudio" class="text-slate-500"></span></span>
+      <span title="AI requests in the last 60 s / limit">req/min <span id="sRpm" class="text-slate-200">–</span></span>
+      <span title="Average delay between when something happened and when the AI logged it">avg delay <span id="sDelay" class="text-slate-200">–</span></span>
+      <span title="Specialist inference time ÷ stride. Under 1 = keeps up with live">RTF <span id="sRtf" class="text-slate-200">–</span></span>
+      <span title="How far the backend is behind the video">lag <span id="sLag" class="text-slate-200">–</span></span>
+    </div>
+  </header>
+
+  <main class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+    <!-- ================= LEFT: player + controls + clips ================= -->
+    <div class="lg:col-span-7 space-y-3">
+      <div class="relative rounded-lg overflow-hidden border border-slate-800 aspect-video bg-black">
+        <video id="video" class="w-full h-full object-contain" preload="auto" playsinline></video>
+        <div class="absolute top-3 left-3 flex items-center gap-2">
+          <span id="liveBadge" class="hidden bg-red-600 text-white text-xs font-bold px-2 py-1 rounded items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>LIVE</span>
+          <span id="replayBadge" class="hidden bg-purple-600 text-white text-xs font-bold px-2 py-1 rounded">🔁 REPLAY</span>
+          <span id="clock" class="bg-black/70 mono text-sm px-2 py-1 rounded">0:00</span>
+        </div>
+        <div id="noClip" class="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">Pick or import a clip below</div>
+      </div>
+
+      <!-- Controls -->
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        <button id="btnLive" class="px-4 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white font-semibold">● Go Live</button>
+        <button id="btnPause" class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600">Pause</button>
+        <button id="btnStop" class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600">Stop</button>
+        <button id="btnMute" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700" title="Sound on/off (the AI still hears it)">🔊</button>
+        <select id="mode" class="bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5" title="Which layers run">
+          <option value="fast_only">fast only</option>
+          <option value="specialist_only">fast + specialist</option>
+          <option value="gemini_only">fast + Gemini</option>
+          <option value="hybrid">hybrid (all)</option>
+        </select>
+        <label class="flex items-center gap-1 text-slate-400" title="Off = honest test: the AI can't repeat the TV commentator">
+          <input id="sendAudio" type="checkbox" class="accent-sky-500"> send audio to AI</label>
+        <label class="flex items-center gap-1 text-slate-400" title="Show ground-truth markers (needs truth.csv for this clip)">
+          <input id="proof" type="checkbox" class="accent-emerald-500"> proof mode</label>
+        <span id="runId" class="mono text-xs text-slate-500"></span>
+      </div>
+
+      <!-- Clips -->
+      <section class="bg-slate-900 rounded-lg border border-slate-800 p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-semibold">Clips</span>
+          <span class="text-xs text-slate-500">files are converted to 720p / 25 fps; nothing leaves this computer</span>
+        </div>
+        <div id="dropzone" class="border-2 border-dashed border-slate-700 rounded-md p-4 text-center text-sm text-slate-400 cursor-pointer">
+          Drop a video here or <u>choose a file</u>
+          <input id="fileInput" type="file" accept="video/*" class="hidden">
+        </div>
+        <div class="flex gap-2">
+          <input id="urlInput" type="url" placeholder="…or paste a YouTube link" class="flex-1 bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-sm">
+          <button id="btnUrl" class="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600 text-sm">Import</button>
+        </div>
+        <div id="jobs" class="text-xs mono space-y-0.5"></div>
+        <div id="clipList" class="grid sm:grid-cols-2 gap-2 text-sm"></div>
+      </section>
+
+      <!-- Colab specialist -->
+      <section class="bg-slate-900 rounded-lg border border-slate-800 p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-semibold">Colab specialist <span id="lColab2" class="light ml-1"></span></span>
+          <span id="colabInfo" class="text-xs mono text-slate-500">not connected</span>
+        </div>
+        <div class="flex gap-2">
+          <input id="colabUrl" type="url" placeholder="https://xxxx.ngrok-free.app  (printed by the Colab notebook)" class="flex-1 bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-sm mono">
+          <button id="btnColab" class="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600 text-sm">Connect</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= RIGHT: NOW card, commentary, story so far ================= -->
+    <div class="lg:col-span-5 space-y-3">
+      <!-- NOW card -->
+      <section id="nowCard" class="rounded-lg border border-slate-800 p-4 bg-slate-900 transition-colors">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <div class="text-xs text-slate-500 uppercase tracking-wide">Now</div>
+            <div class="flex items-center gap-2 mt-1">
+              <span id="nowEmoji" class="text-3xl">⏳</span>
+              <div>
+                <div id="nowPhase" class="text-xl font-semibold">waiting</div>
+                <div id="nowSentiment" class="text-sm text-slate-400">–</div>
+              </div>
+            </div>
+          </div>
+          <div class="text-right">
+            <div class="text-xs text-slate-500 uppercase tracking-wide">Score</div>
+            <div id="score" class="text-2xl font-bold mono">– : –</div>
+            <div id="scoreButtons" class="flex gap-1 justify-end mt-1 text-xs"></div>
+          </div>
+        </div>
+        <div class="mt-3">
+          <div class="flex justify-between text-xs text-slate-500"><span>intensity</span><span id="nowIntensity" class="mono text-slate-200">0</span></div>
+          <div class="h-3 bg-slate-800 rounded mt-1 overflow-hidden"><div id="intensityBar" class="h-3 rounded transition-all duration-500" style="width:0%"></div></div>
+        </div>
+        <div class="mt-2 text-sm text-slate-400">in control: <span id="nowControl" class="text-slate-200">–</span></div>
+      </section>
+
+      <!-- Commentary -->
+      <section class="bg-slate-900 rounded-lg border border-slate-800 flex flex-col h-[360px]">
+        <div class="px-3 py-2 border-b border-slate-800 flex justify-between items-center">
+          <span class="text-sm font-semibold">Live commentary</span>
+          <span class="text-[11px] text-slate-500">clip time · delay · rate it 👍 👎</span>
+        </div>
+        <div id="commentary" class="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-sm"></div>
+      </section>
+
+      <!-- Story so far -->
+      <section class="bg-slate-900 rounded-lg border border-slate-800 p-3 space-y-2">
+        <div class="flex justify-between items-center">
+          <span class="text-sm font-semibold">Story so far</span>
+          <span id="memoryAt" class="text-[11px] mono text-slate-500"></span>
+        </div>
+        <p id="storySoFar" class="text-sm text-slate-300">Nothing yet. The summary updates about once a minute.</p>
+        <div class="text-sm text-slate-400">momentum: <span id="momentum" class="text-slate-200">–</span></div>
+        <div id="teams" class="flex flex-wrap gap-2 text-xs"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ================= BOTTOM: timeline + intensity graph + signal log ================= -->
+  <section class="bg-slate-900 rounded-lg border border-slate-800 p-3 space-y-2">
+    <div class="flex justify-between text-xs text-slate-500">
+      <span>Event timeline <span class="ml-2">⚽ goal · 🎯 shot · 🧤 save · ✋ foul · 🟨/🟥 card · 🚩 corner · 🔁 replay</span></span>
+      <span id="truthLegend" class="hidden">truth: ✅ matched · ❌ missed · ⚠️ false alarm</span>
+    </div>
+    <div id="timeline" class="relative h-12 bg-slate-800 rounded">
+      <div id="replays" class="absolute inset-0"></div>
+      <div id="truthRow" class="absolute left-0 right-0 bottom-0 h-4"></div>
+      <div id="events" class="absolute left-0 right-0 top-1 h-6"></div>
+      <div id="tlPlayhead" class="absolute top-0 bottom-0 w-0.5 bg-white" style="left:0%"></div>
+    </div>
+    <div class="h-40"><canvas id="chart"></canvas></div>
+  </section>
+
+  <section class="bg-slate-900 rounded-lg border border-slate-800">
+    <div class="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+      <span class="text-sm font-semibold">Signal log</span>
+      <div id="filters" class="flex flex-wrap gap-2 text-[11px] mono"></div>
+    </div>
+    <div id="log" class="h-48 overflow-y-auto px-3 py-2 text-xs mono space-y-0.5"></div>
+  </section>
+</div>
+
+<script>
+// ================= helpers =================
+const $ = (id) => document.getElementById(id);
+const fmt = (s) => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const fmt1 = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body || {}) }).then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.detail); return j; });
+const KINDS = ["EVENT", "CHEER", "WHISTLE", "CUT", "REPLAY", "LLM", "SPECIALIST", "MEMORY", "SCORE", "LAG", "INFO", "ERROR"];
+const ICONS = { goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
+  corner: "🚩", free_kick: "🦶", penalty: "⚠️", throw_in: "🤾", offside: "🚫", substitution: "🔄", tackle: "🦵",
+  cross: "↪️", header: "🗣️", out: "↩️", kickoff: "▶️", whistle: "📣", injury: "🩹", celebration: "🎉", argument: "😤" };
+const SENTIMENT = { calm: ["😌", "#334155"], building: ["🙂", "#1e3a5f"], tense: ["😬", "#713f12"],
+  excited: ["🤩", "#7c2d12"], joy: ["🥳", "#14532d"], frustration: ["😣", "#7f1d1d"], anger: ["😡", "#7f1d1d"],
+  disappointment: ["😞", "#3b0764"], relief: ["😮‍💨", "#134e4a"], unknown: ["🤔", "#1e293b"] };
+const PHASE_EMOJI = { goal: "⚽", celebration: "🎉", chance: "💥", attack: "⚡", build_up: "🔁", replay: "🔁",
+  foul: "✋", set_piece: "🚩", stoppage: "⏸️", injury: "🩹", break: "☕", unknown: "🤔" };
+
+let clip = null, clips = [], duration = 0, running = false, runId = null, live = false, replayOpen = null;
+let delays = [];
+
+// ================= signal log =================
+const visible = Object.fromEntries(KINDS.map((k) => [k, true]));
+for (const k of KINDS) {
+  const label = document.createElement("label");
+  label.className = `k-${k} cursor-pointer flex items-center gap-1`;
+  label.innerHTML = `<input type="checkbox" checked class="accent-slate-500">${k}`;
+  label.querySelector("input").onchange = (e) => {
+    visible[k] = e.target.checked;
+    document.querySelectorAll(`#log .row-${k}`).forEach((r) => r.classList.toggle("hidden", !visible[k]));
+  };
+  $("filters").appendChild(label);
+}
+function addLog(kind, text, t) {
+  const log = $("log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const row = document.createElement("div");
+  row.className = `row-${kind} k-${kind}` + (visible[kind] === false ? " hidden" : "");
+  row.textContent = `${t != null ? fmt1(t).padStart(7) : "       "}  ${kind.padEnd(10)} ${text}`;
+  log.appendChild(row);
+  while (log.childElementCount > 1500) log.firstElementChild.remove();
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ================= clips: upload, URL, list =================
+function renderClips() {
+  const list = $("clipList");
+  list.innerHTML = "";
+  for (const c of clips) {
+    const b = document.createElement("button");
+    b.className = "text-left px-3 py-2 rounded-md border " + (c.name === clip?.name
+      ? "border-sky-500 bg-sky-950" : "border-slate-700 hover:border-slate-500 bg-slate-950");
+    b.innerHTML = `<div class="font-medium truncate"></div><div class="text-xs text-slate-500 mono"></div>`;
+    b.firstElementChild.textContent = c.name + (c.has_truth ? "  ✓truth" : "");
+    b.lastElementChild.textContent = `${fmt(c.duration)} · ${c.width}x${c.height}${c.has_audio ? "" : " · no sound"}`;
+    b.onclick = () => selectClip(c);
+    b.disabled = running;
+    list.appendChild(b);
+  }
+  if (!clips.length) list.innerHTML = `<div class="text-slate-500 text-xs">No clips yet.</div>`;
+}
+function selectClip(c) {
+  if (running) return;
+  clip = c; duration = c.duration;
+  $("video").src = `/story/clips/${encodeURIComponent(c.name)}/video`;
+  $("noClip").classList.add("hidden");
+  $("clock").textContent = `0:00 / ${fmt(duration)}`;
+  resetRunView();
+  renderClips();
+}
+function renderJobs(jobs) {
+  $("jobs").innerHTML = "";
+  for (const j of jobs.slice(-4)) {
+    const row = document.createElement("div");
+    row.className = { working: "text-sky-400", done: "text-emerald-400", error: "text-rose-400" }[j.status];
+    row.textContent = `${j.status === "working" ? "⏳" : j.status === "done" ? "✓" : "✗"} ${j.name}: ${j.message}`;
+    $("jobs").appendChild(row);
+  }
+}
+const jobs = {};
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append("file", file);
+  jobs.up = { status: "working", name: file.name, message: "uploading…" }; renderJobs(Object.values(jobs));
+  const r = await fetch("/story/upload", { method: "POST", body: form });
+  const j = await r.json();
+  delete jobs.up;
+  if (!r.ok) { jobs.err = { status: "error", name: file.name, message: j.detail }; renderJobs(Object.values(jobs)); }
+  else { jobs[j.id] = j; renderJobs(Object.values(jobs)); }
+}
+$("dropzone").onclick = () => $("fileInput").click();
+$("fileInput").onchange = (e) => e.target.files[0] && uploadFile(e.target.files[0]);
+$("dropzone").ondragover = (e) => { e.preventDefault(); $("dropzone").classList.add("over"); };
+$("dropzone").ondragleave = () => $("dropzone").classList.remove("over");
+$("dropzone").ondrop = (e) => { e.preventDefault(); $("dropzone").classList.remove("over");
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); };
+$("btnUrl").onclick = async () => {
+  try { const j = await post("/story/intake_url", { url: $("urlInput").value }); jobs[j.id] = j; renderJobs(Object.values(jobs)); $("urlInput").value = ""; }
+  catch (e) { addLog("ERROR", e.message); }
+};
+
+// ================= the master clock: send the playhead ~5x per second =================
+let ws = null;
+function sendTick() {
+  const v = $("video");
+  if (ws?.readyState === 1 && running)
+    ws.send(JSON.stringify({ type: "tick", t: v.currentTime, paused: v.paused || v.ended, ended: v.ended }));
+}
+setInterval(sendTick, 200);
+["play", "pause", "ended"].forEach((e) => $("video").addEventListener(e, sendTick));
+$("video").addEventListener("timeupdate", () => {
+  const t = $("video").currentTime;
+  $("clock").textContent = `${fmt(t)} / ${fmt(duration)}`;
+  $("tlPlayhead").style.left = `${duration ? (t / duration) * 100 : 0}%`;
+  chartPlayhead = t;
+});
+// Live means live: no seeking back (the AI has already "seen" that part).
+$("video").addEventListener("seeking", () => {
+  if (running && Math.abs($("video").currentTime - lastGood) > 0.5) $("video").currentTime = lastGood;
+});
+let lastGood = 0;
+$("video").addEventListener("timeupdate", () => { if (!$("video").seeking) lastGood = $("video").currentTime; });
+$("video").addEventListener("ended", async () => { if (running) { addLog("INFO", "clip ended", duration); await stopRun(); } });
+
+// ================= controls =================
+$("btnLive").onclick = async () => {
+  if (!clip) return addLog("ERROR", "pick a clip first");
+  const v = $("video");
+  if (running && v.paused) { v.play(); return; }            // resume after Pause
+  try {
+    resetRunView();
+    await post("/story/start", { clip: clip.name, mode: $("mode").value, send_audio: $("sendAudio").checked,
+      proof: $("proof").checked });
+    v.currentTime = 0; lastGood = 0;
+    await v.play();
+  } catch (e) { addLog("ERROR", e.message); }
+};
+$("btnPause").onclick = () => $("video").pause();
+$("btnStop").onclick = () => stopRun();
+async function stopRun() { $("video").pause(); try { applyStatus(await post("/story/stop")); } catch (e) { addLog("ERROR", e.message); } }
+$("btnMute").onclick = () => { const v = $("video"); v.muted = !v.muted; $("btnMute").textContent = v.muted ? "🔇" : "🔊"; };
+$("btnColab").onclick = async () => {
+  try { applySpecialist(await post("/story/specialist", { url: $("colabUrl").value.trim() })); }
+  catch (e) { addLog("ERROR", e.message); }
+};
+$("proof").onchange = () => { $("truthLegend").classList.toggle("hidden", !$("proof").checked);
+  $("truthRow").classList.toggle("hidden", !$("proof").checked); };
+
+function applyStatus(s) {
+  running = s.running;
+  clips = s.clips || clips;
+  if (s.clip && !clip) { const c = clips.find((x) => x.name === s.clip); if (c) selectClip(c); }
+  if (s.intake_jobs) { for (const j of s.intake_jobs) jobs[j.id] = j; renderJobs(Object.values(jobs)); }
+  if (!running) { $("mode").value = s.mode; $("sendAudio").checked = s.send_audio; }
+  if (s.specialist_url && !$("colabUrl").value) $("colabUrl").value = s.specialist_url;
+  $("runStatus").textContent = running ? `live · ${s.mode.replace("_", " ")}` : "idle";
+  $("liveBadge").classList.toggle("hidden", !running); $("liveBadge").classList.toggle("flex", running);
+  for (const id of ["mode", "sendAudio", "proof"]) $(id).disabled = running;
+  $("btnPause").disabled = !running; $("btnStop").disabled = !running;
+  renderClips();
+}
+
+// ================= NOW card + score =================
+function applyStory(u) {
+  const [emoji, colour] = SENTIMENT[u.sentiment] || SENTIMENT.unknown;
+  $("nowEmoji").textContent = u.is_replay ? "🔁" : (PHASE_EMOJI[u.phase] || emoji);
+  $("nowPhase").textContent = u.is_replay ? "replay" : u.phase.replace("_", " ");
+  $("nowSentiment").textContent = `${emoji} ${u.sentiment}`;
+  $("nowCard").style.backgroundColor = colour;
+  $("nowControl").textContent = u.team_in_control || "–";
+  $("replayBadge").classList.toggle("hidden", !u.is_replay);
+  addCommentary(u);
+}
+function setIntensity(v) {
+  v = Math.round(v);
+  $("nowIntensity").textContent = v;
+  $("intensityBar").style.width = `${v}%`;
+  $("intensityBar").style.background = v > 70 ? "#ef4444" : v > 40 ? "#f59e0b" : "#22c55e";
+}
+function applyScore(s) {
+  $("score").textContent = s.text || "– : –";
+  const box = $("scoreButtons");
+  box.innerHTML = "";
+  for (const team of s.teams_order || []) {
+    for (const d of [1, -1]) {
+      const b = document.createElement("button");
+      b.className = "px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700";
+      b.textContent = `${team} ${d > 0 ? "+1" : "−1"}`;
+      b.onclick = () => post("/story/score", { team, delta: d }).catch((e) => addLog("ERROR", e.message));
+      box.appendChild(b);
+    }
+  }
+}
+
+// ================= commentary =================
+function addCommentary(u) {
+  const row = document.createElement("div");
+  row.className = "border-b border-slate-800 pb-2";
+  const delay = u.logged_at - u.window_end;
+  const src = u.source === "gemini" ? "AI" : "template";
+  row.innerHTML = `<div class="flex justify-between text-[11px] mono text-slate-500">
+      <span><span class="t"></span> · delay <span class="d"></span> · <span class="s"></span></span>
+      <span class="space-x-1"><button class="up hover:scale-110">👍</button><button class="down hover:scale-110">👎</button></span></div>
+    <div class="n mt-0.5"></div>`;
+  row.querySelector(".t").textContent = fmt1(u.window_end);
+  row.querySelector(".d").textContent = `${delay.toFixed(1)}s`;
+  row.querySelector(".s").textContent = src + (u.is_replay ? " · replay" : "");
+  row.querySelector(".n").textContent = u.narration;
+  row.querySelector(".n").classList.toggle("text-slate-400", u.source !== "gemini");
+  for (const [cls, rating] of [["up", 1], ["down", -1]]) {
+    row.querySelector(`.${cls}`).onclick = () => {
+      post("/story/rate", { run_id: runId, story_id: u.id, rating }).catch((e) => addLog("ERROR", e.message));
+      row.querySelector(".up").style.opacity = rating === 1 ? 1 : .3;
+      row.querySelector(".down").style.opacity = rating === -1 ? 1 : .3;
+    };
+  }
+  $("commentary").prepend(row);
+  if (u.source === "gemini") { delays.push(delay); $("sDelay").textContent = `${(delays.reduce((a, b) => a + b, 0) / delays.length).toFixed(1)}s`; }
+}
+
+// ================= story so far =================
+function applyMemory(m) {
+  $("storySoFar").textContent = m.story_so_far;
+  $("momentum").textContent = m.momentum || "–";
+  $("memoryAt").textContent = `at ${fmt(m.logged_at)}${m.source === "template" ? " · template" : ""}`;
+  $("teams").innerHTML = "";
+  for (const [colour, desc] of Object.entries(m.teams || {})) {
+    const chip = document.createElement("span");
+    chip.className = "px-2 py-0.5 rounded-full bg-slate-800";
+    chip.textContent = `${colour}: ${desc}`;
+    $("teams").appendChild(chip);
+  }
+}
+
+// ================= timeline (events + replays + truth) =================
+const eventNodes = {};
+function placeEvent(e) {
+  if (!duration || !e.headline) return;
+  let node = eventNodes[e.id];
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "ev";
+    node.innerHTML = `<span class="i"></span><span class="tip mono"></span>`;
+    $("events").appendChild(node);
+    eventNodes[e.id] = node;
+  }
+  node.style.left = `${(e.event_time / duration) * 100}%`;
+  node.querySelector(".i").textContent = ICONS[e.type] || "•";
+  node.querySelector(".tip").textContent =
+    `${e.type} @${fmt1(e.event_time)} · logged ${fmt1(e.logged_at)} (+${(e.logged_at - e.event_time).toFixed(1)}s) · ${e.sources.join("+")} · ${(e.confidence * 100).toFixed(0)}%${e.team ? " · " + e.team : ""}`;
+}
+function markReplay(t, on) {
+  if (!duration) return;
+  if (on && replayOpen == null) {
+    replayOpen = document.createElement("div");
+    replayOpen.className = "absolute top-0 bottom-0 bg-purple-500/30 border-l border-purple-400";
+    replayOpen.style.left = `${(t / duration) * 100}%`; replayOpen.style.width = "0.3%";
+    replayOpen.dataset.start = t;
+    $("replays").appendChild(replayOpen);
+  } else if (on && replayOpen) {
+    replayOpen.style.width = `${((t - replayOpen.dataset.start) / duration) * 100}%`;
+  } else if (!on && replayOpen) {
+    replayOpen = null;
+  }
+}
+function applyTruth(items) {
+  $("truthRow").innerHTML = "";
+  for (const it of items) {
+    const n = document.createElement("div");
+    n.className = "truth";
+    n.style.left = `${(it.time_s / duration) * 100}%`;
+    n.textContent = { matched: "✅", missed: "❌", false_alarm: "⚠️", pending: "▫️" }[it.status] || "▫️";
+    n.title = `${it.event} @${fmt1(it.time_s)}${it.team ? " · " + it.team : ""} · ${it.status}`;
+    $("truthRow").appendChild(n);
+  }
+}
+
+// ================= intensity graph =================
+let chartPlayhead = 0;
+const playheadPlugin = { id: "playhead", afterDatasetsDraw(c) {
+  const x = c.scales.x.getPixelForValue(chartPlayhead);
+  const ctx = c.ctx; ctx.save(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, c.chartArea.top); ctx.lineTo(x, c.chartArea.bottom); ctx.stroke(); ctx.restore(); } };
+const chart = new Chart($("chart"), {
+  type: "line",
+  data: { datasets: [
+    { label: "intensity", data: [], borderColor: "#f97316", backgroundColor: "rgba(249,115,22,.15)", fill: true, borderWidth: 2, pointRadius: 0, tension: .3 },
+    { label: "audio", data: [], borderColor: "#22c55e", borderWidth: 1, pointRadius: 0, tension: .3 },
+    { label: "motion", data: [], borderColor: "#38bdf8", borderWidth: 1, pointRadius: 0, tension: .3 },
+  ] },
+  options: { animation: false, maintainAspectRatio: false, parsing: false,
+    scales: { x: { type: "linear", min: 0, ticks: { color: "#64748b", callback: (v) => fmt(v) }, grid: { color: "#1e293b" } },
+              y: { min: 0, max: 100, ticks: { color: "#64748b" }, grid: { color: "#1e293b" } } },
+    plugins: { legend: { labels: { color: "#94a3b8", boxWidth: 10 } } } },
+  plugins: [playheadPlugin],
+});
+setInterval(() => chart.update("none"), 500);
+
+function applyFast(f) {
+  chart.data.datasets[0].data.push({ x: f.t, y: f.intensity });
+  chart.data.datasets[1].data.push({ x: f.t, y: f.audio * 100 });
+  chart.data.datasets[2].data.push({ x: f.t, y: f.motion * 100 });
+  setIntensity(f.intensity);
+  markReplay(f.t, f.replay);
+  $("lAudio").className = "light " + (f.audio_model === "yamnet" ? "ok" : "warn");
+  $("sAudio").textContent = f.audio_model === "yamnet" ? "" : "fallback";
+  if (f.lag != null) $("sLag").textContent = `${f.lag.toFixed(1)}s`;
+}
+
+// ================= status lights =================
+function light(id, state) {
+  $(id).className = "light " + ({ ok: "ok", connected: "ok", busy: "ok", rate_limited: "warn", fallback: "warn",
+    connecting: "warn", error: "bad", no_key: "bad", off: "off", disabled: "off" }[state] || "off");
+}
+function applyGemini(g) {
+  light("lGemini", g.state);
+  $("sGemini").textContent = g.state === "ok" || g.state === "busy" ? (g.latency ? `${g.latency.toFixed(1)}s` : "") : g.state.replace("_", " ");
+  $("sRpm").textContent = `${g.rpm}/${g.max_rpm}`;
+}
+function applySpecialist(s) {
+  light("lColab", s.state); light("lColab2", s.state);
+  $("sColab").textContent = s.state === "connected" ? "" : s.state;
+  $("colabInfo").textContent = s.message || s.state;
+  if (s.rtf != null) $("sRtf").textContent = s.rtf.toFixed(2);
+  if (s.url && !$("colabUrl").value) $("colabUrl").value = s.url;
+}
+
+// ================= reset between runs =================
+function resetRunView() {
+  for (const ds of chart.data.datasets) ds.data = [];
+  chart.options.scales.x.max = duration || undefined;
+  chart.update("none");
+  $("events").innerHTML = ""; $("replays").innerHTML = ""; $("truthRow").innerHTML = "";
+  for (const k in eventNodes) delete eventNodes[k];
+  $("commentary").innerHTML = ""; $("log").innerHTML = ""; delays = []; replayOpen = null;
+  $("sDelay").textContent = "–"; $("sLag").textContent = "–";
+  $("nowPhase").textContent = "waiting"; $("nowSentiment").textContent = "–"; $("nowEmoji").textContent = "⏳";
+  $("nowCard").style.backgroundColor = ""; setIntensity(0); $("nowControl").textContent = "–";
+  $("storySoFar").textContent = "Nothing yet. The summary updates about once a minute.";
+  $("momentum").textContent = "–"; $("teams").innerHTML = ""; $("memoryAt").textContent = "";
+  $("score").textContent = "– : –"; $("scoreButtons").innerHTML = ""; $("replayBadge").classList.add("hidden");
+}
+
+// ================= WebSocket messages =================
+function handle(m) {
+  switch (m.type) {
+    case "status": applyStatus(m); break;
+    case "intake": jobs[m.id] = m; renderJobs(Object.values(jobs)); break;
+    case "run_started": runId = m.run_id; $("runId").textContent = `run ${m.run_id}`;
+      addLog("INFO", `run ${m.run_id} started · mode ${m.mode} · model ${m.model || "–"} · audio to AI ${m.send_audio}`, 0);
+      if (m.truth) applyTruth(m.truth); break;
+    case "run_stopped": addLog("INFO", `run stopped: ${m.reason || ""}`, m.t); if (m.truth) applyTruth(m.truth); break;
+    case "fast": applyFast(m); break;
+    case "log": addLog(m.kind, m.message, m.t); break;
+    case "story": applyStory(m); break;
+    case "event": placeEvent(m); if (m.headline && m.new) addLog("EVENT", `${ICONS[m.type] || ""} ${m.type}${m.team ? " (" + m.team + ")" : ""} @${fmt1(m.event_time)} via ${m.sources.join("+")} · ${(m.confidence * 100).toFixed(0)}%`, m.logged_at); break;
+    case "memory": applyMemory(m); break;
+    case "score": applyScore(m); break;
+    case "gemini": applyGemini(m); break;
+    case "specialist": applySpecialist(m); break;
+    case "truth": applyTruth(m.items); break;
+  }
+}
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/story/ws`);
+  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  ws.onclose = () => { $("runStatus").textContent = "disconnected – retrying…"; setTimeout(connect, 1500); };
+}
+connect();
+</script>
+</body>
+</html>
