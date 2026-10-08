@@ -13,6 +13,9 @@ detection:
   model_id: "football-players-detection-3zvbc/11"
   # Ball-only model, used only if the ball rate is poor (see Step 4)
   ball_model_id: "football-ball-detection-rejhg/4"
+  # Camera strips are padded onto a black canvas of this size before detection,
+  # because the model was trained on wide 16:9 broadcast frames.
+  model_canvas: [1920, 1080]
   use_ball_model: false              # set by Step 4 experiment
   use_slicer: false                  # tile the image so the ball looks bigger (slower)
   slicer_tile: 640

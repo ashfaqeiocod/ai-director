@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("MODEL_CACHE_DIR", str(ROOT / "models_cache"))
 os.environ.setdefault("YOLO_CONFIG_DIR", str(ROOT / ".yolo_config"))
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".yolo_config" / "matplotlib"))
-# Roboflow's inference package tries to load optional extras we don't use; keep it quiet.
-os.environ.setdefault("ONNXRUNTIME_EXECUTION_PROVIDERS", "[CPUExecutionProvider]")
+# Run the Roboflow model on the M1 GPU/Neural Engine via CoreML (about 20x faster than CPU).
+os.environ.setdefault("ONNXRUNTIME_EXECUTION_PROVIDERS", "[CoreMLExecutionProvider,CPUExecutionProvider]")
 load_dotenv(ROOT / ".env")
 
 
