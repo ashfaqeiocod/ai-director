@@ -1,0 +1,274 @@
+<!doctype html>
+<!--
+  index.html — the AI Sports Director dashboard (one static page, no build step).
+  - Video: 4 <img> tags pointing at MJPEG streams (/stream/program, /stream/cam1..3).
+  - Data: one WebSocket (/ws) that sends per-frame "state" and "event" messages.
+  - Controls: plain fetch() calls to POST /config, /start, /pause, /stop.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Sports Director</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .tile { transition: border-color .15s, box-shadow .15s; }
+    .tile.live { border-color: #ef4444; box-shadow: 0 0 0 2px #ef4444; }
+    .seg-1 { background: #38bdf8; } .seg-2 { background: #34d399; } .seg-3 { background: #fbbf24; }
+    .txt-1 { color: #38bdf8; } .txt-2 { color: #34d399; } .txt-3 { color: #fbbf24; }
+    .k-CUT { color: #f87171; } .k-BALL_LOST { color: #fb923c; } .k-BALL_FOUND { color: #4ade80; }
+    .k-INFO { color: #94a3b8; } .k-ERROR { color: #f43f5e; font-weight: 600; }
+    img.stream { background: #000; }
+    button:disabled, input:disabled, select:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+<div class="max-w-[1500px] mx-auto p-4 space-y-3">
+
+  <!-- Header + controls -->
+  <header class="flex flex-wrap items-center gap-3 justify-between">
+    <div class="flex items-center gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">AI Sports Director</h1>
+      <span id="status" class="mono text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300">connecting…</span>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <div class="flex rounded-md overflow-hidden border border-slate-700">
+        <label class="px-3 py-1.5 cursor-pointer has-[:checked]:bg-slate-700"><input type="radio" name="mode" value="live" class="sr-only">Live</label>
+        <label id="replayLabel" class="px-3 py-1.5 cursor-pointer has-[:checked]:bg-slate-700" title="Needs a finished Live run first"><input type="radio" name="mode" value="replay" class="sr-only">Replay</label>
+      </div>
+      <select id="speed" class="bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5" title="Replay speed">
+        <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+      </select>
+      <label class="flex items-center gap-1 text-slate-400">min shot
+        <input id="minShot" type="number" step="0.5" min="0" max="30" class="w-16 bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-slate-200">s</label>
+      <label class="flex items-center gap-1 text-slate-400">hysteresis
+        <input id="hyst" type="number" step="0.1" min="0" max="30" class="w-16 bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-slate-200">s</label>
+      <button id="btnStart" class="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium">Start</button>
+      <button id="btnPause" class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600">Pause</button>
+      <button id="btnStop" class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600">Stop / Reset</button>
+    </div>
+  </header>
+
+  <!-- Stats strip -->
+  <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-sm">
+    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">processing</div><div class="mono"><span id="sFps">–</span> fps</div></div>
+    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">time / frame</div><div class="mono"><span id="sTime">–</span> · <span id="sFrame">–</span></div></div>
+    <div class="bg-slate-900 rounded-md px-3 py-2 lg:col-span-2"><div class="text-slate-500 text-xs">ball rate (detected)</div>
+      <div class="mono"><span class="txt-1">cam1</span> <span id="sBall1">–</span> · <span class="txt-2">cam2</span> <span id="sBall2">–</span> · <span class="txt-3">cam3</span> <span id="sBall3">–</span></div></div>
+    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">cuts</div><div class="mono" id="sCuts">–</div></div>
+    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">avg shot</div><div class="mono"><span id="sShot">–</span> s</div></div>
+  </section>
+
+  <main class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+    <!-- Left: program + cams -->
+    <div class="lg:col-span-8 space-y-3">
+      <div class="relative rounded-lg overflow-hidden border border-slate-800 aspect-video bg-black">
+        <img id="program" class="stream w-full h-full object-contain" alt="Program output">
+        <div class="absolute top-3 left-3 flex items-center gap-2">
+          <span class="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded flex items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>LIVE</span>
+          <span id="programCam" class="bg-black/70 mono text-sm px-2 py-1 rounded">CAM –</span>
+        </div>
+        <div class="absolute top-3 right-3 text-xs text-slate-400 bg-black/60 px-2 py-1 rounded">PROGRAM</div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3">
+        <!-- one tile per camera, filled by JS -->
+        <template id="tileTpl">
+          <div class="tile rounded-lg border-2 border-slate-800 overflow-hidden bg-slate-900">
+            <img class="stream w-full h-72 object-contain" alt="">
+            <div class="px-2 py-2 space-y-1">
+              <div class="flex justify-between text-xs"><span class="cam-name font-semibold"></span>
+                <span class="mono"><span class="ball text-slate-400">–</span> · <span class="score">0</span></span></div>
+              <div class="h-2 bg-slate-800 rounded"><div class="bar h-2 rounded transition-all duration-100" style="width:0%"></div></div>
+            </div>
+          </div>
+        </template>
+        <div id="tiles" class="contents"></div>
+      </div>
+    </div>
+
+    <!-- Right: decision log -->
+    <aside class="lg:col-span-4 bg-slate-900 rounded-lg border border-slate-800 flex flex-col h-[640px]">
+      <div class="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+        <span class="text-sm font-semibold">Decision log</span>
+        <div id="filters" class="flex gap-2 text-[11px] mono"></div>
+      </div>
+      <div id="log" class="flex-1 overflow-y-auto px-3 py-2 text-xs mono space-y-0.5"></div>
+      <div id="downloads" class="hidden border-t border-slate-800 p-3 flex flex-wrap gap-2 text-sm">
+        <a href="/files/program.mp4" class="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600">program.mp4</a>
+        <a href="/files/debug.mp4" class="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600">debug.mp4</a>
+        <a href="/files/director_log.csv" class="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600">director_log.csv</a>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Timeline -->
+  <section class="bg-slate-900 rounded-lg border border-slate-800 p-3">
+    <div class="flex justify-between text-xs text-slate-500 mb-2">
+      <span>Timeline (which camera was live)</span>
+      <span class="space-x-3"><span class="txt-1">■ cam1</span><span class="txt-2">■ cam2</span><span class="txt-3">■ cam3</span></span>
+    </div>
+    <div id="timeline" class="relative h-8 bg-slate-800 rounded overflow-hidden">
+      <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white" style="left:0%"></div>
+    </div>
+    <div class="flex justify-between text-[11px] mono text-slate-500 mt-1"><span>0:00</span><span id="tlEnd">–</span></div>
+  </section>
+</div>
+
+<script>
+// ---------- small helpers ----------
+const $ = (id) => document.getElementById(id);
+const KINDS = ["CUT", "BALL_LOST", "BALL_FOUND", "INFO", "ERROR"];
+const MAX_SCORE = 140;                  // 100 ball + 30 center + 10 players
+const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, "0")}`;
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body || {}) }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).detail); return r.json(); });
+
+// ---------- build the 3 camera tiles ----------
+const tiles = [1, 2, 3].map((n) => {
+  const node = $("tileTpl").content.firstElementChild.cloneNode(true);
+  node.querySelector(".cam-name").textContent = `CAM ${n}`;
+  node.querySelector(".cam-name").classList.add(`txt-${n}`);
+  node.querySelector(".bar").classList.add(`seg-${n}`);
+  $("tiles").appendChild(node);
+  return node;
+});
+
+// ---------- log filters ----------
+const visible = Object.fromEntries(KINDS.map((k) => [k, true]));
+for (const k of KINDS) {
+  const label = document.createElement("label");
+  label.className = `k-${k} cursor-pointer flex items-center gap-1`;
+  label.innerHTML = `<input type="checkbox" checked class="accent-slate-500">${k.replace("BALL_", "")}`;
+  label.querySelector("input").onchange = (e) => {
+    visible[k] = e.target.checked;
+    document.querySelectorAll(`#log .row-${k}`).forEach((r) => r.classList.toggle("hidden", !visible[k]));
+  };
+  $("filters").appendChild(label);
+}
+
+function addLog(kind, text, t) {
+  const log = $("log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const row = document.createElement("div");
+  row.className = `row-${kind} k-${kind}` + (visible[kind] ? "" : " hidden");
+  row.textContent = `${t != null ? fmt(t).padStart(8) : "        "}  ${kind.padEnd(10)} ${text}`;
+  log.appendChild(row);
+  if (atBottom) log.scrollTop = log.scrollHeight;   // auto-scroll unless you scrolled up to read
+}
+
+// ---------- timeline ----------
+let total = 0, segments = [], lastFrame = 0;
+function drawTimeline() {
+  const tl = $("timeline");
+  tl.querySelectorAll(".seg").forEach((s) => s.remove());
+  if (!total) return;
+  segments.forEach((seg, i) => {
+    const end = i + 1 < segments.length ? segments[i + 1].start : lastFrame + 1;
+    const el = document.createElement("div");
+    el.className = `seg seg-${seg.cam} absolute top-0 bottom-0`;
+    el.style.left = `${(seg.start / total) * 100}%`;
+    el.style.width = `${(Math.max(0, end - seg.start) / total) * 100}%`;
+    tl.insertBefore(el, $("playhead"));
+  });
+  $("playhead").style.left = `${(lastFrame / total) * 100}%`;
+}
+
+// ---------- applying server messages ----------
+let fps = 30;
+function setStatus(cfg) {
+  if (cfg.status) $("status").textContent = cfg.status + (cfg.mode ? ` · ${cfg.mode}` : "");
+  if ("replay_available" in cfg) {
+    const radio = document.querySelector('input[value="replay"]');
+    radio.disabled = !cfg.replay_available;
+    $("replayLabel").classList.toggle("opacity-40", !cfg.replay_available);
+    if (!cfg.replay_available) document.querySelector('input[value="live"]').checked = true;
+  }
+  $("downloads").classList.toggle("hidden", !cfg.files_ready);
+  const running = cfg.status === "running" || cfg.status === "loading";
+  $("btnStart").textContent = cfg.status === "paused" ? "Resume" : "Start";
+  $("btnStart").disabled = running;
+  $("btnPause").disabled = cfg.status !== "running";
+  for (const id of ["minShot", "hyst"]) $(id).disabled = running || cfg.status === "paused";
+  document.querySelectorAll('input[name="mode"]').forEach((r) => (r.parentElement.style.pointerEvents = running ? "none" : ""));
+}
+
+function applyState(s) {
+  $("sFps").textContent = s.processing_fps?.toFixed(1) ?? "–";
+  $("sCuts").textContent = s.cuts;
+  $("sShot").textContent = s.avg_shot?.toFixed(2);
+  s.ball_rate?.forEach((r, i) => ($(`sBall${i + 1}`).textContent = `${Math.round(r * 100)}%`));
+  if (s.frame == null) return;
+  $("sTime").textContent = fmt(s.time);
+  $("sFrame").textContent = `#${s.frame}`;
+  $("programCam").textContent = `CAM ${s.chosen}`;
+  tiles.forEach((tile, i) => {
+    tile.classList.toggle("live", s.chosen === i + 1);
+    tile.querySelector(".score").textContent = s.scores[i].toFixed(0);
+    tile.querySelector(".bar").style.width = `${Math.min(100, (s.scores[i] / MAX_SCORE) * 100)}%`;
+    const ball = tile.querySelector(".ball");
+    ball.textContent = s.ball[i];
+    ball.className = "ball " + ({ detected: "text-green-400", predicted: "text-orange-400" }[s.ball[i]] || "text-slate-500");
+  });
+  lastFrame = s.frame;
+  drawTimeline();
+}
+
+function handle(msg) {
+  switch (msg.type) {
+    case "hello":
+      $("minShot").value = msg.min_shot_seconds; $("hyst").value = msg.hysteresis_seconds;
+      $("speed").value = String(msg.speed);
+      document.querySelector(`input[value="${msg.mode}"]`).checked = true;
+      setStatus(msg); break;
+    case "start":
+      $("log").innerHTML = ""; total = msg.total_frames; fps = msg.fps; lastFrame = 0;
+      segments = [{ start: 0, cam: msg.start_cam }];
+      $("tlEnd").textContent = fmt(total / fps);
+      setStatus({ status: "running", mode: msg.mode, files_ready: false }); drawTimeline(); break;
+    case "event":
+      addLog(msg.kind, msg.message, msg.time);
+      if (msg.kind === "CUT") { segments.push({ start: msg.frame, cam: msg.to }); drawTimeline(); }
+      if (msg.kind === "ERROR") setStatus({ status: "error" });
+      break;
+    case "state": applyState(msg); break;
+    case "finished": applyState(msg); setStatus(msg); break;
+    case "status": setStatus(msg); break;
+    case "reset":
+      segments = []; total = 0; lastFrame = 0; drawTimeline();
+      tiles.forEach((t) => t.classList.remove("live"));
+      refreshConfig(); break;
+  }
+}
+
+// ---------- WebSocket (reconnects automatically) ----------
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  ws.onclose = () => { $("status").textContent = "disconnected – retrying…"; setTimeout(connect, 1500); };
+}
+
+async function refreshConfig() { setStatus(await (await fetch("/config")).json()); }
+
+// ---------- controls ----------
+const mode = () => document.querySelector('input[name="mode"]:checked')?.value || "live";
+$("btnStart").onclick = async () => {
+  try {
+    await post("/config", { min_shot_seconds: +$("minShot").value, hysteresis_seconds: +$("hyst").value });
+    setStatus(await post("/start", { mode: mode(), speed: +$("speed").value }));
+  } catch (e) { addLog("ERROR", e.message); }
+};
+$("btnPause").onclick = async () => setStatus(await post("/pause"));
+$("btnStop").onclick = async () => setStatus(await post("/stop"));
+$("speed").onchange = () => post("/config", { speed: +$("speed").value });
+
+// Start the streams + data.
+$("program").src = "/stream/program";
+tiles.forEach((t, i) => (t.querySelector("img").src = `/stream/cam${i + 1}`));
+connect();
+</script>
+</body>
+</html>

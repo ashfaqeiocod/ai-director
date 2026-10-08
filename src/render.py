@@ -6,14 +6,17 @@ For every FrameResult from the engine, the Renderer builds:
     red border and "LIVE" on the chosen camera;
   - the DEBUG frame: the 3 tiles side by side + a bar with timecode and scores.
 
-It writes outputs/program.mp4 and outputs/debug.mp4 while the engine runs.
+It writes outputs/program.mp4 and outputs/debug.mp4 while the engine runs
+(in a background thread, so the engine doesn't wait for the video encoder).
 OpenCV can only write a codec browsers don't like (mp4v), so at the end ffmpeg
 re-encodes both to H.264 and adds the original audio to program.mp4.
 The dashboard calls the same Renderer, so it shows exactly what the videos contain.
 """
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
 from collections import deque
 
 import cv2
@@ -71,16 +74,47 @@ class Renderer:
         self.program_writer = self.debug_writer = None
         self.program_tmp = path(self.rcfg["program_path"]).with_name(".program_raw.mp4")
         self.debug_tmp = path(self.rcfg["debug_path"]).with_name(".debug_raw.mp4")
+        # Building the debug frame and encoding both videos is the slowest part, so a
+        # background thread does it while the next frame is being prepared.
+        # The queue BLOCKS when full (never drops): every frame must end up in the files.
+        self.queue: queue.Queue = queue.Queue(maxsize=8)
+        self.writer_thread: threading.Thread | None = None
+        self.writer_error: Exception | None = None
 
     # ---------- per frame ----------
-    def render(self, result: FrameResult) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
-        """Build (program frame, annotated cam tiles, debug frame) and write them to the videos."""
+    def render(self, result: FrameResult) -> tuple[np.ndarray, list[np.ndarray]]:
+        """Build (program frame, annotated cam tiles); the videos are written in the background."""
         tiles = [self.annotate_cam(result, c) for c in range(self.num_cams)]
         program = self.program_frame(result)
-        debug = self.debug_frame(result, tiles)
         if self.write_videos:
-            self._write(program, debug)
-        return program, tiles, debug
+            if self.writer_thread is None:
+                self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+                self.writer_thread.start()
+            if self.writer_error:
+                raise self.writer_error
+            self.queue.put((result, program, tiles))
+        return program, tiles
+
+    def _writer_loop(self) -> None:
+        while True:
+            item = self.queue.get()
+            if item is None:          # "no more frames" signal from close()/abort()
+                return
+            result, program, tiles = item
+            try:
+                self._write(program, self.debug_frame(result, tiles))
+            except Exception as error:
+                self.writer_error = error
+                return
+
+    def _finish_writer(self) -> None:
+        """Wait until every queued frame has been written."""
+        if self.writer_thread is not None:
+            self.queue.put(None)
+            self.writer_thread.join()
+            self.writer_thread = None
+        if self.writer_error:
+            raise self.writer_error
 
     def program_frame(self, result: FrameResult) -> np.ndarray:
         raw = result.cams[result.chosen - 1].frame
@@ -147,6 +181,7 @@ class Renderer:
 
     def abort(self) -> None:
         """Run was stopped early: throw the half-written videos away (keep any older finished ones)."""
+        self._finish_writer()
         if self.program_writer is not None:
             self.program_writer.release()
             self.debug_writer.release()
@@ -156,6 +191,7 @@ class Renderer:
 
     def close(self) -> None:
         """Finish the videos: re-encode to H.264 and add the source audio to program.mp4."""
+        self._finish_writer()
         if self.program_writer is None:
             return
         self.program_writer.release()

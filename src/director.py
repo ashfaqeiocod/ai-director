@@ -123,19 +123,31 @@ class Director:
 
 
 class DecisionLog:
-    """Writes outputs/director_log.csv one row at a time (so it works while the engine runs)."""
+    """Writes outputs/director_log.csv one row at a time (so it works while the engine runs).
+
+    Rows go to "director_log.csv.part" during the run; close() renames it to the real
+    name. A run that is stopped halfway (abort) never overwrites the last complete log.
+    """
 
     def __init__(self, csv_path: Path, num_cams: int = 3):
         csv_path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = open(csv_path, "w", newline="")
+        self.final_path = csv_path
+        self.part_path = csv_path.with_name(csv_path.name + ".part")
+        self.file = open(self.part_path, "w", newline="")
         self.writer = csv.writer(self.file)
         self.writer.writerow(["frame", "time", "chosen_cam"] + [f"score_cam{i + 1}" for i in range(num_cams)] + ["reason"])
 
     def write(self, frame_idx: int, time_s: float, cam: int, scores: list[float], reason: str) -> None:
         self.writer.writerow([frame_idx, f"{time_s:.3f}", cam, *scores, reason])
+        self.file.flush()  # so the file on disk is always up to date, even mid-run
 
     def close(self) -> None:
         self.file.close()
+        self.part_path.replace(self.final_path)
+
+    def abort(self) -> None:
+        self.file.close()
+        self.part_path.unlink(missing_ok=True)
 
 
 def shot_lengths(chosen: list[int], fps: float) -> list[float]:
