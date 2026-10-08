@@ -2,10 +2,14 @@
 # Change a value, re-run, and the pipeline picks it up. Nothing is hard-coded in src/.
 
 video:
-  url: "https://www.youtube.com/watch?v=RVWMU6p0hDQ"
-  source: "data/raw/source.mp4"     # downloaded clip
-  cams_dir: "data/cams"              # cam1.mp4, cam2.mp4, cam3.mp4 go here
-  max_height: 1080                   # never work above 1080p
+  # Static panoramic camera (4:1), the ball travels across the whole pitch: good for testing the director.
+  # Previous clip (Veo follow-cam, ball always in the middle): https://www.youtube.com/watch?v=RVWMU6p0hDQ
+  url: "https://www.youtube.com/watch?v=HBTFZwMdcCw"
+  trim_last_seconds: 30 # keep only the last N seconds (null = whole video)
+  source: "data/raw/source.mp4" # downloaded clip
+  cams_dir: "data/cams" # cam1.mp4, cam2.mp4, cam3.mp4 go here
+  max_height: 1080 # download at most this height
+  max_pixels: 2073600 # never work above 1080p's pixel count (1920x1080); scale down if larger
   num_cams: 3
 
 detection:
@@ -13,17 +17,17 @@ detection:
   model_id: "football-players-detection-3zvbc/11"
   # Ball-only model, used only if the ball rate is poor (see Step 4)
   ball_model_id: "football-ball-detection-rejhg/4"
-  # Camera strips are padded onto a black canvas of this size before detection,
-  # because the model was trained on wide 16:9 broadcast frames.
-  model_canvas: [1920, 1080]
-  use_ball_model: false              # set by Step 4 experiment
-  use_slicer: false                  # tile the image so the ball looks bigger (slower)
+  # Camera strips narrower than this width/height ratio are padded with black on the sides
+  # before detection, because the model was trained on wide 16:9 broadcast frames.
+  model_aspect: 1.7778
+  use_ball_model: false # set by Step 4 experiment
+  use_slicer: false # tile the image so the ball looks bigger (slower)
   slicer_tile: 640
-  ball_confidence: 0.15              # low: the ball is small and blurry
+  ball_confidence: 0.3 # 0.15 let static false "balls" (pitch marks) steal the director; real balls are ~0.5-0.95
   player_confidence: 0.3
   # Fallback detector if Roboflow fails (COCO: person=0, sports ball=32)
   fallback_model: "yolo11s.pt"
-  device: "mps"                      # YOLO fallback only: Apple GPU ("mps"), "cuda" (NVIDIA) or "cpu"
+  device: "mps" # YOLO fallback only: Apple GPU ("mps"), "cuda" (NVIDIA) or "cpu"
   # Where the Roboflow model runs (ONNX Runtime "execution providers", tried in order):
   #   Mac (Apple Silicon): [CoreMLExecutionProvider, CPUExecutionProvider]   ~300 ms/frame on M1
   #   NVIDIA GPU:          [CUDAExecutionProvider, CPUExecutionProvider]     (pip install onnxruntime-gpu)
@@ -34,26 +38,27 @@ detection:
 live:
   # Settings for the dashboard's Live mode. Tune them per machine.
   # On the M1 8 GB: every frame detected = ~1 fps. See TESTING.md section 4 "Live mode settings".
-  parallel_cams: true      # detect the 3 cams at the same time: ~25% faster, identical results
-  detect_every_n: 1        # 1 = detect every frame. 3 = detect every 3rd frame, reuse in between (~3x faster)
-  realtime: false          # true = video always plays at normal speed (like Replay); the detector runs
-                           # in the background on the newest frames. Slow machine = boxes update less often.
-                           # A new detection cache for Replay is saved only with detect_every_n: 1 and realtime: false.
+  parallel_cams: true # detect the 3 cams at the same time: ~25% faster, identical results
+  detect_every_n: 1 # 1 = detect every frame. 3 = detect every 3rd frame, reuse in between (~3x faster)
+  realtime:
+    true # true = video always plays at normal speed (like Replay); the detector runs
+    # in the background on the newest frames. Slow machine = boxes update less often.
+    # A new detection cache for Replay is saved only with detect_every_n: 1 and realtime: false.
 
 ball_tracker:
-  buffer_size: 10                    # remember the last N ball centers
-  max_jump_px: 150                   # reject a detection further than this from the recent average
-  max_predict_frames: 10             # predict a missing ball for this many frames, then "lost"
+  buffer_size: 10 # remember the last N ball centers
+  max_jump_px: 150 # reject a detection further than this from the recent average
+  max_predict_frames: 10 # predict a missing ball for this many frames, then "lost"
 
 director:
   score_detected: 100
   score_predicted: 60
-  score_center_max: 30               # bonus when the ball is near the horizontal center of the cam
+  score_center_max: 30 # bonus when the ball is near the horizontal center of the cam
   score_per_player: 1
   score_players_max: 10
-  min_shot_seconds: 2.0              # never cut sooner than this
-  hysteresis_seconds: 0.5            # another cam must win this long in a row before we cut
-  lost_fallback_seconds: 2.0         # no ball anywhere this long -> go to the fallback cam
+  min_shot_seconds: 2.0 # never cut sooner than this
+  hysteresis_seconds: 0.5 # another cam must win this long in a row before we cut
+  lost_fallback_seconds: 2.0 # no ball anywhere this long -> go to the fallback cam
   fallback_cam: 2
   start_cam: 2
   log_csv: "outputs/director_log.csv"
@@ -63,7 +68,7 @@ render:
   debug_path: "outputs/debug.mp4"
   program_width: 1280
   program_height: 720
-  trail_length: 15                   # ball trail points in debug view
+  trail_length: 15 # ball trail points in debug view
 
 dashboard:
   host: "127.0.0.1"
@@ -71,5 +76,5 @@ dashboard:
   jpeg_quality: 70
   cam_max_width: 640
   program_max_width: 1280
-  ws_max_rate: 10                    # per-frame state messages per second
+  ws_max_rate: 10 # per-frame state messages per second
   run_log: "outputs/run_log.jsonl"

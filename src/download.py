@@ -34,7 +34,7 @@ def download(force: bool = False) -> None:
              "--no-cache-dir", "--no-progress", *js_runtime_args(), cfg["video"]["url"]],
             check=True,
         )
-        normalize(raw, out, cfg["video"]["max_height"])
+        normalize(raw, out, cfg["video"]["max_pixels"], cfg["video"].get("trim_last_seconds"))
         raw.unlink(missing_ok=True)
 
     info = video_info(out)
@@ -52,18 +52,30 @@ def js_runtime_args() -> list[str]:
     return []
 
 
-def normalize(src, dst, max_height: int) -> None:
-    """Re-encode to constant frame rate H.264 (and downscale if taller than max_height).
+def normalize(src, dst, max_pixels: int, trim_last_seconds: float | None = None) -> None:
+    """Re-encode to constant frame rate H.264, keep only the last N seconds, and downscale
+    if the frame has more pixels than 1080p.
 
     A fixed frame rate makes "frame index" a reliable clock for all later steps.
     """
     info = video_info(src)
     fps = round(info["fps"], 3)
     vf = f"fps={fps}"
-    if info["height"] > max_height:
-        vf += f",scale=-2:{max_height}"
-    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(src), "-vf", vf,
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
+    pixels = info["width"] * info["height"]
+    if pixels > max_pixels:
+        # Same shape, fewer pixels. Width rounded to a multiple of 6 so the frame splits into
+        # 3 equal strips with even widths (the H.264 encoder needs even sizes).
+        scale = (max_pixels / pixels) ** 0.5
+        w = int(info["width"] * scale) // 6 * 6
+        h = int(info["height"] * scale) // 2 * 2
+        vf += f",scale={w}:{h}"
+    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error"]
+    if trim_last_seconds and info["duration"] > trim_last_seconds:
+        start = info["duration"] - trim_last_seconds
+        print(f"[download] keeping the last {trim_last_seconds}s (from {start:.2f}s)")
+        cmd += ["-ss", f"{start:.3f}"]       # jump to the start point; exact because we re-encode
+    cmd += ["-i", str(src), "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
     cmd += ["-c:a", "aac"] if info["has_audio"] else ["-an"]
     subprocess.run(cmd + [str(dst)], check=True)
 

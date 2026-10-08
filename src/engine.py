@@ -173,7 +173,10 @@ class Engine:
         return frames[frame_index] if frame_index < len(frames) else {"players": [], "ball": None}
 
     def _track(self, cam_index: int, image: np.ndarray, det: dict) -> CamResult:
-        ball_box = det["ball"]["box"] if det["ball"] else None
+        # Apply the ball threshold from config.yaml here too, so a cache saved with a lower
+        # threshold still respects the current setting (no need to re-run detection).
+        ball = det["ball"]
+        ball_box = ball["box"] if ball and ball["conf"] >= self.cfg["detection"]["ball_confidence"] else None
         ball = self.ball_trackers[cam_index].update(ball_box)
         players = _to_detections(det["players"])
         tracked = self.player_trackers[cam_index].update_with_detections(players)

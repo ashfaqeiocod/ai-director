@@ -1,5 +1,5 @@
 # Progress — AI Sports Director MVP 1
-Last updated: 2026-10-08 17:00
+Last updated: 2026-10-08 18:00
 
 ## Status
 | Step | Status | Notes |
@@ -16,13 +16,27 @@ Last updated: 2026-10-08 17:00
 | 9. Dashboard | done | Replay 1× ≈ real time, 2× ≈ 65 fps; Live ≈ 1 fps; controls, WS, MJPEG, downloads tested |
 
 ## Key results
+### Clip 1: Veo follow-cam (RVWMU6p0hDQ), first test
 - Ball rate (frames with a ball detection): cam1 1% · cam2 53% · cam3 0% · **any cam 54%**.
 - Ball tracker statuses: cam2 detected 349 / predicted 118 / lost 193 frames.
 - Cuts: **0** (cam2 live for the full 22.02 s). With `start_cam: 1` → 1 cut at frame 60 (2.00 s).
 - Processing: detection ~300 ms per cam-frame (≈1 fps live for 3 cams); render ~49 fps; dashboard replay up to ~65 fps.
 - Memory: dashboard process ~870 MB during a live run.
 
+### Clip 2 (current): last 30 s of a static panoramic camera (HBTFZwMdcCw)
+- Source 3840x960 → scaled to 2880x720 (1080p pixel budget), 25 fps, 747 frames; cams 960x720.
+- Ball rate (threshold 0.3): cam1 24% · cam2 34% · cam3 15% · any 70%. Detection ~315 ms/frame/cam.
+- **5 cuts**, following the ball: cam2 → cam1 (2.0 s) → cam2 (5.3 s) → cam3 (10.7 s) → cam2 (17.2 s) → cam1 (24.0 s).
+  Shots 2.0–6.8 s, average 5.0 s. Checked against debug frames at 1/3/5/10/15/20/27 s.
+- With threshold 0.15 there were 6 cuts, one wrong (4.2 s → cam3): a static pitch marking in cam3 detected as
+  "ball" (conf 0.17–0.30) beat the real ball in cam1 (conf 0.8–0.96). Threshold 0.3 fixed it.
+- Clip 1 (Veo follow-cam, 0 cuts) files are kept in `data/archive/RVWMU6p0hDQ/`.
+
 ## Decisions made
+- `ball_confidence` raised 0.15 → 0.3 (see Clip 2). The engine applies the current threshold when reading
+  cached detections too, so changing it needs no re-detection.
+- New clip settings: `video.trim_last_seconds` (keep last N s), `video.max_pixels` (1080p pixel budget, so
+  wide panoramas keep detail), `detection.model_aspect` (pad any strip to 16:9 before detection).
 - Python 3.13 (already installed) is used: `inference` 1.7.3 supports it. No extra Python installed.
 - Homebrew has no prebuilt ffmpeg for macOS 14.0 (it would compile for hours, pulling in extra Pythons),
   so ffmpeg comes from the `imageio-ffmpeg` pip package and yt-dlp from pip, both inside the venv.
@@ -49,8 +63,8 @@ Last updated: 2026-10-08 17:00
   ~0.6 detector rounds/s. Only n=1 + realtime=false refreshes the Replay cache.
 
 ## Problems / open issues
-- This clip can't demonstrate director quality (ball always in the middle strip). A wide, static-camera
-  clip would exercise real cuts — that changes the plan's input, so it is the user's call.
+- Ball on a camera border can be seen by 2 cams at once (54 of 747 frames); the director's hysteresis keeps
+  this from flickering, but the ball-at-the-edge gets no "center" bonus, so the cut can come a little late.
 - ByteTrack IDs churn a bit (79 IDs in cam2 for ~15 people) because players are small and occluded.
 
 ## Next action

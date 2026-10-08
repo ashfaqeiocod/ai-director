@@ -89,10 +89,10 @@ class Detector:
     # ---------- detection ----------
     def detect(self, frame: np.ndarray) -> dict:
         """Detect players and the single best ball in one BGR frame."""
-        # The camera strip is tall and narrow (640x1080). The model expects a wide broadcast
-        # image and would squash the strip, so we place it in the middle of a black 16:9
-        # canvas first. The model still only sees THIS camera's pixels.
-        frame, offset = pad_to_canvas(frame, *self.cfg["model_canvas"])
+        # A camera strip is often narrower than 16:9 (e.g. 640x1080). The model expects a wide
+        # broadcast image and would squash the strip, so we place it in the middle of a black
+        # 16:9 canvas first. The model still only sees THIS camera's pixels.
+        frame, offset = pad_to_aspect(frame, self.cfg["model_aspect"])
         dets = self._run_main(frame)
         names = dets.data.get("class_name", np.array([]))
 
@@ -135,13 +135,17 @@ class Detector:
         return dets[dets.data["class_name"] == "ball"]
 
 
-def pad_to_canvas(frame: np.ndarray, width: int, height: int) -> tuple[np.ndarray, int]:
-    """Center the frame horizontally on a black width x height canvas. Returns (canvas, x offset)."""
+def pad_to_aspect(frame: np.ndarray, aspect: float) -> tuple[np.ndarray, int]:
+    """Center the frame on a black canvas that is `aspect` times wider than high.
+
+    Returns (canvas, x offset). Frames that are already wide enough are returned as they are.
+    """
     h, w = frame.shape[:2]
-    if w >= width or h != height:
+    width = int(round(h * aspect))
+    if w >= width:
         return frame, 0
     x = (width - w) // 2
-    canvas = np.zeros((height, width, 3), dtype=frame.dtype)
+    canvas = np.zeros((h, width, 3), dtype=frame.dtype)
     canvas[:, x:x + w] = frame
     return canvas, x
 
@@ -164,15 +168,19 @@ def load_detections(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def ball_rate(frames: list[dict]) -> float:
-    """Share of frames (0..1) that have a ball."""
-    return sum(f["ball"] is not None for f in frames) / max(1, len(frames))
+def ball_rate(frames: list[dict], min_conf: float = 0.0) -> float:
+    """Share of frames (0..1) that have a ball (at least min_conf confident)."""
+    return sum(_has_ball(f, min_conf) for f in frames) / max(1, len(frames))
 
 
-def any_cam_ball_rate(all_frames: list[list[dict]]) -> float:
+def _has_ball(frame: dict, min_conf: float) -> bool:
+    return frame["ball"] is not None and frame["ball"]["conf"] >= min_conf
+
+
+def any_cam_ball_rate(all_frames: list[list[dict]], min_conf: float = 0.0) -> float:
     """Share of frames where AT LEAST ONE camera sees the ball."""
     n = min(len(f) for f in all_frames)
-    return sum(any(cam[i]["ball"] is not None for cam in all_frames) for i in range(n)) / max(1, n)
+    return sum(any(_has_ball(cam[i], min_conf) for cam in all_frames) for i in range(n)) / max(1, n)
 
 
 def detect_camera(detector: Detector, cfg: dict, cam: int) -> tuple[list[dict], float]:
@@ -209,8 +217,10 @@ def report(cfg: dict) -> dict:
     """Print and return the ball rate per camera and for 'any camera'."""
     n = cfg["video"]["num_cams"]
     all_frames = [load_detections(detections_path(cfg, c))["frames"] for c in range(1, n + 1)]
-    rates = {f"cam{c + 1}": ball_rate(f) for c, f in enumerate(all_frames)}
-    rates["any"] = any_cam_ball_rate(all_frames)
+    # Uses the CURRENT threshold, even if the cache was saved with a lower one.
+    min_conf = cfg["detection"]["ball_confidence"]
+    rates = {f"cam{c + 1}": ball_rate(f, min_conf) for c, f in enumerate(all_frames)}
+    rates["any"] = any_cam_ball_rate(all_frames, min_conf)
     print("[detect] ball rate: " + " | ".join(f"{k} {v:.0%}" for k, v in rates.items()))
     return rates
 
