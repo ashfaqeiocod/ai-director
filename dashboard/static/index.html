@@ -53,7 +53,7 @@
 
   <!-- Stats strip -->
   <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-sm">
-    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">processing</div><div class="mono"><span id="sFps">–</span> fps</div></div>
+    <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">video · detector</div><div class="mono"><span id="sFps">–</span> · <span id="sDet">–</span> fps</div></div>
     <div class="bg-slate-900 rounded-md px-3 py-2"><div class="text-slate-500 text-xs">time / frame</div><div class="mono"><span id="sTime">–</span> · <span id="sFrame">–</span></div></div>
     <div class="bg-slate-900 rounded-md px-3 py-2 lg:col-span-2"><div class="text-slate-500 text-xs">ball rate (detected)</div>
       <div class="mono"><span class="txt-1">cam1</span> <span id="sBall1">–</span> · <span class="txt-2">cam2</span> <span id="sBall2">–</span> · <span class="txt-3">cam3</span> <span id="sBall3">–</span></div></div>
@@ -198,6 +198,7 @@ function setStatus(cfg) {
 
 function applyState(s) {
   $("sFps").textContent = s.processing_fps?.toFixed(1) ?? "–";
+  $("sDet").textContent = s.detection_fps ? s.detection_fps.toFixed(1) : "–";   // 0 in Replay: no detector runs
   $("sCuts").textContent = s.cuts;
   $("sShot").textContent = s.avg_shot?.toFixed(2);
   s.ball_rate?.forEach((r, i) => ($(`sBall${i + 1}`).textContent = `${Math.round(r * 100)}%`));

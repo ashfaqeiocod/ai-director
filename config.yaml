@@ -23,8 +23,22 @@ detection:
   player_confidence: 0.3
   # Fallback detector if Roboflow fails (COCO: person=0, sports ball=32)
   fallback_model: "yolo11s.pt"
-  device: "mps"                      # Apple GPU; falls back to cpu on error
+  device: "mps"                      # YOLO fallback only: Apple GPU ("mps"), "cuda" (NVIDIA) or "cpu"
+  # Where the Roboflow model runs (ONNX Runtime "execution providers", tried in order):
+  #   Mac (Apple Silicon): [CoreMLExecutionProvider, CPUExecutionProvider]   ~300 ms/frame on M1
+  #   NVIDIA GPU:          [CUDAExecutionProvider, CPUExecutionProvider]     (pip install onnxruntime-gpu)
+  #   CPU only:            [CPUExecutionProvider]                           very slow (~5 s/frame on M1)
+  onnx_providers: [CoreMLExecutionProvider, CPUExecutionProvider]
   detections_dir: "outputs/detections"
+
+live:
+  # Settings for the dashboard's Live mode. Tune them per machine.
+  # On the M1 8 GB: every frame detected = ~1 fps. See TESTING.md section 4 "Live mode settings".
+  parallel_cams: true      # detect the 3 cams at the same time: ~25% faster, identical results
+  detect_every_n: 1        # 1 = detect every frame. 3 = detect every 3rd frame, reuse in between (~3x faster)
+  realtime: false          # true = video always plays at normal speed (like Replay); the detector runs
+                           # in the background on the newest frames. Slow machine = boxes update less often.
+                           # A new detection cache for Replay is saved only with detect_every_n: 1 and realtime: false.
 
 ball_tracker:
   buffer_size: 10                    # remember the last N ball centers

@@ -180,7 +180,10 @@ class Controller:
         dash = cfg["dashboard"]
         self.cfg = cfg
 
-        if self.mode == LIVE and self.detector is None:
+        realtime = cfg.get("live", {}).get("realtime", False)
+        if realtime and self.mode == LIVE:
+            self.event("INFO", "real-time mode: starting the detector process (takes a few seconds)...")
+        if self.mode == LIVE and self.detector is None and not realtime:
             self.event("INFO", "loading detection model (first live run only)...")
             from src.detect import Detector
             self.detector = Detector(cfg)
@@ -196,6 +199,10 @@ class Controller:
                       **self.overrides})
         self.event("INFO", f"{self.mode} run started (min shot {self.overrides['min_shot_seconds']}s, "
                            f"hysteresis {self.overrides['hysteresis_seconds']}s)")
+        if self.mode == LIVE:
+            live = cfg.get("live", {})
+            self.event("INFO", f"live settings: parallel_cams={live.get('parallel_cams', False)}, "
+                               f"detect_every_n={live.get('detect_every_n', 1)}, realtime={live.get('realtime', False)}")
 
         stats = RunStats(engine.fps)
         clock_start = time.time()
@@ -269,6 +276,7 @@ class RunStats:
         self.cuts = 0
         self.started = time.time()
         self.processing_fps = 0.0
+        self.detection_fps = 0.0
 
     def add(self, result) -> None:
         self.frames += 1
@@ -276,6 +284,7 @@ class RunStats:
             self.ball_frames[c] += cam.ball_box is not None
         self.cuts += sum(e["type"] == "CUT" for e in result.events)
         self.processing_fps = result.processing_fps
+        self.detection_fps = result.detection_fps
 
     def avg_shot(self) -> float:
         return self.frames / self.fps / (self.cuts + 1)
@@ -284,7 +293,8 @@ class RunStats:
         return self.frames / max(1e-6, time.time() - self.started)
 
     def state(self, result) -> dict:
-        state = {"type": "state", "processing_fps": self.processing_fps, "cuts": self.cuts,
+        state = {"type": "state", "processing_fps": self.processing_fps, "detection_fps": self.detection_fps,
+                 "cuts": self.cuts,
                  "avg_shot": round(self.avg_shot(), 2),
                  "ball_rate": [round(b / max(1, self.frames), 3) for b in self.ball_frames]}
         if result is not None:

@@ -25,9 +25,22 @@ ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("MODEL_CACHE_DIR", str(ROOT / "models_cache"))
 os.environ.setdefault("YOLO_CONFIG_DIR", str(ROOT / ".yolo_config"))
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".yolo_config" / "matplotlib"))
-# Run the Roboflow model on the M1 GPU/Neural Engine via CoreML (about 20x faster than CPU).
-os.environ.setdefault("ONNXRUNTIME_EXECUTION_PROVIDERS", "[CoreMLExecutionProvider,CPUExecutionProvider]")
 load_dotenv(ROOT / ".env")
+
+
+def _set_onnx_providers() -> None:
+    """Tell the Roboflow model where to run (detection.onnx_providers in config.yaml).
+
+    Default on a Mac: CoreML (M1 GPU/Neural Engine), about 20x faster than CPU.
+    An ONNXRUNTIME_EXECUTION_PROVIDERS environment variable, if set, wins.
+    """
+    with open(ROOT / "config.yaml") as f:
+        providers = yaml.safe_load(f).get("detection", {}).get("onnx_providers")
+    if providers:
+        os.environ.setdefault("ONNXRUNTIME_EXECUTION_PROVIDERS", "[" + ",".join(providers) + "]")
+
+
+_set_onnx_providers()
 
 
 def path(rel: str) -> Path:

@@ -1,5 +1,5 @@
 # Progress — AI Sports Director MVP 1
-Last updated: 2026-10-08 16:10
+Last updated: 2026-10-08 17:00
 
 ## Status
 | Step | Status | Notes |
@@ -42,6 +42,11 @@ Last updated: 2026-10-08 16:10
 - Dashboard: video files are written by a background thread and the 4 JPEGs are encoded in parallel, so
   replay keeps real time. Stop discards the half-made videos/CSV (the last complete ones are kept).
 - Model caches (inference, ultralytics, matplotlib) are kept inside the project (`models_cache/`, `.yolo_config/`).
+
+- Live mode settings (config.yaml `live:` + `detection.onnx_providers`): parallel cams (~25% faster),
+  detect_every_n (frame skipping), realtime (detector in a separate low-priority process, so the video
+  isn't blocked by Python's GIL). M1 numbers: n=1 ≈ 1 fps; n=3 ≈ 2.6 fps; realtime ≈ 27 fps video with
+  ~0.6 detector rounds/s. Only n=1 + realtime=false refreshes the Replay cache.
 
 ## Problems / open issues
 - This clip can't demonstrate director quality (ball always in the middle strip). A wide, static-camera

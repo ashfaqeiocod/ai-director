@@ -99,7 +99,34 @@ The clip never needs a cut (see above), so force one:
 
 ---
 
-## 4. Single steps (optional)
+## 4. Live mode settings (tune per machine)
+
+All in `config.yaml`. Restart the dashboard after changing them (Ctrl+C, then start it again).
+
+```yaml
+detection:
+  onnx_providers: [CoreMLExecutionProvider, CPUExecutionProvider]   # where the model runs
+live:
+  parallel_cams: true    # detect the 3 cams at the same time (~25% faster, same results)
+  detect_every_n: 1      # 1 = every frame; 3 = every 3rd frame, reuse in between
+  realtime: false        # true = video plays at normal speed, detector runs in the background
+```
+
+| Machine | Suggested settings | What you see |
+|---|---|---|
+| **M1 8 GB, best quality** (default) | `detect_every_n: 1`, `realtime: false` | ~1 fps, every frame detected. Also refreshes the Replay cache. |
+| **M1 8 GB, faster** | `detect_every_n: 3` | ~2.6 fps, boxes refresh every 3rd frame |
+| **M1 8 GB, smooth** | `realtime: true` | ~27 fps video (like Replay), but boxes/ball update only ~every 2 s |
+| **Faster Mac / NVIDIA PC** | `realtime: true` | Smooth video. When "detector fps" in the stats strip is close to the video fps, Live looks just like Replay. |
+| **NVIDIA GPU** | `onnx_providers: [CUDAExecutionProvider, CPUExecutionProvider]` + `venv/bin/pip install onnxruntime-gpu`; `device: "cuda"` | much faster detection |
+
+Notes on `realtime: true`:
+- It starts a second process with its own copy of the model: about 0.5–1 GB more RAM and ~15 s start-up
+  (the log says "starting the detector process"; the clip starts when it is ready).
+- It does NOT update the Replay cache (only the full-quality setting does).
+- The stats strip shows both numbers honestly: "video · detector" fps.
+
+## 5. Single steps (optional)
 
 ```bash
 venv/bin/python src/download.py   # Step 2
