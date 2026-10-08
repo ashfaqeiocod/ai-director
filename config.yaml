@@ -164,6 +164,8 @@ story:
     max_requests_per_minute: 8 # stay under the free tier; adjust after checking AI Studio limits
     video_height: 360
     video_fps: 2 # frames per second Gemini looks at inside the window clip
+    temperature: 0.4
+    thinking_budget: 0 # 0 = no "thinking" (faster, cheaper); null = model default
     timeout_s: 30
     backoff_start_s: 10 # first wait after HTTP 429, doubles each time
     backoff_max_s: 120

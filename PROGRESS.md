@@ -91,7 +91,7 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
 | 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
 | 3. Story engine + logs | done | engine cadence (fast 1 s, story 8 s + triggers, memory 60 s), template narrator, fusion events/score, logs in outputs/story/<clip>/<run_id>/; tests 17/17 |
-| 4. Smart layer (Gemini) | not started | |
+| 4. Smart layer (Gemini) | in progress | code + unit tests (fake client) done; no-key fallback verified in browser. Live check waits for GEMINI_API_KEY |
 | 5. Memory layer | not started | |
 | 6. Specialist (Colab) | not started | |
 | 7. Fusion, score, modes | not started | |

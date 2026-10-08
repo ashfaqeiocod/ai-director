@@ -1,0 +1,96 @@
+"""Smart layer: rate limiting, 429 backoff, and turning Gemini's JSON into story items (fake client)."""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from story.common import story_config
+from story.llm.base import WindowContext
+from story.llm.gemini import GeminiStoryLLM, NoKeyError, RateLimiter
+from story.llm.template import TemplateNarrator
+from story.schema import LLMStory
+
+
+def test_rate_limiter_caps_requests_per_minute():
+    rl = RateLimiter(per_minute=2, backoff_start=10, backoff_max=40)
+    rl.record(0); rl.record(1)
+    assert not rl.allowed(30)          # 2 in the last minute
+    assert rl.allowed(61)              # the first one is older than 60 s now
+
+
+def test_429_backoff_doubles_and_resets():
+    rl = RateLimiter(per_minute=100, backoff_start=10, backoff_max=40)
+    assert rl.hit_429(0) == 10 and not rl.allowed(5) and rl.allowed(11)
+    assert rl.hit_429(11) == 20
+    assert rl.hit_429(40) == 40 and rl.hit_429(90) == 40     # capped
+    rl.success()
+    assert rl.hit_429(200) == 10
+
+
+def test_missing_key_raises(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    with pytest.raises(NoKeyError):
+        GeminiStoryLLM(story_config())
+
+
+class FakeModels:
+    def __init__(self, answer: str):
+        self.answer = answer
+        self.calls = []
+
+    def generate_content(self, model, contents, config):
+        self.calls.append((model, contents, config))
+        parsed = LLMStory.model_validate_json(self.answer)
+        usage = SimpleNamespace(prompt_token_count=900, candidates_token_count=60, thoughts_token_count=0,
+                                total_token_count=960)
+        return SimpleNamespace(parsed=parsed, text=self.answer, usage_metadata=usage)
+
+
+def fake_llm(monkeypatch, answer: str) -> GeminiStoryLLM:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    calls = []
+    llm = GeminiStoryLLM(story_config(), on_call=calls.append)
+    llm.client = SimpleNamespace(models=FakeModels(answer))
+    llm.calls_logged = calls
+    return llm
+
+
+def ctx(**kw) -> WindowContext:
+    return WindowContext(sport="soccer", window_start=100.0, window_end=106.0, **kw)
+
+
+def test_gemini_answer_becomes_story_update_with_clip_times(monkeypatch):
+    llm = fake_llm(monkeypatch, '{"phase":"chance","events":[{"type":"shot","at_s":4.0,"team":"white",'
+                                '"confidence":0.8,"note":null}],"team_in_control":"white","intensity":75,'
+                                '"sentiment":"excited","narration":"White shoots!","is_replay":false,"score":"1-0"}')
+    update = llm.describe_window(ctx())
+    assert update.source == "gemini" and update.phase == "chance"
+    assert update.events[0].event_time == 104.0           # snippet start 100 + at_s 4
+    assert update.events[0].source == "gemini"
+    assert llm.calls_logged[0]["total_tokens"] == 960 and "latency_s" in llm.calls_logged[0]
+
+
+def test_replay_answer_carries_no_events(monkeypatch):
+    llm = fake_llm(monkeypatch, '{"phase":"replay","events":[{"type":"goal","at_s":2,"team":"white",'
+                                '"confidence":0.9,"note":null}],"team_in_control":null,"intensity":40,'
+                                '"sentiment":"joy","narration":"Another look at the goal.","is_replay":true,"score":null}')
+    update = llm.describe_window(ctx())
+    assert update.is_replay and update.events == []
+
+
+def test_video_is_sent_inline_with_fps(monkeypatch, tmp_path: Path):
+    llm = fake_llm(monkeypatch, '{"phase":"build_up","events":[],"team_in_control":null,"intensity":20,'
+                                '"sentiment":"calm","narration":"Calm.","is_replay":false,"score":null}')
+    clip = tmp_path / "w.mp4"
+    clip.write_bytes(b"fake-mp4")
+    llm.describe_window(ctx(video_path=clip))
+    parts = llm.client.models.calls[0][1][0].parts
+    assert parts[0].inline_data.mime_type == "video/mp4" and parts[0].video_metadata.fps == 2
+
+
+def test_template_narrator_names_the_strongest_event():
+    update = TemplateNarrator().describe_window(ctx(recent_events=[
+        {"type": "shot", "event_time": 103.0}, {"type": "goal", "event_time": 104.0}], fast={"intensity": 80}))
+    assert update.phase == "goal" and "GOAL" in update.narration and update.source == "template"
