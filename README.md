@@ -45,5 +45,7 @@ Single steps can also be run on their own: `venv/bin/python src/download.py`, `s
 | `src/render.py` | Step 7: writes `program.mp4` and `debug.mp4` |
 | `src/main.py` | Step 8: runs everything with one command |
 | `dashboard/` | Step 9: local web dashboard |
+| `TESTING.md` | step-by-step tests |
+| `docs/LIVE_MODE.md` | Live mode settings, and why real-time mode behaves as it does |
 
 Videos and outputs are never committed to git (the footage shows minors).
