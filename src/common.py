@@ -34,13 +34,29 @@ def _set_onnx_providers() -> None:
     Default on a Mac: CoreML (M1 GPU/Neural Engine), about 20x faster than CPU.
     An ONNXRUNTIME_EXECUTION_PROVIDERS environment variable, if set, wins.
     """
-    with open(ROOT / "config.yaml") as f:
-        providers = yaml.safe_load(f).get("detection", {}).get("onnx_providers")
-    if providers:
-        os.environ.setdefault("ONNXRUNTIME_EXECUTION_PROVIDERS", "[" + ",".join(providers) + "]")
+    if "ONNXRUNTIME_EXECUTION_PROVIDERS" in os.environ:
+        return
+    usable = usable_onnx_providers(load_config().get("detection", {}).get("onnx_providers") or [])
+    if usable:
+        os.environ["ONNXRUNTIME_EXECUTION_PROVIDERS"] = "[" + ",".join(usable) + "]"
 
 
-_set_onnx_providers()
+def usable_onnx_providers(wanted: list[str]) -> list[str]:
+    """Keep only the providers this machine really has (e.g. no CoreML on Windows/Linux).
+
+    CPU is always added at the end as the safe fallback.
+    """
+    try:
+        import onnxruntime
+
+        available = set(onnxruntime.get_available_providers())
+    except Exception:
+        return ["CPUExecutionProvider"]
+    usable = [p for p in wanted if p in available]
+    if "CPUExecutionProvider" not in usable:
+        usable.append("CPUExecutionProvider")
+    return usable
+
 
 
 def path(rel: str) -> Path:
@@ -96,3 +112,7 @@ def video_info(video: Path) -> dict[str, Any]:
         frames = sum(1 for p in container.demux(v) if p.size > 0)
     return {"fps": fps, "width": width, "height": height, "frames": frames,
             "duration": duration, "has_audio": has_audio}
+
+
+# Runs once, when any script imports this file (before the model library is imported).
+_set_onnx_providers()

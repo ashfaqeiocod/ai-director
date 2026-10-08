@@ -16,3 +16,6 @@ outputs/
 models_cache/
 .yolo_config/
 .claude/
+# Your own test videos (see docs/USING_YOUR_OWN_VIDEOS.md). Only the README is shared.
+clips/*
+!clips/README.md

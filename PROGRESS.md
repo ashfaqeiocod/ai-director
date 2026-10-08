@@ -1,5 +1,5 @@
 # Progress — AI Sports Director MVP 1
-Last updated: 2026-10-08 18:00
+Last updated: 2026-10-08 19:30
 
 ## Status
 | Step | Status | Notes |
@@ -61,6 +61,15 @@ Last updated: 2026-10-08 18:00
   detect_every_n (frame skipping), realtime (detector in a separate low-priority process, so the video
   isn't blocked by Python's GIL). M1 numbers: n=1 ≈ 1 fps; n=3 ≈ 2.6 fps; realtime ≈ 27 fps video with
   ~0.6 detector rounds/s. Only n=1 + realtime=false refreshes the Replay cache.
+
+- **Any-video input** (`input:` in config.yaml, `src/prepare.py`): `split` = one video (link or file) cut in 3;
+  `files` = 3 camera clips, each aligned with `start_seconds`, letterboxed to one size, converted to one fps,
+  cut to the same frame count. A fingerprint (`data/cams/input.json`) makes main.py redo preparation +
+  detection only when the input (or a local file) changed. Input is validated BEFORE old results are deleted.
+  Tested: mixed sizes/fps (1280x960@30 + 960x720@25), a 2 s offset (frame-exact: error 2.5 at the right
+  frame vs ≥17 one frame off), local-file split, skip/touch detection, 9 error cases, dashboard guard.
+- Cross-platform: ONNX providers filtered to what the machine has (CPU fallback); `os.nice` guarded (Windows);
+  `src/check_setup.py` checks a new device. Docs: docs/NEW_DEVICE_SETUP.md, docs/USING_YOUR_OWN_VIDEOS.md.
 
 ## Problems / open issues
 - Ball on a camera border can be seen by 2 cams at once (54 of 747 frames); the director's hysteresis keeps

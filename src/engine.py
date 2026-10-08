@@ -237,7 +237,10 @@ class BackgroundDetector:
     def wait_ready(self, should_stop) -> None:
         """Block until the model is loaded in the other process (or until stopped)."""
         while not self.ready and not should_stop():
-            self._collect()
+            self._collect()            # raises if the process reported an error
+            if not self.process.is_alive() and not self.conn.poll():
+                raise RuntimeError("The detector process stopped while loading the model "
+                                   "(see the terminal for details).")
             time.sleep(0.1)
 
     def rate(self) -> float:
@@ -270,8 +273,9 @@ class BackgroundDetector:
 
 def _detector_process(cfg: dict, conn) -> None:
     """Runs in the separate detector process: load the model, then answer requests."""
-    os.nice(10)                        # low priority: the video process comes first
     try:
+        if hasattr(os, "nice"):        # macOS/Linux; Windows has no os.nice
+            os.nice(10)                # low priority: the video process comes first
         detector = Detector(cfg)
         pool = ThreadPoolExecutor(max_workers=3) if cfg.get("live", {}).get("parallel_cams") else None
         conn.send("ready")

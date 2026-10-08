@@ -34,9 +34,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
-from src.common import cam_path, detections_path, load_config, path
+from src.common import detections_path, load_config, path
 from src.director import DecisionLog
 from src.engine import LIVE, REPLAY, Engine
+from src.prepare import is_up_to_date
 from src.render import Renderer
 
 STATIC = Path(__file__).parent / "static"
@@ -104,7 +105,7 @@ class Controller:
     def config_view(self) -> dict:
         return {**self.overrides, "status": self.status, "mode": self.mode, "speed": self.speed,
                 "replay_available": self.replay_available(), "files_ready": self.files_ready,
-                "cams_ready": all(cam_path(self.cfg, c).exists() for c in range(1, 4))}
+                "cams_ready": is_up_to_date(load_config())}
 
     # ----- messages to browsers
     def publish(self, message: dict, keep: bool = True) -> None:
@@ -135,8 +136,12 @@ class Controller:
             return self.config_view()
         if self.thread and self.thread.is_alive():
             raise HTTPException(409, "A run is already in progress")
+        if not is_up_to_date(load_config()):
+            raise HTTPException(400, "The input in config.yaml changed (or the cameras are missing). "
+                                     "Run: venv/bin/python src/prepare.py   then press Start again.")
         if mode == REPLAY and not self.replay_available():
-            raise HTTPException(400, "Replay needs cached detections: do a Live run first")
+            raise HTTPException(400, "Replay needs cached detections: do a Live run first "
+                                     "(or run venv/bin/python src/main.py)")
         self.mode, self.speed = mode, speed
         self.stop_flag.clear()
         self.pause_flag.clear()

@@ -1,4 +1,4 @@
-"""crop.py — Step 3: split the source video into 3 "cameras".
+"""crop.py — Step 3 (split mode): cut the source video into 3 "cameras".
 
 The source frame is cut into 3 equal vertical strips: left (cam1), middle (cam2)
 and right (cam3). One ffmpeg pass produces all 3 files, so they stay perfectly in sync.

@@ -3,8 +3,9 @@
     venv/bin/python src/main.py           # skips any step whose output already exists
     venv/bin/python src/main.py --force   # redo every step
 
-Steps: download -> crop into 3 cams -> detect (cached) -> engine (ball tracking +
-director, frame by frame) -> render program.mp4 / debug.mp4 / director_log.csv.
+Steps: prepare the 3 cameras from the `input:` section of config.yaml (download/cut/sync)
+-> detect (cached) -> engine (ball tracking + director, frame by frame)
+-> render program.mp4 / debug.mp4 / director_log.csv.
 Ends with a short summary.
 """
 from __future__ import annotations
@@ -18,9 +19,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so "src.xxx" imports work
 warnings.filterwarnings("ignore")
 
-from src import crop, detect, download
+from src import detect, prepare
 from src.common import cam_path, load_config, path, video_info
 from src.director import DecisionLog, shot_lengths
+from src.download import InputError
 from src.engine import REPLAY, Engine
 from src.render import Renderer
 
@@ -66,8 +68,10 @@ def main() -> None:
     cfg = load_config()
     t0 = time.time()
 
-    download.download(force)
-    crop.crop(force)
+    try:
+        prepare.prepare(force)
+    except InputError as error:
+        sys.exit(f"\n[prepare] PROBLEM: {error}")
     rates = detect.run(force)
     run = direct_and_render(cfg, force)
 

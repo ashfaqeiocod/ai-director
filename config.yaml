@@ -1,16 +1,44 @@
 # config.yaml — every tunable number for the AI Sports Director lives here.
 # Change a value, re-run, and the pipeline picks it up. Nothing is hard-coded in src/.
 
+# =====================================================================================
+# INPUT: which video(s) to test.   Full guide: docs/USING_YOUR_OWN_VIDEOS.md
+# Change this section, then run:  venv/bin/python src/main.py
+# (it notices the change and redoes the video preparation + detection automatically)
+# =====================================================================================
+input:
+  mode: split # "split" = ONE video cut into 3 cameras | "files" = 3 separate camera clips
+
+  # ---- mode: split -------------------------------------------------------------------
+  split:
+    # A YouTube link OR a video file, e.g. "clips/match.mp4" (relative to the project), "~/Movies/match.mp4"
+    # Static panoramic camera: the ball travels across the whole pitch (good director test).
+    # Earlier test clip (Veo follow-cam, ball always in the middle): https://www.youtube.com/watch?v=RVWMU6p0hDQ
+    source: "https://www.youtube.com/watch?v=HBTFZwMdcCw"
+    trim_last_seconds: 30 # use only the last N seconds (null = off). If set, start_seconds is ignored.
+    start_seconds: 0 # start this many seconds into the video
+    max_seconds: null # use at most this many seconds (null = until the end)
+
+  # ---- mode: files -------------------------------------------------------------------
+  files:
+    # Exactly 3 clips: cam1 (left), cam2 (middle), cam3 (right). Each one is a file path or a YouTube link.
+    # start_seconds lines the clips up: the moment at start_seconds must be the SAME moment in all 3.
+    cams:
+      - { source: "clips/cam1.mp4", start_seconds: 0 }
+      - { source: "clips/cam2.mp4", start_seconds: 0 }
+      - { source: "clips/cam3.mp4", start_seconds: 0 }
+    audio_from: 2 # which clip's sound goes into program.mp4 (1, 2 or 3)
+    max_seconds: null # use at most this many seconds (null = as long as the shortest clip allows)
+    size: [1280, 720] # every camera is resized to this (black bars keep the shape)
+    fps: 25 # every camera is converted to this frame rate
+
+# Internal paths and limits (normally no need to change).
 video:
-  # Static panoramic camera (4:1), the ball travels across the whole pitch: good for testing the director.
-  # Previous clip (Veo follow-cam, ball always in the middle): https://www.youtube.com/watch?v=RVWMU6p0hDQ
-  url: "https://www.youtube.com/watch?v=HBTFZwMdcCw"
-  trim_last_seconds: 30 # keep only the last N seconds (null = whole video)
-  source: "data/raw/source.mp4" # downloaded clip
-  cams_dir: "data/cams" # cam1.mp4, cam2.mp4, cam3.mp4 go here
-  max_height: 1080 # download at most this height
+  source: "data/raw/source.mp4" # prepared source (split mode) / audio reference (files mode)
+  cams_dir: "data/cams" # cam1.mp4, cam2.mp4, cam3.mp4 are written here
+  max_height: 1080 # YouTube: download at most this height
   max_pixels: 2073600 # never work above 1080p's pixel count (1920x1080); scale down if larger
-  num_cams: 3
+  num_cams: 3 # the dashboard and debug view are built for 3 cameras
 
 detection:
   # Primary detector: Roboflow pretrained football model (classes: ball, goalkeeper, player, referee)

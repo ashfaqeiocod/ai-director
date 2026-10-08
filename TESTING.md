@@ -135,10 +135,15 @@ Notes on `realtime: true`:
 ## 5. Single steps (optional)
 
 ```bash
-venv/bin/python src/download.py   # Step 2
-venv/bin/python src/crop.py       # Step 3 (prints the frame-count check)
+venv/bin/python src/check_setup.py   # is this computer ready? (add --online to test the Roboflow key)
+venv/bin/python src/prepare.py       # Steps 2–3: make the 3 cameras from config.yaml's input (prints the frame-count check)
 venv/bin/python src/detect.py     # Step 4 (prints ball rate; add --force to re-detect, ~10 min)
 ```
+
+## 6. Your own videos
+
+Change the `input:` section of `config.yaml` (one video split in 3, or 3 separate camera clips), then run
+`venv/bin/python src/main.py`. Full guide with recipes: [docs/USING_YOUR_OWN_VIDEOS.md](docs/USING_YOUR_OWN_VIDEOS.md).
 
 ## Troubleshooting
 
