@@ -109,6 +109,8 @@ venv/bin/python src/detect.py     # Step 4 (prints ball rate; add --force to re-
 
 ## Troubleshooting
 
+- **Streams freeze or buttons stop responding**: keep the dashboard open in only ONE browser tab. Each tab
+  holds 4 video streams open, and browsers allow about 6 connections per site.
 - **"address already in use"**: another dashboard is still running. Close it, or run `lsof -i :8000` to find it.
 - **Detection is very slow (seconds per frame)**: CoreML isn't being used. Run from a normal Terminal, not a sandboxed tool.
 - **Roboflow error**: check `ROBOFLOW_API_KEY` in `.env`. If Roboflow fails, the code falls back to a YOLO model automatically.

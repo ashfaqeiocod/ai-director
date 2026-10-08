@@ -34,7 +34,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
-from src.common import cam_path, detections_path, load_config, path, video_info
+from src.common import cam_path, detections_path, load_config, path
 from src.director import DecisionLog
 from src.engine import LIVE, REPLAY, Engine
 from src.render import Renderer
@@ -161,6 +161,7 @@ class Controller:
             self.thread.join(timeout=10)
         self.status = "idle"
         self.publish({"type": "reset"}, keep=False)
+        self.publish({"type": "status", **self.config_view()}, keep=False)
         return self.config_view()
 
     # ----- the engine thread
@@ -183,6 +184,8 @@ class Controller:
             self.event("INFO", "loading detection model (first live run only)...")
             from src.detect import Detector
             self.detector = Detector(cfg)
+        if self.stop_flag.is_set():  # Stop was pressed while the model was loading
+            return
         engine = Engine(cfg, mode=self.mode, detector=self.detector)
         renderer = Renderer(cfg, engine.fps)
         log = DecisionLog(path(cfg["director"]["log_csv"]))
