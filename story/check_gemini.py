@@ -4,7 +4,8 @@ Run:  venv/bin/python -m story.check_gemini
 
 1. Reads GEMINI_API_KEY from .env.
 2. Lists the models this key can use and picks the newest "Flash" model (fast + cheap).
-3. Makes one tiny test call and prints the latency.
+3. Makes a tiny test call (twice) and prints the latency; a model slower than
+   story.llm.max_test_latency_s or returning errors (e.g. overloaded) is skipped.
 4. Writes the chosen model name into config.yaml (story.llm.model) if it was empty.
 """
 from __future__ import annotations
@@ -32,12 +33,20 @@ def flash_candidates(names: list[str]) -> list[str]:
 
 
 def test_call(client, model: str) -> float:
-    """One tiny request. Returns the latency in seconds (raises on any error)."""
-    start = time.time()
-    reply = client.models.generate_content(model=model, contents="Reply with the single word: ready")
-    if not (reply.text or "").strip():
-        raise RuntimeError("empty reply")
-    return time.time() - start
+    """Two tiny requests, "thinking" off like the engine uses it. Returns the 2nd latency in seconds
+    (the 1st includes connection set-up). Raises on any error."""
+    from google.genai import types
+
+    config = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0))
+    latency = 0.0
+    for _ in range(2):
+        start = time.time()
+        reply = client.models.generate_content(model=model, contents="Reply with the single word: ready",
+                                               config=config)
+        if not (reply.text or "").strip():
+            raise RuntimeError("empty reply")
+        latency = time.time() - start
+    return latency
 
 
 def save_model_in_config(model: str) -> None:
@@ -69,11 +78,16 @@ def main() -> int:
     print(f"{len(names)} models available; Flash candidates (newest first): {candidates}")
 
     configured = story_config()["llm"].get("model") or ""
+    max_latency = story_config()["llm"]["max_test_latency_s"]
     for model in ([configured] if configured else []) + candidates:
         try:
             latency = test_call(client, model)
         except Exception as error:
             print(f"  {model}: FAILED ({str(error)[:160]})")
+            continue
+        if latency > max_latency:
+            # Live commentary needs answers within seconds; an overloaded model is skipped.
+            print(f"  {model}: too slow ({latency:.1f} s > {max_latency} s), trying the next one")
             continue
         print(f"  {model}: OK, test call took {latency:.2f} s")
         if not configured:

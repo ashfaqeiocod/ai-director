@@ -87,7 +87,7 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 ## Status
 | Step | Status | Notes |
 |---|---|---|
-| 0. Plan + environment | in progress | packages installed, YAMNet OK, MVP 1 check OK. Waiting for GEMINI_API_KEY |
+| 0. Plan + environment | done | packages, YAMNet, MVP 1 check OK; Gemini key OK, model gemini-3.5-flash (2–3 s per 6 s window) |
 | 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
 | 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
 | 3. Story engine + logs | done | engine cadence (fast 1 s, story 8 s + triggers, memory 60 s), template narrator, fusion events/score, logs in outputs/story/<clip>/<run_id>/; tests 17/17 |
@@ -136,7 +136,11 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
   Cloudflare quick tunnel without an account.
 - Only Gemini's `is_replay` blocks new events. The scene-cut replay hint fired on normal highlight editing and
   would have dropped the specialist's 37 s shot (`fusion.fast_replay_blocks_events: false`).
-- Gemini model is picked automatically by `python -m story.check_gemini` (newest Flash that answers a test call).
+- Gemini model: `gemini-3.5-flash` (fallback `gemini-2.5-flash` on HTTP 503). 45 models on the key; newest Flash
+  `gemini-3.8-flash` answered a one-word test in 65 s / 15 s and gave 503 "high demand"; `gemini-3.7-flash` gave
+  503 on 2 of 3 real windows and 28 s on the third. `gemini-3.5-flash` on real 6 s windows: 2.1–2.7 s, ~1.5k tokens,
+  goal found at 60.8 s (truth 61.5), replay at 78–84 s correctly flagged with no events, scoreboard read (2-0).
+  `check_gemini` now skips models slower than `llm.max_test_latency_s` (5 s) on a warm test call.
 
 ## Problems / open issues (MVP 2)
 - Specialist on the M1 CPU: 12–23 s per 48 s window (RTF 6–11): too slow for live, hence Colab.

@@ -160,7 +160,10 @@ story:
     connect_timeout_s: 10
   llm:
     provider: gemini
-    model: "" # empty = auto-pick the newest Flash model available to the key (python -m story.check_gemini)
+    # Chosen 2026-10-09 by measuring real 6 s windows: 3.5-flash 2-3 s per window and correct (goal, replay);
+    # 3.8/3.7-flash were overloaded (HTTP 503, 15-65 s). Empty = auto-pick (python -m story.check_gemini).
+    model: "gemini-3.5-flash"
+    fallback_model: "gemini-2.5-flash" # used for a retry when the main model answers 503 (overloaded)
     window_s: 6.0
     interval_s: 8.0 # normal cadence
     trigger_min_gap_s: 3.0 # extra calls on triggers, but never closer than this
@@ -168,6 +171,7 @@ story:
     video_height: 360
     video_fps: 2 # frames per second Gemini looks at inside the window clip
     temperature: 0.4
+    max_test_latency_s: 5 # check_gemini skips a model slower than this on a one-word test (overloaded)
     thinking_budget: 0 # 0 = no "thinking" (faster, cheaper); null = model default
     timeout_s: 30
     backoff_start_s: 10 # first wait after HTTP 429, doubles each time

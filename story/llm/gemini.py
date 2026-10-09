@@ -227,9 +227,20 @@ class GeminiStoryLLM(StoryLLM):
         start = time.time()
         item = {"kind": kind, "model": self.model, "requested_at": round(start, 3), **extra}
         try:
-            response = self.client.models.generate_content(
-                model=self.model, contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(**config))
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model, contents=[types.Content(role="user", parts=parts)],
+                    config=types.GenerateContentConfig(**config))
+            except errors.APIError as error:
+                fallback = self.cfg.get("fallback_model")
+                if error.code != 503 or not fallback or fallback == self.model:
+                    raise
+                # 503 = Google's model is overloaded right now: one retry on the fallback model.
+                item.update(model=fallback, overloaded=self.model)
+                self.limiter.record()
+                response = self.client.models.generate_content(
+                    model=fallback, contents=[types.Content(role="user", parts=parts)],
+                    config=types.GenerateContentConfig(**config))
             parsed = response.parsed if isinstance(response.parsed, schema) else \
                 schema.model_validate_json(response.text or "{}")
             usage = response.usage_metadata
