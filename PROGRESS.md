@@ -82,7 +82,7 @@ MVP 1 complete. See TESTING.md.
 ---
 
 # MVP 2 — Live Story Reader
-Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
+Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-09
 
 ## Status
 | Step | Status | Notes |
@@ -91,13 +91,13 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 | 1. Intake + live player | done | file/URL/upload → clip.mp4 (≤720p, 25 fps) + audio.wav; Story tab plays with sound; ~5 ticks/s; guard tests 6/6 |
 | 2. Fast layer | done | YAMNet (MediaPipe) + loudness + tonal whistle + motion + cuts/replay hint; ~37 ms per 1-s step; cheers 3 s after each of the 3 goals |
 | 3. Story engine + logs | done | engine cadence (fast 1 s, story 8 s + triggers, memory 60 s), template narrator, fusion events/score, logs in outputs/story/<clip>/<run_id>/; tests 17/17 |
-| 4. Smart layer (Gemini) | in progress | code + unit tests (fake client) done; no-key fallback verified in browser. Live check waits for GEMINI_API_KEY |
-| 5. Memory layer | in progress | wired in engine (every 60 s), template summary verified; Gemini summary waits for the key |
-| 6. Specialist (Colab) | in progress | notebook + server + client built; model runs (CPU test: 0 missing keys, shots found at 37 s / 60 s live); waiting for the user to run Colab |
-| 7. Fusion, score, modes | in progress | dedupe/noisy-or/replay guard/goal count/manual score + specialist triggers + 4 modes done and unit-tested; hybrid vs gemini_only check waits for the key |
-| 8. Story tab UI | in progress | full layout done; full 201 s clip ran with no freeze, lag ≤ 0.2 s, auto-stop at end, works with Colab off; Gemini parts wait for the key |
-| 9. Proof mode | in progress | story.evaluate + soccernet importer + live truth markers done; report generated (specialist_only, CPU); final reports need Gemini + Colab runs |
-| 10. Docs | not started | |
+| 4. Smart layer (Gemini) | done | gemini-3.5-flash-lite (free tier), 27–30 AI lines per 3:22 clip, avg delay 3.3–3.5 s, 429/503/400 + daily-quota fallbacks |
+| 5. Memory layer | done | Gemini story so far every 60 s; final summary matches the match (3 goals, white dominated) |
+| 6. Specialist (Colab) | done | user's Colab T4 via ngrok: 254 ms per inference, RTF 0.13; shot at 37.0 s reported 3.7 s later |
+| 7. Fusion, score, modes | done | 4 modes compared on the same clip (compare.md): hybrid best; no double goals on replays; score white 3 – red 0 |
+| 8. Story tab UI | done | full clip plays with sound, all panels update live, no freeze, lag ≤ 0.2 s; Colab off / Gemini quota out fall back |
+| 9. Proof mode | done | report.md per run + compare.md; hybrid: goals 3/3, other headline 80%, avg delay 3.8 s; narration 👍 needs user ratings |
+| 10. Docs | done | TESTING_MVP2.md, DEMO.md, README MVP 2 section, compare.md |
 
 ## Key results (MVP 2)
 - Test clips: `eng-cze` (England 3-0 Czechia highlights, 201 s broadcast, youtube kJEY-UFTDk8), `pano` (MVP 1 panoramic, 30 s, no commentary).
@@ -136,13 +136,29 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
   Cloudflare quick tunnel without an account.
 - Only Gemini's `is_replay` blocks new events. The scene-cut replay hint fired on normal highlight editing and
   would have dropped the specialist's 37 s shot (`fusion.fast_replay_blocks_events: false`).
-- Gemini model: `gemini-3.5-flash` (fallback `gemini-2.5-flash` on HTTP 503). 45 models on the key; newest Flash
+- Default model switched to `gemini-3.5-flash-lite` (fallback `gemini-3.1-flash-lite`) after hitting the free
+  tier's 20 requests/day on gemini-3.5-flash. Flash Lite rejects `thinking_budget: 0` with a generic 400: the
+  provider retries once without it. A daily-quota 429 switches to the fallback model for the rest of the run.
+- Bug found by the causal guard: the engine rounded the window end UP (8.168 -> 8.17 > playhead) -> refused.
+  Now rounded down; regression test added. (It had silently dropped the cheer-triggered looks at the goals.)
+- Replays: Flash Lite called live goals "replays" (and the scene-cut hint in the prompt pushed it that way). Hint
+  removed from the prompt, stricter replay definition, per-event `in_replay` flag (only replayed events dropped).
+- Goal dedupe: a 60 s merge window merged goal 2 (33 s after goal 1 in the highlights) into goal 1. Now the
+  scoreboard decides: a goal with a scoreboard total above the counted goals is new; the 60 s window still
+  merges replays when no new score is shown.
+- Previous model note: `gemini-3.5-flash` (fallback `gemini-2.5-flash` on HTTP 503). 45 models on the key; newest Flash
   `gemini-3.8-flash` answered a one-word test in 65 s / 15 s and gave 503 "high demand"; `gemini-3.7-flash` gave
   503 on 2 of 3 real windows and 28 s on the third. `gemini-3.5-flash` on real 6 s windows: 2.1–2.7 s, ~1.5k tokens,
   goal found at 60.8 s (truth 61.5), replay at 78–84 s correctly flagged with no events, scoreboard read (2-0).
   `check_gemini` now skips models slower than `llm.max_test_latency_s` (5 s) on a warm test call.
 
 ## Problems / open issues (MVP 2)
+- Free Gemini tier: Flash models 5 req/min + 20 req/day (one clip needs ~30) -> default is Flash Lite (15/min, 500/day).
+  Flash Lite over-labels replays as live (replayed shots become false alarms; replayed goals are merged by the
+  scoreboard/60 s rule). With a paid key, gemini-3.5-flash recognised replays correctly in tests.
+- Narration 👍 target (≥ 80%) is unmeasured until the user rates lines in a run.
+- truth.csv for eng-cze is a Claude draft; the user should check it.
+- Honest test (no audio to Gemini): 2/3 goals (the goal-2 window had no clear visual of the ball crossing the line).
 - Specialist on the M1 CPU: 12–23 s per 48 s window (RTF 6–11): too slow for live, hence Colab.
 - The spotting model never fires GOAL on eng-cze (offline, full context): it finds the SHOT for goals 1 and 3,
   misses goal 2. Goals therefore rely on Gemini (or specialist SHOT + Gemini goal).
@@ -150,5 +166,5 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-08
 - `.env` has no GEMINI_API_KEY yet.
 
 ## Next action (MVP 2)
-Waiting for the user: GEMINI_API_KEY in .env, and the Colab notebook running (URL pasted in the dashboard).
-Then: Step 0 Gemini check, Step 4/5 live checks, Step 6 RTF check, Step 7 hybrid vs gemini_only, Step 9 reports, Step 10 docs.
+MVP 2 complete. User: rate commentary lines (👍/👎) in a run to measure narration accuracy, check truth.csv,
+and see TESTING_MVP2.md / DEMO.md. MVP 1 quick check passed on 2026-10-09 (5 cuts, shortest shot 2.00 s).

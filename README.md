@@ -1,4 +1,8 @@
-# AI Sports Director — MVP 1
+# AI Sports Director
+
+Two prototypes in one repo: **MVP 1** (camera switching, below) and **MVP 2** (Live Story Reader, at the end).
+
+## MVP 1 — camera switching
 
 An offline prototype that turns football video into a "broadcast":
 
@@ -64,3 +68,36 @@ Single steps can also be run on their own: `venv/bin/python src/prepare.py`, `sr
 | `docs/LIVE_MODE.md` | Live mode settings, and why real-time mode behaves as it does |
 
 Videos and outputs are never committed to git (the footage shows minors).
+
+## MVP 2 — Live Story Reader
+
+Drop any soccer clip into the dashboard, press **Go Live**, and an AI watches it **as if it were live**
+(it never reads video or sound past the playhead) and writes the story as it happens: intensity meter, events
+(goals, shots, saves…), mood, a commentary line every ~8 s with its honest delay, the score and a "story so far".
+
+```bash
+venv/bin/python -m dashboard.server        # then open http://localhost:8000/story
+venv/bin/python -m story.evaluate --clip eng-cze --run latest   # proof mode report
+```
+
+Needs `GEMINI_API_KEY` in `.env` (free key from https://aistudio.google.com). Optional: the Colab notebook
+`colab/specialist_server.ipynb` runs a ball-action-spotting model on a free GPU (paste its URL in the dashboard).
+
+| Layer | Where | What |
+|---|---|---|
+| Fast | Mac, every 1 s | crowd noise (YAMNet), whistle, motion, scene cuts → intensity + triggers |
+| Specialist | Colab GPU | OpenSportsLab action spotting (shot, goal, free kick, tackle…) |
+| Smart | Gemini, every ~8 s + triggers | last 6 s of video (+ sound) → phase, mood, events, commentary |
+| Memory | Gemini, every 60 s | story so far, momentum, teams |
+| Fusion | Mac | one timeline, intensity, score (no double goals on replays) |
+
+Result on a 3:22 broadcast highlight (England 3-0 Czechia), hybrid mode: **3/3 goals, 80% of other headline
+events, average delay 3.8 s**. Full guide: [TESTING_MVP2.md](TESTING_MVP2.md) · demo script: [DEMO.md](DEMO.md) ·
+spec: [docs/MVP2_STORY_SPEC.md](docs/MVP2_STORY_SPEC.md) · results: [compare.md](compare.md).
+
+| Path | What |
+|---|---|
+| `story/` | all MVP 2 code: `intake` (clips), `causal` (no-peeking guard), `fast_layer`, `specialist_client`, `llm/` (Gemini + templates), `fusion`, `engine`, `evaluate`, `soccernet` |
+| `dashboard/story_api.py`, `dashboard/static/story.html` | the Story tab |
+| `colab/` | the Colab notebook (built from `specialist_server.py` by `build_notebook.py`) |
+| `tests/` | `venv/bin/python -m pytest tests -q` |
