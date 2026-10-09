@@ -5,6 +5,9 @@
   every source is kept (e.g. sources = ["specialist", "gemini"]).
 - Replays: while the picture is a replay, new events are ignored (no double goals).
 - Score: a goal counts once its fused confidence reaches goal_min_confidence (not during replays).
+  The on-screen scoreboard (as read by Gemini) is the referee: a goal while the scoreboard still shows
+  the old score waits ("pending") and is confirmed when the scoreboard goes up, or dropped after
+  goal_confirm_s if it never does. Without a visible scoreboard, goals count straight away.
   The dashboard's +1 / -1 buttons override it.
 - Intensity (0..100): a weighted mix of audio excitement, motion, recent specialist events and
   the latest Gemini reading (weights in config.yaml story.fusion.intensity_weights). Layers that
@@ -39,6 +42,8 @@ class FusedEvent:
     team: str | None = None
     note: str | None = None
     counted: bool = False               # goal already added to the score
+    pending: bool = False               # goal waiting for the scoreboard to go up
+    rejected: bool = False              # goal the scoreboard never confirmed (dropped)
     members: list[Event] = field(default_factory=list)
 
     @property
@@ -49,7 +54,8 @@ class FusedEvent:
         return {"id": self.id, "type": self.type, "event_time": round(self.event_time, 2),
                 "logged_at": round(self.logged_at, 2), "delay": round(self.logged_at - self.event_time, 2),
                 "confidence": round(self.confidence, 3), "sources": self.sources, "team": self.team,
-                "note": self.note, "headline": self.headline}
+                "note": self.note, "headline": self.headline and not self.rejected,
+                "pending": self.pending, "rejected": self.rejected}
 
 
 class Fusion:
@@ -94,23 +100,38 @@ class Fusion:
         return int(round(100 * min(1.0, value)))
 
     # ------------------------------------------------------------------ events
-    def add_event(self, event: Event, is_replay: bool, force_new: bool = False) -> tuple[FusedEvent | None, bool]:
+    def add_event(self, event: Event, is_replay: bool, force_new: bool = False,
+                  scoreboard: str | None = None) -> tuple[FusedEvent | None, bool]:
         """Merge one event from a layer. Returns (fused event, is_new) or (None, False) if ignored.
 
-        force_new: never merge (used for a goal the scoreboard proves is new)."""
+        force_new: never merge. scoreboard: the score read in the same snippet (goals only): a higher
+        total than the goals counted means a NEW goal; the same total makes a new goal "pending"."""
         if event.type == "none":
             return None, False
         if is_replay and event.source != "manual":
             self.ignored_in_replay += 1
             return None, False
+        if event.type == "goal" and self.scoreboard_says_new_goal(scoreboard):
+            force_new = True
+        if force_new and event.type == "goal" and any(
+                f.type == "goal" and abs(f.event_time - event.event_time) < self.cfg["goal_min_gap_s"] for f in self.events):
+            # Two real goals need a kick-off in between: this close, it's the same goal seen twice
+            # (overlapping looks), even if Gemini misread the scoreboard.
+            force_new = False
         window = 0.0 if force_new else self.cfg["dedupe_overrides"].get(event.type, self.cfg["dedupe_window_s"])
         for fused in reversed(self.events):
+            if fused.rejected:
+                continue                     # a dropped goal must not swallow a real one
             if fused.type == event.type and abs(fused.event_time - event.event_time) <= window:
                 self._merge(fused, event)
                 return fused, False
         fused = FusedEvent(id=f"e{next(self._ids)}", type=event.type, event_time=event.event_time,
                            logged_at=event.logged_at, confidence=event.confidence, sources=[event.source],
                            team=event.team, note=event.note, members=[event])
+        # A visible scoreboard that did NOT go up yet: wait for it before counting this goal.
+        total = scoreboard_total(scoreboard)
+        fused.pending = (event.type == "goal" and event.source != "manual" and total is not None
+                         and total <= self.goals_counted())
         self.events.append(fused)
         return fused, True
 
@@ -135,7 +156,8 @@ class Fusion:
     # ------------------------------------------------------------------ score
     def count_goal(self, fused: FusedEvent) -> bool:
         """Add a goal to the score once it is sure enough. Returns True if the score changed."""
-        if fused.type != "goal" or fused.counted or fused.confidence < self.cfg["goal_min_confidence"]:
+        if fused.type != "goal" or fused.counted or fused.pending or fused.rejected \
+                or fused.confidence < self.cfg["goal_min_confidence"]:
             return False
         fused.counted = True
         team = fused.team or "?"
@@ -150,6 +172,22 @@ class Fusion:
         even if it comes soon after the last one (highlights compress time). Same total = a replay."""
         total = scoreboard_total(scoreboard)
         return total is not None and total > self.goals_counted()
+
+    def review_pending_goals(self, scoreboard: str | None, now: float) -> list[tuple[FusedEvent, str]]:
+        """Called after every Gemini look. Returns [(goal, "confirmed" | "rejected")]."""
+        total = scoreboard_total(scoreboard)
+        changes = []
+        for fused in self.events:
+            if fused.type != "goal" or not fused.pending:
+                continue
+            if total is not None and total > self.goals_counted():
+                fused.pending = False                 # the scoreboard went up: it was real
+                if self.count_goal(fused):
+                    changes.append((fused, "confirmed"))
+            elif total is not None and now - fused.logged_at >= self.cfg["goal_confirm_s"]:
+                fused.pending, fused.rejected = False, True
+                changes.append((fused, "rejected"))
+        return changes
 
     def adjust_score(self, team: str, delta: int) -> None:
         """Manual +1 / -1 from the dashboard (always wins)."""

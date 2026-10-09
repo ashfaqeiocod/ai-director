@@ -153,6 +153,16 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-09
   `check_gemini` now skips models slower than `llm.max_test_latency_s` (5 s) on a warm test call.
 
 ## Problems / open issues (MVP 2)
+- 2026-10-09 user runs on yt-lfzra492gdw (LaLiga Real Madrid–Barcelona, 2:22): 1st hybrid run 3 goals, 2nd only 1.
+  Causes found and fixed: (1) 6 s looks every 8 s left a 2 s blind gap -> window_s 9 (overlap);
+  (2) a second open Story tab parked at 2:20 sent its own playhead -> only the tab that pressed Go Live drives
+  the clock now; (3) Flash Lite misreads the scoreboard sometimes ("3-1" for 2-1) -> goals < 20 s apart always
+  merge; (4) Flash Lite invents goals (free kick on the crossbar at 38 s on eng-cze) -> with a visible scoreboard a
+  goal is "pending" until the score graphic goes up, dropped after 30 s. The "goal at 115 s" on yt-lfzra492gdw
+  was a disallowed goal (referee signalling 2:00–2:03, scoreboard stayed 2-1): now correctly not counted.
+- Team attribution by Flash Lite is unreliable (Barcelona's goal reported as "white"): use the score ± buttons, or
+  gemini-3.5-flash with a paid key.
+- Specialist-only mode cannot find goals on highlights (the model never fires GOAL there), by design of the modes.
 - Free Gemini tier: Flash models 5 req/min + 20 req/day (one clip needs ~30) -> default is Flash Lite (15/min, 500/day).
   Flash Lite over-labels replays as live (replayed shots become false alarms; replayed goals are merged by the
   scoreboard/60 s rule). With a paid key, gemini-3.5-flash recognised replays correctly in tests.

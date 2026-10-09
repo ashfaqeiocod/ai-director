@@ -210,7 +210,9 @@ const PHASE_EMOJI = { goal: "⚽", celebration: "🎉", chance: "💥", attack: 
   foul: "✋", set_piece: "🚩", stoppage: "⏸️", injury: "🩹", break: "☕", unknown: "🤔" };
 
 let clip = null, clips = [], duration = 0, running = false, runId = null, live = false, replayOpen = null;
-let delays = [], settingsLoaded = false;
+let delays = [], settingsLoaded = false, owner = "", watchNoticeShown = false;
+// Each browser tab gets its own id. Only the tab that pressed Go Live sends the clock ("ticks").
+const CLIENT_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 // ================= signal log =================
 const visible = Object.fromEntries(KINDS.map((k) => [k, true]));
@@ -296,8 +298,8 @@ $("btnUrl").onclick = async () => {
 let ws = null;
 function sendTick() {
   const v = $("video");
-  if (ws?.readyState === 1 && running)
-    ws.send(JSON.stringify({ type: "tick", t: v.currentTime, paused: v.paused || v.ended, ended: v.ended }));
+  if (ws?.readyState === 1 && running && owner === CLIENT_ID)
+    ws.send(JSON.stringify({ type: "tick", client_id: CLIENT_ID, t: v.currentTime, paused: v.paused || v.ended, ended: v.ended }));
 }
 setInterval(sendTick, 200);
 ["play", "pause", "ended"].forEach((e) => $("video").addEventListener(e, sendTick));
@@ -322,7 +324,8 @@ $("btnLive").onclick = async () => {
   if (running && v.paused) { v.play(); return; }            // resume after Pause
   try {
     resetRunView();
-    await post("/story/start", { clip: clip.name, mode: $("mode").value, send_audio: $("sendAudio").checked,
+    owner = CLIENT_ID;
+    await post("/story/start", { client_id: CLIENT_ID, clip: clip.name, mode: $("mode").value, send_audio: $("sendAudio").checked,
       proof: $("proof").checked });
     v.currentTime = 0; lastGood = 0;
     await v.play();
@@ -341,6 +344,9 @@ $("proof").onchange = () => { $("truthLegend").classList.toggle("hidden", !$("pr
 
 function applyStatus(s) {
   running = s.running;
+  if ("owner" in s) owner = s.owner;
+  if (running && owner && owner !== CLIENT_ID && !watchNoticeShown && (watchNoticeShown = true))
+    addLog("INFO", "another browser tab is running this clip: this tab only watches (its video doesn't drive the AI)");
   clips = s.clips || clips;
   if (s.clip && !clip) { const c = clips.find((x) => x.name === s.clip); if (c) selectClip(c); }
   if (s.intake_jobs) { for (const j of s.intake_jobs) jobs[j.id] = j; renderJobs(Object.values(jobs)); }
@@ -429,6 +435,7 @@ function applyMemory(m) {
 // ================= timeline (events + replays + truth) =================
 const eventNodes = {};
 function placeEvent(e) {
+  if (e.rejected && eventNodes[e.id]) { eventNodes[e.id].remove(); delete eventNodes[e.id]; return; }
   if (!duration || !e.headline) return;
   let node = eventNodes[e.id];
   if (!node) {
@@ -440,6 +447,7 @@ function placeEvent(e) {
   }
   node.style.left = `${(e.event_time / duration) * 100}%`;
   node.querySelector(".i").textContent = ICONS[e.event_type] || "•";
+  node.style.opacity = e.pending ? 0.45 : 1;          // faded = waiting for the scoreboard
   node.querySelector(".tip").textContent =
     `${e.event_type} @${fmt1(e.event_time)} · logged ${fmt1(e.logged_at)} (+${(e.logged_at - e.event_time).toFixed(1)}s) · ${e.sources.join("+")} · ${(e.confidence * 100).toFixed(0)}%${e.team ? " · " + e.team : ""}`;
 }
@@ -521,6 +529,7 @@ function applySpecialist(s) {
 
 // ================= reset between runs =================
 function resetRunView() {
+  watchNoticeShown = false;
   for (const ds of chart.data.datasets) ds.data = [];
   chart.options.scales.x.max = duration || undefined;
   chart.update("none");

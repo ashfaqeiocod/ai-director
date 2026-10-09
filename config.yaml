@@ -166,7 +166,7 @@ story:
     # Empty = auto-pick the newest Flash (python -m story.check_gemini).
     model: "gemini-3.5-flash-lite"
     fallback_model: "gemini-3.1-flash-lite" # used when the main model answers 503 (overloaded) or its daily quota is used up
-    window_s: 6.0
+    window_s: 9.0 # MUST be >= interval_s: with 6 s looks every 8 s there was a 2 s blind gap where goals were missed
     interval_s: 8.0 # normal cadence
     trigger_min_gap_s: 3.0 # extra calls on triggers, but never closer than this
     max_requests_per_minute: 12 # stay under the free tier (Flash Lite: 15/min; Flash: 5/min -> set 4)
@@ -185,6 +185,8 @@ story:
     intensity_weights: { audio: 0.4, motion: 0.2, specialist: 0.2, llm: 0.2 }
     dedupe_window_s: 4.0 # same event type from any layer within this many seconds = one event
     dedupe_overrides: { goal: 60, kickoff: 30, card_red: 30 } # a goal can't really happen twice in a minute
+    goal_confirm_s: 30 # a goal the visible scoreboard hasn't confirmed after this long is dropped
+    goal_min_gap_s: 20 # two goals closer than this are the same goal, whatever the scoreboard says
     goal_min_confidence: 0.6 # a goal counts for the score only above this fused confidence
     llm_intensity_hold_s: 12 # an LLM intensity reading fades out over this many seconds
     specialist_hold_s: 6 # a specialist event boosts intensity for this many seconds

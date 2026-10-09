@@ -308,8 +308,7 @@ class StoryEngine:
         from a replayed one."""
         with self.lock:
             replay = self.blocking_replay() if is_replay is None else is_replay
-            force_new = event.type == "goal" and self.fusion.scoreboard_says_new_goal(scoreboard)
-            fused, is_new = self.fusion.add_event(event, replay, force_new=force_new)
+            fused, is_new = self.fusion.add_event(event, replay, scoreboard=scoreboard)
             if fused is None:
                 if replay and event.type != "none":
                     self.log("REPLAY", f"ignored {event.type} from {event.source} (replay)", event.event_time)
@@ -317,6 +316,8 @@ class StoryEngine:
             if self.fusion.count_goal(fused):
                 self.log("SCORE", f"goal counted for {fused.team or '?'} → {self.fusion.score_text()}")
                 self.publish(self.fusion.score_message())
+            elif is_new and fused.pending:
+                self.log("SCORE", f"goal at {fused.event_time:.1f}s: waiting for the scoreboard to confirm it")
             item = {**fused.to_dict(), "new": is_new}
         # "type" is the message type for the page; the event's own type travels as "event_type".
         self.publish({**item, "type": "event", "event_type": item["type"]})
@@ -422,7 +423,24 @@ class StoryEngine:
             # Gemini already left out events it saw in a replay (in_replay); the rest it saw live.
             # (A replayed goal it mislabels is still caught by the 60 s goal merge window in fusion.)
             self.add_event(event, is_replay=False, scoreboard=update.score)
+        self._review_goals(update)
         self.publish(self.fusion.score_message())
+
+    def _review_goals(self, update: StoryUpdate) -> None:
+        """Pending goals: confirmed when the scoreboard goes up, dropped if it never does."""
+        if update.source != "gemini" or update.is_replay:
+            return
+        with self.lock:
+            changes = self.fusion.review_pending_goals(update.score, update.logged_at)
+        for fused, action in changes:
+            if action == "confirmed":
+                self.log("SCORE", f"goal at {fused.event_time:.1f}s confirmed by the scoreboard ({update.score}) "
+                                  f"→ {self.fusion.score_text()}")
+            else:
+                self.log("SCORE", f"goal at {fused.event_time:.1f}s dropped: the scoreboard stayed at {update.score}")
+            item = {**fused.to_dict(), "new": False}
+            self.publish({**item, "type": "event", "event_type": item["type"]})
+            self.log_file.append("events", {**item, "review": action})
 
     # ------------------------------------------------------------------ memory
     def _maybe_memory(self) -> None:

@@ -16,7 +16,7 @@ the score and a "story so far".
 ## 0. One-time checks (2 minutes)
 
 ```bash
-venv/bin/python -m pytest tests -q          # 33 tests, all should pass ("33 passed")
+venv/bin/python -m pytest tests -q          # 37 tests, all should pass ("37 passed")
 venv/bin/python -m story.check_gemini       # is the Gemini key OK? (prints the models and a test call)
 ```
 
@@ -139,7 +139,34 @@ the pictures, so it can't simply repeat what the commentator says. Compare the t
 | `ratings.jsonl` | your 👍 / 👎 |
 | `report.md` | the evaluation (after `story.evaluate`) |
 
-## 8. MVP 1 still works
+## 8. Which videos to test with
+
+The models were trained on (and Gemini works best with) **TV broadcast football**. Best results:
+
+| ✅ Good test clips | Why |
+|---|---|
+| Official "extended highlights" of a league/international match, 3–10 min (league or federation YouTube channels: Premier League, LaLiga, Bundesliga, UEFA, England, etc.) | wide main camera, crowd sound, a **visible score graphic** (the system uses it to confirm goals and tell replays apart) |
+| A full half or a 10–15 min stretch of a broadcast match | real-time flow (no editing cuts), fewer surprises; costs more requests (~10 per minute of video) |
+| 720p or 1080p, 25/30/50 fps, landscape | the specialist model expects a normal TV picture |
+
+| ❌ Avoid | Why |
+|---|---|
+| "Top 10 goals" / compilations from several matches | the score graphic jumps between matches, many goals seconds apart |
+| Fan edits with music over the sound, slow-motion montages, skills videos | no match flow; everything looks like a replay |
+| Vertical phone videos, TV filmed with a phone, very low quality | the specialist and Gemini can't see the ball |
+| Video games (FIFA / eFootball) | not real football |
+| Clips under ~1 minute | no story to tell, and the first 10 s are warm-up for the audio baseline |
+
+Tips:
+- Short 2-minute highlight reels are the hardest: goals 20–40 s apart, lots of quick cuts. 5–10 minute
+  "extended highlights" are a fairer test.
+- Write a `truth.csv` (section 5) for every clip you want numbers for, otherwise the report can't score it.
+- Free key: ~10 Gemini requests per minute of video, 500 per day for Flash Lite → about 45 minutes of video per day.
+- Only keep **one** Story tab running a clip. Other open tabs just watch (they no longer move the AI's clock).
+- Disallowed goals (offside, VAR) are a good tough case: the system only counts a goal when the score graphic
+  goes up, so a disallowed goal shows as faded on the timeline and is dropped after ~30 s.
+
+## 9. MVP 1 still works
 
 ```bash
 venv/bin/python src/main.py     # should end with "Cuts: 5" and "Shortest shot: 2.00s"

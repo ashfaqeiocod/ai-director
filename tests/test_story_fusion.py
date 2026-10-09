@@ -90,9 +90,40 @@ def test_scoreboard_tells_a_new_goal_from_a_replayed_one(fusion):
     fusion.count_goal(first)
     # 33 s later, scoreboard reads 2-0 (total 2 > 1 counted): a NEW goal, not merged.
     assert fusion.scoreboard_says_new_goal("2-0")
-    second, is_new = fusion.add_event(ev("goal", 94.0, conf=0.95, team="white"), is_replay=False, force_new=True)
+    second, is_new = fusion.add_event(ev("goal", 94.0, conf=0.95, team="white"), is_replay=False, scoreboard="2-0")
     assert is_new and fusion.count_goal(second) and fusion.score == {"white": 2}
     # A replay of it with the scoreboard still at 2-0 is not new: merged by the 60 s window.
     assert not fusion.scoreboard_says_new_goal("2-0")
     again, is_new = fusion.add_event(ev("goal", 105.0, conf=0.95, team="white"), is_replay=False)
     assert again is second and not is_new and fusion.score == {"white": 2}
+
+
+def test_misread_scoreboard_cannot_split_one_goal(fusion):
+    first, _ = fusion.add_event(ev("goal", 115.3, conf=0.95, team="white"), is_replay=False)
+    fusion.count_goal(first)
+    # Overlapping look 0.3 s later, Gemini misreads the scoreboard as higher: still the same goal.
+    same, is_new = fusion.add_event(ev("goal", 115.6, conf=0.95, team="white"), is_replay=False, force_new=True)
+    assert same is first and not is_new and not fusion.count_goal(same)
+
+
+def test_goal_the_scoreboard_never_confirms_is_dropped_and_frees_the_real_one(fusion):
+    # Gemini "sees" a goal at 38 s, but the visible scoreboard still says 0-0: pending, not counted.
+    fake, _ = fusion.add_event(ev("goal", 38.0, conf=0.95, team="white", logged=42.0), is_replay=False, scoreboard="0-0")
+    assert fake.pending and not fusion.count_goal(fake) and fusion.goals_counted() == 0
+    # 30 s later the scoreboard is still 0-0: dropped.
+    assert fusion.review_pending_goals("0-0", now=75.0) == [(fake, "rejected")]
+    # The real goal at 61.5 s (scoreboard 1-0) is NOT swallowed by the dropped one.
+    real, is_new = fusion.add_event(ev("goal", 61.5, conf=0.95, team="white"), is_replay=False, scoreboard="1-0")
+    assert is_new and fusion.count_goal(real) and fusion.score == {"white": 1}
+
+
+def test_pending_goal_confirmed_when_the_scoreboard_goes_up(fusion):
+    goal, _ = fusion.add_event(ev("goal", 94.0, conf=0.95, team="white", logged=98.0), is_replay=False, scoreboard="0-0")
+    assert goal.pending
+    assert fusion.review_pending_goals("1-0", now=104.0) == [(goal, "confirmed")]
+    assert fusion.score == {"white": 1}
+
+
+def test_without_a_scoreboard_goals_count_straight_away(fusion):
+    goal, _ = fusion.add_event(ev("goal", 20.0, conf=0.95, team="white"), is_replay=False, scoreboard=None)
+    assert not goal.pending and fusion.count_goal(goal)

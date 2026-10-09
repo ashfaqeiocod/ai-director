@@ -53,7 +53,8 @@ def final_events(run: Path) -> list[dict]:
     for item in read_jsonl(run / "events.jsonl"):
         if "id" in item:
             latest[item["id"]] = item
-    return sorted(latest.values(), key=lambda e: e["event_time"])
+    # Goals the scoreboard never confirmed were dropped by fusion: they don't count as found.
+    return sorted((e for e in latest.values() if not e.get("rejected")), key=lambda e: e["event_time"])
 
 
 def resolve_run(clip: str, run_id: str) -> Path:

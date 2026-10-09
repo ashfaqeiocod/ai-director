@@ -45,6 +45,7 @@ class StoryController:
         self.engine: StoryEngine | None = None
         self.clip: str | None = None
         self.intake_jobs: dict[str, dict] = {}     # job id -> {"status", "message", "name"}
+        self.owner: str = ""                        # client id of the tab that started the run
         self.specialist_url: str = load_config()["story"]["specialist"]["server_url"] or ""
         self.lock = threading.Lock()
 
@@ -60,7 +61,7 @@ class StoryController:
         return {"type": "status", "running": self.engine is not None, "clip": self.clip,
                 "mode": self.engine.mode if self.engine else cfg["mode"],
                 "send_audio": self.engine.send_audio if self.engine else cfg["send_audio_to_llm"],
-                "run_id": self.engine.run_id if self.engine else None, "specialist_url": self.specialist_url,
+                "run_id": self.engine.run_id if self.engine else None, "owner": self.owner if self.engine else "", "specialist_url": self.specialist_url,
                 "clips": intake.list_clips(), "intake_jobs": list(self.intake_jobs.values())}
 
     # ----- clip intake (runs in a background thread: downloads and ffmpeg take a while)
@@ -91,7 +92,7 @@ class StoryController:
         return job
 
     # ----- runs
-    def start_run(self, clip: str, mode: str, send_audio: bool, proof: bool = False) -> dict:
+    def start_run(self, clip: str, mode: str, send_audio: bool, proof: bool = False, client_id: str = "") -> dict:
         folder = intake.clip_dir(clip)
         if not (folder / "meta.json").exists():
             raise HTTPException(404, f"clip '{clip}' not found")
@@ -103,6 +104,9 @@ class StoryController:
             self.engine = StoryEngine(folder, cfg, mode, self.publish, send_audio=send_audio,
                                       specialist_url=self.specialist_url, proof=proof)
             self.clip = clip
+            # Only the browser tab that pressed Go Live drives the clock. Other open tabs just watch:
+            # their videos sit at other positions and would make the playhead jump.
+            self.owner = client_id
             self.engine.start()
         self.publish(self.status())
         return self.status()
@@ -115,7 +119,8 @@ class StoryController:
 
     def on_message(self, message: dict) -> None:
         """A message from the page. Ticks go straight to the engine."""
-        if message.get("type") == "tick" and self.engine is not None:
+        if message.get("type") == "tick" and self.engine is not None \
+                and (not self.owner or message.get("client_id") == self.owner):
             self.engine.on_tick(float(message.get("t", 0.0)), bool(message.get("paused", True)),
                                 bool(message.get("ended", False)))
 
@@ -198,7 +203,8 @@ def intake_url(body: dict) -> dict:
 def start(body: dict) -> dict:
     cfg = load_config()["story"]
     return ctl.start_run(str(body.get("clip", "")), body.get("mode", cfg["mode"]),
-                         bool(body.get("send_audio", cfg["send_audio_to_llm"])), bool(body.get("proof", False)))
+                         bool(body.get("send_audio", cfg["send_audio_to_llm"])), bool(body.get("proof", False)),
+                         str(body.get("client_id", "")))
 
 
 @router.post("/stop")
