@@ -162,6 +162,7 @@ class StoryEngine:
                     "headline_events": len(headline),
                     "events_by_type": {t: sum(e.type == t for e in headline) for t in sorted({e.type for e in headline})},
                     "ignored_in_replay": self.fusion.ignored_in_replay, "score": self.fusion.score_text(),
+                    "scoreboard": self.fusion.scoreboard,
                     "avg_llm_delay": round(sum(self.delays) / len(self.delays), 2) if self.delays else None,
                     "max_llm_delay": round(max(self.delays), 2) if self.delays else None,
                     **self.counters}
@@ -409,6 +410,7 @@ class StoryEngine:
                 for team in filter(None, [update.team_in_control, *[e.team for e in update.events]]):
                     self.fusion.add_team(team)
                     self.teams.setdefault(team, "")
+
             else:
                 self.counters["story_template"] += 1
         item = update.model_dump()
@@ -424,6 +426,11 @@ class StoryEngine:
             # (A replayed goal it mislabels is still caught by the 60 s goal merge window in fusion.)
             self.add_event(event, is_replay=False, scoreboard=update.score)
         self._review_goals(update)
+        if update.source == "gemini" and not update.is_replay:
+            with self.lock:
+                changed = self.fusion.note_scoreboard(update.score)
+            if changed:
+                self.log("SCORE", f"score graphic reads {self.fusion.scoreboard}", update.window_end)
         self.publish(self.fusion.score_message())
 
     def _review_goals(self, update: StoryUpdate) -> None:

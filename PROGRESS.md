@@ -160,6 +160,17 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-09
   merge; (4) Flash Lite invents goals (free kick on the crossbar at 38 s on eng-cze) -> with a visible scoreboard a
   goal is "pending" until the score graphic goes up, dropped after 30 s. The "goal at 115 s" on yt-lfzra492gdw
   was a disallowed goal (referee signalling 2:00–2:03, scoreboard stayed 2-1): now correctly not counted.
+- 2026-10-09 longer test: esp-cro (Spain 4-1 Croatia extended highlights, 9:49, Sony LIV ZN7ZYybxpxM), goals-only
+  truth drafted by Claude from the score graphic (75.5, 179.5, 214.5, 443.5, 521.5 s), fast + Gemini (Flash Lite),
+  Colab offline. Score graphic read correctly every time (0-0 -> ... -> 4-1). Goals at the right moment (±10 s):
+  run 1 0/5, run 2 2/5 after fixes (merged goals keep the EARLIEST time; the story prompt no longer gives Gemini the
+  counted score, which it copied into its "score on screen" answer). Flash Lite mostly recognises goals in the
+  replay 15-25 s later. Tried and REMOVED: re-timing a confirmed goal to the loudest crowd roar between the
+  old/new score readings (errors -30 to +100 s, because Flash Lite's score readings lag).
+  Conclusion: on the free tier, trust the score graphic for the score; for goal timing use gemini-3.5-flash
+  (paid key) and/or the Colab specialist (hybrid).
+- NOW card: big score = stable score-graphic reading (same value read twice in the last 3 looks); small line =
+  goals counted per colour.
 - Team attribution by Flash Lite is unreliable (Barcelona's goal reported as "white"): use the score ± buttons, or
   gemini-3.5-flash with a paid key.
 - Specialist-only mode cannot find goals on highlights (the model never fires GOAL there), by design of the modes.

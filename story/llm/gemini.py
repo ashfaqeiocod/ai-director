@@ -87,7 +87,8 @@ Rules:
   If unsure, it is live. Set is_replay=true (and phase="replay") only if the snippet is mainly a replay.
   A snippet can be partly live and partly replay: mark each event with in_replay (true = seen in the
   replay part). Events seen live must be reported even if a replay follows them.
-- Never invent a score. Set "score" only if a scoreboard is visible in the snippet; otherwise null.
+- Never invent a score. Set "score" only if a score graphic is visible in THIS snippet, exactly as shown
+  (home-away, e.g. "2-1"); otherwise null. Don't guess it from the story so far.
 - Teams are named by jersey colour (e.g. "white", "red"). Reuse the known colours when they fit.
 - Events: only clear ones. "at_s" = seconds from the START of this snippet. Don't repeat events that
   are already listed as logged, unless it is clearly a NEW one.
@@ -204,7 +205,8 @@ class GeminiStoryLLM(StoryLLM):
             "Known teams (jersey colour: description): "
             + (", ".join(f"{c}: {d or '?'}" for c, d in ctx.teams.items()) or "not known yet"),
             f"Story so far: {ctx.memory.story_so_far if ctx.memory else 'just started'}",
-            f"Score counted so far: {ctx.score_text or 'unknown'}",
+            # (The system's own score count is NOT given here: Flash Lite copied it into "score",
+            # which must be a reading of the on-screen graphic only.)
             f"Events already logged in the last minute: {_fmt_events(ctx.recent_events)}",
         ]
         if ctx.specialist_hints:

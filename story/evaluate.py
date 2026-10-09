@@ -168,6 +168,7 @@ def evaluate(clip: str, run: Path) -> dict:
         "max_llm_delay_s": round(max(llm_delays), 2) if llm_delays else None,
         "narration_rated": len(latest_rating), "narration_up": round(ups / len(latest_rating), 3) if latest_rating else None,
         "score_final": (meta.get("summary") or {}).get("score"),
+        "scoreboard_final": (meta.get("summary") or {}).get("scoreboard"),
         "goals_counted": sum(1 for e in events if e["type"] == "goal"),
         "ignored_in_replay": (meta.get("summary") or {}).get("ignored_in_replay"),
         "intensity": intensity_peaks(run, truth, window),
@@ -213,7 +214,8 @@ def write_report(run: Path, r: dict) -> Path:
               f"- Gemini delay per update (logged_at − window end): average {r['avg_llm_delay_s']} s, max {r['max_llm_delay_s']} s",
               f"- Story updates: {r['story_updates']['gemini']} from Gemini, {r['story_updates']['template']} from templates", "",
               "## Score and replays", "",
-              f"- Final score shown: {r['score_final'] or '–'} · goal events found: {r['goals_counted']} · "
+              f"- Final score graphic (as read): {r.get('scoreboard_final') or '–'} · goals counted per colour: "
+              f"{r['score_final'] or '–'} · goal events found: {r['goals_counted']} · "
               f"events ignored during replays: {r['ignored_in_replay']}", "",
               "## Intensity vs truth", ""]
     i = r["intensity"]

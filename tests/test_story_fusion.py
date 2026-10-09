@@ -127,3 +127,18 @@ def test_pending_goal_confirmed_when_the_scoreboard_goes_up(fusion):
 def test_without_a_scoreboard_goals_count_straight_away(fusion):
     goal, _ = fusion.add_event(ev("goal", 20.0, conf=0.95, team="white"), is_replay=False, scoreboard=None)
     assert not goal.pending and fusion.count_goal(goal)
+
+
+def test_scoreboard_needs_two_matching_reads(fusion):
+    assert not fusion.note_scoreboard("1-0")          # one read is not enough
+    assert fusion.note_scoreboard("1 - 0") and fusion.scoreboard == "1-0"
+    fusion.note_scoreboard("2-1"); fusion.note_scoreboard("3-1")   # a misread in between
+    assert fusion.scoreboard == "1-0"
+    assert fusion.note_scoreboard("2-1") and fusion.scoreboard == "2-1"
+    assert not fusion.note_scoreboard(None)
+
+
+def test_merged_goal_keeps_the_earliest_time(fusion):
+    live, _ = fusion.add_event(ev("goal", 75.5, conf=0.7, team="red"), is_replay=False)
+    fusion.add_event(ev("goal", 94.0, conf=0.95, team="red"), is_replay=False)   # seen again in the replay
+    assert live.event_time == 75.5 and live.confidence == 0.95

@@ -66,6 +66,8 @@ class Fusion:
         self.events: list[FusedEvent] = []
         self._ids = itertools.count(1)
         self.score: dict[str, int] = {}          # team colour -> goals
+        self.scoreboard_reads: list[str] = []    # last few on-screen score readings (Gemini, live only)
+        self.scoreboard: str | None = None       # the stable reading shown in the NOW card
         self.ignored_in_replay = 0
         self.llm_reading: tuple[float, float] | None = None       # (playhead when logged, intensity 0..1)
         self.specialist_level: tuple[float, float] | None = None  # (playhead when logged, strength 0..1)
@@ -137,7 +139,10 @@ class Fusion:
 
     @staticmethod
     def _merge(fused: FusedEvent, event: Event) -> None:
-        if event.confidence > max(m.confidence for m in fused.members):
+        if fused.type == "goal":
+            # A goal is reported again later from replays: the EARLIEST report is the live moment.
+            fused.event_time = min(fused.event_time, event.event_time)
+        elif event.confidence > max(m.confidence for m in fused.members):
             fused.event_time = event.event_time          # the surest source gives the time
             fused.note = event.note or fused.note
         if event.source not in fused.sources:
@@ -203,8 +208,22 @@ class Fusion:
             return None
         return " – ".join(f"{team} {goals}" for team, goals in self.score.items())
 
+    def note_scoreboard(self, reading: str | None) -> bool:
+        """Remember what the on-screen score graphic says. A new value is only accepted once it was read
+        twice in the last 3 looks (Flash Lite sometimes misreads, e.g. "3-1" for 2-1).
+        Returns True if the shown scoreboard changed."""
+        if scoreboard_total(reading) is None:
+            return False
+        reading = "-".join(part.strip() for part in reading.replace("–", "-").replace(":", "-").split("-"))
+        self.scoreboard_reads = (self.scoreboard_reads + [reading])[-3:]
+        if self.scoreboard_reads.count(reading) >= 2 and reading != self.scoreboard:
+            self.scoreboard = reading
+            return True
+        return False
+
     def score_message(self) -> dict:
-        return {"type": "score", "teams": self.score, "teams_order": list(self.score), "text": self.score_text()}
+        return {"type": "score", "teams": self.score, "teams_order": list(self.score), "text": self.score_text(),
+                "scoreboard": self.scoreboard}
 
 
 def scoreboard_total(scoreboard: str | None) -> int | None:

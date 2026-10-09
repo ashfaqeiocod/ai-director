@@ -55,6 +55,9 @@ https://www.youtube.com/watch?v=kJEY-UFTDk8).
 3. What you should see:
    - **Status bar** (top right): Gemini ● green, Audio ● green, `req/min` around 8/12, `avg delay` 3–5 s, `lag` ~0.0 s.
    - **NOW card**: phase (e.g. "build up", "goal"), mood emoji + colour, intensity bar, team in control, **score**.
+     The big score is the TV score graphic as the AI reads it (shown once it was read the same way twice).
+     The small line under it is "counted" goals per jersey colour; the AI can mix up team colours, so fix it with
+     the ± buttons. A goal shows faded on the timeline until the score graphic confirms it (or is dropped after ~30 s).
    - **Live commentary** (newest at the top): a line every ~8 s, each with the clip time, the **delay**
      (how long after that moment the AI wrote it) and "AI" or "template". Rate lines with 👍 / 👎.
    - **Event timeline**: icons appear (🦶 free kick ~0:33, 🎯 shot + 🧤 save ~0:38–0:50, ⚽ goals at ~1:01, ~1:34, ~2:28),
