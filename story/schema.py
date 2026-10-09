@@ -84,6 +84,7 @@ class LLMEvent(BaseModel):
     team: str | None = Field(None, description="jersey colour of the team that did it, e.g. 'white'")
     confidence: float = Field(description="0..1, how sure you are")
     note: str | None = Field(None, description="a few words, e.g. 'low shot, saved by the keeper'")
+    in_replay: bool = Field(False, description="true ONLY if you saw this event in a replay part of the snippet")
 
 
 class LLMStory(BaseModel):
@@ -93,7 +94,8 @@ class LLMStory(BaseModel):
     intensity: int = Field(description="0..100, how intense the play is right now")
     sentiment: Sentiment
     narration: str = Field(description="one commentator line, present tense, under 25 words")
-    is_replay: bool = Field(description="true if this snippet is a replay / slow motion, not live play")
+    is_replay: bool = Field(description="true only if the snippet is MAINLY a replay (slow motion, replay graphic, "
+                                        "or an action shown again); normal-speed play with quick cuts is live")
     score: str | None = Field(None, description="only if a scoreboard is VISIBLE, e.g. '1-0'; else null")
 
 

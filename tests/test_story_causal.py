@@ -51,3 +51,13 @@ def test_playhead_never_goes_back():
     playhead = Playhead(5.0)
     assert playhead.advance(3.0) == 5.0    # a seek backwards is ignored
     assert playhead.advance(6.0) == 6.0
+
+
+def test_window_end_rounded_down_is_never_in_the_future(tiny_clip, tmp_path):
+    """Regression: the engine once rounded 8.168 up to 8.17 and the guard (correctly) refused it."""
+    import math
+    reader = CausalReader(tiny_clip, Playhead(2.168))
+    end = math.floor(reader.playhead.now() * 100) / 100
+    reader.window_clip(end - 1, end, tmp_path / "w.mp4", height=120, with_audio=False)
+    with pytest.raises(FutureAccessError):
+        reader.window_clip(1.0, round(2.168, 2) + 0.001, tmp_path / "x.mp4", height=120, with_audio=False)

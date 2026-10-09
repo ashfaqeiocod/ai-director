@@ -94,14 +94,16 @@ class Fusion:
         return int(round(100 * min(1.0, value)))
 
     # ------------------------------------------------------------------ events
-    def add_event(self, event: Event, is_replay: bool) -> tuple[FusedEvent | None, bool]:
-        """Merge one event from a layer. Returns (fused event, is_new) or (None, False) if ignored."""
+    def add_event(self, event: Event, is_replay: bool, force_new: bool = False) -> tuple[FusedEvent | None, bool]:
+        """Merge one event from a layer. Returns (fused event, is_new) or (None, False) if ignored.
+
+        force_new: never merge (used for a goal the scoreboard proves is new)."""
         if event.type == "none":
             return None, False
         if is_replay and event.source != "manual":
             self.ignored_in_replay += 1
             return None, False
-        window = self.cfg["dedupe_overrides"].get(event.type, self.cfg["dedupe_window_s"])
+        window = 0.0 if force_new else self.cfg["dedupe_overrides"].get(event.type, self.cfg["dedupe_window_s"])
         for fused in reversed(self.events):
             if fused.type == event.type and abs(fused.event_time - event.event_time) <= window:
                 self._merge(fused, event)
@@ -140,6 +142,15 @@ class Fusion:
         self.score[team] = self.score.get(team, 0) + 1
         return True
 
+    def goals_counted(self) -> int:
+        return sum(self.score.values())
+
+    def scoreboard_says_new_goal(self, scoreboard: str | None) -> bool:
+        """The scoreboard is the referee: "2-0" (total 2) while we counted 1 goal = a NEW goal,
+        even if it comes soon after the last one (highlights compress time). Same total = a replay."""
+        total = scoreboard_total(scoreboard)
+        return total is not None and total > self.goals_counted()
+
     def adjust_score(self, team: str, delta: int) -> None:
         """Manual +1 / -1 from the dashboard (always wins)."""
         self.score[team] = max(0, self.score.get(team, 0) + delta)
@@ -156,3 +167,11 @@ class Fusion:
 
     def score_message(self) -> dict:
         return {"type": "score", "teams": self.score, "teams_order": list(self.score), "text": self.score_text()}
+
+
+def scoreboard_total(scoreboard: str | None) -> int | None:
+    """"2-1" / "2 - 1" / "2:1" -> 3. None if there is no readable score."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d{1,2})\s*[-–:]\s*(\d{1,2})\s*", scoreboard or "")
+    return int(m.group(1)) + int(m.group(2)) if m else None

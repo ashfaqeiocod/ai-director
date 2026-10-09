@@ -82,8 +82,11 @@ You only get the last few seconds of video (and sound, if included). You cannot 
 
 Rules:
 - Describe ONLY what is visible or audible in this snippet. If unsure, say less and use lower confidence.
-- Replays: if the snippet is a replay (slow motion, a repeated angle, a replay graphic/wipe), set
-  is_replay=true, phase="replay", and report NO events from it (they already happened).
+- Replays: a replay has clear cues: slow motion, a replay graphic or wipe, or the SAME action shown again
+  from another angle. Normal-speed play is live, even with quick camera cuts, close-ups or celebrations.
+  If unsure, it is live. Set is_replay=true (and phase="replay") only if the snippet is mainly a replay.
+  A snippet can be partly live and partly replay: mark each event with in_replay (true = seen in the
+  replay part). Events seen live must be reported even if a replay follows them.
 - Never invent a score. Set "score" only if a scoreboard is visible in the snippet; otherwise null.
 - Teams are named by jersey colour (e.g. "white", "red"). Reuse the known colours when they fit.
 - Events: only clear ones. "at_s" = seconds from the START of this snippet. Don't repeat events that
@@ -128,17 +131,34 @@ class GeminiStoryLLM(StoryLLM):
         self.in_flight = 0
         self.last_latency: float | None = None
         self.last_error = ""
+        self.exhausted: set[str] = set()       # models whose daily free quota is used up
+        self.daily_quota_out = False
         self.use_thinking_setting = self.cfg.get("thinking_budget") is not None
 
     # ------------------------------------------------------------------ status for the engine/UI
     def available(self) -> bool:
-        """True if a request may be sent now (rate limit + 429 pause)."""
-        return self.limiter.allowed()
+        """True if a request may be sent now (rate limit + 429 pause + daily quota)."""
+        return not self.daily_quota_out and self.limiter.allowed()
 
     def requests_last_minute(self) -> int:
         return self.limiter.count()
 
+    def _daily_quota_used(self, item: dict) -> None:
+        """Google's free tier has a small DAILY request quota per model (20 for gemini-3.5-flash in
+        Oct 2026). Waiting won't help today: switch to the fallback model (its own quota), or stop
+        calling Gemini for this run (templates take over)."""
+        self.exhausted.add(item.get("model", self.model))
+        fallback = self.cfg.get("fallback_model")
+        if fallback and fallback not in self.exhausted:
+            item.update(daily_quota=True, switched_to=fallback)
+            self.model = fallback
+        else:
+            item.update(daily_quota=True, switched_to=None)
+            self.daily_quota_out = True
+
     def state(self) -> str:
+        if self.daily_quota_out:
+            return "daily_quota"
         if self.limiter.rate_limited():
             return "rate_limited"
         if self.in_flight:
@@ -161,9 +181,9 @@ class GeminiStoryLLM(StoryLLM):
         events = [Event(type=e.type, event_time=round(ctx.window_start + min(max(e.at_s, 0.0), length), 2),
                         logged_at=ctx.window_end, source="gemini", team=(e.team or None),
                         confidence=min(max(e.confidence, 0.0), 1.0), note=e.note)
-                  for e in story.events if e.type != "none"]
+                  for e in story.events if e.type != "none" and not e.in_replay]   # replayed = already happened
         return StoryUpdate(source="gemini", window_start=ctx.window_start, window_end=ctx.window_end,
-                           logged_at=ctx.window_end, phase=story.phase, events=[] if story.is_replay else events,
+                           logged_at=ctx.window_end, phase=story.phase, events=events,
                            team_in_control=story.team_in_control, intensity=min(max(story.intensity, 0), 100),
                            sentiment=story.sentiment, narration=story.narration, is_replay=story.is_replay,
                            score=story.score)
@@ -190,9 +210,10 @@ class GeminiStoryLLM(StoryLLM):
         if ctx.specialist_hints:
             lines.append("Action-spotting model hints (may be wrong): " + "; ".join(ctx.specialist_hints))
         fast = ctx.fast
+        # (The scene-cut "replay hint" is NOT passed on: it fires on all fast highlight editing and
+        # made Gemini call live goals "replays".)
         lines.append(f"Audio/motion sensors for this snippet: crowd excitement max {fast.get('audio_max', 0):.2f} (0-1), "
-                     f"motion {fast.get('motion_avg', 0):.2f}, whistle heard: {fast.get('whistle', False)}, "
-                     f"scene-cut replay hint: {fast.get('replay', False)}.")
+                     f"motion {fast.get('motion_avg', 0):.2f}, whistle heard: {fast.get('whistle', False)}.")
         if ctx.triggers:
             lines.append(f"This look was triggered by: {', '.join(ctx.triggers)}.")
         if ctx.video_path is None:
@@ -213,6 +234,29 @@ class GeminiStoryLLM(StoryLLM):
         ])
 
     # ------------------------------------------------------------------ one request
+    def _send(self, model: str, parts: list, config: dict):
+        return self.client.models.generate_content(
+            model=model, contents=[self.types.Content(role="user", parts=parts)],
+            config=self.types.GenerateContentConfig(**config))
+
+    def _retry(self, error, parts: list, config: dict, item: dict):
+        """One retry for two known, fixable errors; anything else is raised again."""
+        if error.code == 400 and "thinking_config" in config:
+            # Some models (e.g. Flash Lite) reject the "thinking" setting with a generic 400:
+            # retry without it, and leave it out from now on.
+            self.use_thinking_setting = False
+            config.pop("thinking_config")
+            item.update(thinking_setting_dropped=True)
+            self.limiter.record()
+            return self._send(self.model, parts, config)
+        fallback = self.cfg.get("fallback_model")
+        if error.code == 503 and fallback and fallback != self.model:
+            # 503 = Google's model is overloaded right now: retry on the fallback model.
+            item.update(model=fallback, overloaded=self.model)
+            self.limiter.record()
+            return self._send(fallback, parts, config)
+        raise error
+
     def _generate(self, parts: list, system: str, schema, kind: str, extra: dict):
         from google.genai import errors
 
@@ -228,19 +272,9 @@ class GeminiStoryLLM(StoryLLM):
         item = {"kind": kind, "model": self.model, "requested_at": round(start, 3), **extra}
         try:
             try:
-                response = self.client.models.generate_content(
-                    model=self.model, contents=[types.Content(role="user", parts=parts)],
-                    config=types.GenerateContentConfig(**config))
+                response = self._send(self.model, parts, config)
             except errors.APIError as error:
-                fallback = self.cfg.get("fallback_model")
-                if error.code != 503 or not fallback or fallback == self.model:
-                    raise
-                # 503 = Google's model is overloaded right now: one retry on the fallback model.
-                item.update(model=fallback, overloaded=self.model)
-                self.limiter.record()
-                response = self.client.models.generate_content(
-                    model=fallback, contents=[types.Content(role="user", parts=parts)],
-                    config=types.GenerateContentConfig(**config))
+                response = self._retry(error, parts, config, item)
             parsed = response.parsed if isinstance(response.parsed, schema) else \
                 schema.model_validate_json(response.text or "{}")
             usage = response.usage_metadata
@@ -256,7 +290,9 @@ class GeminiStoryLLM(StoryLLM):
             return parsed
         except errors.APIError as error:
             item.update(latency_s=round(time.time() - start, 2), error=f"{error.code}: {str(error)[:300]}")
-            if error.code == 429:
+            if error.code == 429 and "PerDay" in str(error):
+                self._daily_quota_used(item)
+            elif error.code == 429:
                 item.update(rate_limited=True, backoff_s=self.limiter.hit_429())
             elif error.code == 400 and "thinking" in str(error).lower() and self.use_thinking_setting:
                 self.use_thinking_setting = False      # this model doesn't take the setting: drop it next time

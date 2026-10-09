@@ -504,7 +504,7 @@ function applyFast(f) {
 // ================= status lights =================
 function light(id, state) {
   $(id).className = "light " + ({ ok: "ok", connected: "ok", busy: "ok", rate_limited: "warn", fallback: "warn",
-    connecting: "warn", error: "bad", no_key: "bad", off: "off", disabled: "off" }[state] || "off");
+    connecting: "warn", error: "bad", no_key: "bad", daily_quota: "bad", off: "off", disabled: "off" }[state] || "off");
 }
 function applyGemini(g) {
   light("lGemini", g.state);

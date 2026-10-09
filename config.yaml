@@ -160,19 +160,21 @@ story:
     connect_timeout_s: 10
   llm:
     provider: gemini
-    # Chosen 2026-10-09 by measuring real 6 s windows: 3.5-flash 2-3 s per window and correct (goal, replay);
-    # 3.8/3.7-flash were overloaded (HTTP 503, 15-65 s). Empty = auto-pick (python -m story.check_gemini).
-    model: "gemini-3.5-flash"
-    fallback_model: "gemini-2.5-flash" # used for a retry when the main model answers 503 (overloaded)
+    # Free tier (Oct 2026): Flash models allow only 5 requests/min and 20/day (one 3-min clip needs ~30);
+    # Flash LITE models allow 15/min and 500/day. So the Lite models are the default for testing.
+    # With a paid key, "gemini-3.5-flash" (2-3 s per window, very accurate) is the better choice.
+    # Empty = auto-pick the newest Flash (python -m story.check_gemini).
+    model: "gemini-3.5-flash-lite"
+    fallback_model: "gemini-3.1-flash-lite" # used when the main model answers 503 (overloaded) or its daily quota is used up
     window_s: 6.0
     interval_s: 8.0 # normal cadence
     trigger_min_gap_s: 3.0 # extra calls on triggers, but never closer than this
-    max_requests_per_minute: 8 # stay under the free tier; adjust after checking AI Studio limits
+    max_requests_per_minute: 12 # stay under the free tier (Flash Lite: 15/min; Flash: 5/min -> set 4)
     video_height: 360
     video_fps: 2 # frames per second Gemini looks at inside the window clip
     temperature: 0.4
     max_test_latency_s: 5 # check_gemini skips a model slower than this on a one-word test (overloaded)
-    thinking_budget: 0 # 0 = no "thinking" (faster, cheaper); null = model default
+    thinking_budget: 0 # 0 = no "thinking" (faster, cheaper); null = model default. Flash Lite rejects it: then dropped automatically
     timeout_s: 30
     backoff_start_s: 10 # first wait after HTTP 429, doubles each time
     backoff_max_s: 120

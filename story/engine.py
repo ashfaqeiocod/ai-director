@@ -20,6 +20,7 @@ Everything goes to the dashboard via publish(message) and to outputs/story/<clip
 """
 from __future__ import annotations
 
+import math
 import tempfile
 import threading
 import time
@@ -300,11 +301,15 @@ class StoryEngine:
             return self.llm_replay
         return self.is_replay and self.cfg["fusion"]["fast_replay_blocks_events"]
 
-    def add_event(self, event: Event, is_replay: bool | None = None) -> FusedEvent | None:
-        """Hand one event to fusion; publish + log what changed."""
+    def add_event(self, event: Event, is_replay: bool | None = None, scoreboard: str | None = None) -> FusedEvent | None:
+        """Hand one event to fusion; publish + log what changed.
+
+        scoreboard: the score Gemini read in the same snippet (e.g. "2-0"), used to tell a new goal
+        from a replayed one."""
         with self.lock:
             replay = self.blocking_replay() if is_replay is None else is_replay
-            fused, is_new = self.fusion.add_event(event, replay)
+            force_new = event.type == "goal" and self.fusion.scoreboard_says_new_goal(scoreboard)
+            fused, is_new = self.fusion.add_event(event, replay, force_new=force_new)
             if fused is None:
                 if replay and event.type != "none":
                     self.log("REPLAY", f"ignored {event.type} from {event.source} (replay)", event.event_time)
@@ -340,7 +345,9 @@ class StoryEngine:
             self._run_story(self.narrator, ctx)
 
     def _window_context(self, now: float, triggers: list[str]) -> WindowContext:
-        now = round(now, 2)                     # same rounding as logged_at, so delays never show "-0.0"
+        # Round DOWN to 0.01 s: rounding up could point past the playhead (the causal guard refuses
+        # that, rightly). logged_at is rounded to 0.01 s too, so delays never show "-0.0".
+        now = math.floor(now * 100) / 100
         start = round(max(0.0, now - self.cfg["llm"]["window_s"]), 2)
         with self.lock:
             window_fast = [r for r in self.recent_fast if r.t > start]
@@ -412,7 +419,9 @@ class StoryEngine:
                             + f" (delay {update.logged_at - update.window_end:.1f}s)", update.window_end)
         for event in update.events:
             event.logged_at = update.logged_at
-            self.add_event(event, is_replay=update.is_replay)
+            # Gemini already left out events it saw in a replay (in_replay); the rest it saw live.
+            # (A replayed goal it mislabels is still caught by the 60 s goal merge window in fusion.)
+            self.add_event(event, is_replay=False, scoreboard=update.score)
         self.publish(self.fusion.score_message())
 
     # ------------------------------------------------------------------ memory
@@ -466,7 +475,13 @@ class StoryEngine:
     def _on_llm_call(self, item: dict) -> None:
         """Called by the Gemini provider after every request (success or error)."""
         self.log_file.append("llm_calls", {**item, "playhead": round(self.playhead.now(), 2)})
-        if item.get("rate_limited"):
+        if item.get("daily_quota"):
+            if item.get("switched_to"):
+                self.log("ERROR", f"Gemini daily free quota used up for {item.get('model')}: "
+                                  f"switching to {item['switched_to']} for this run")
+            else:
+                self.log("ERROR", "Gemini daily free quota used up for all models: template lines for the rest of the run")
+        elif item.get("rate_limited"):
             self.log("ERROR", f"Gemini rate limited (HTTP 429): pausing AI calls for {item.get('backoff_s', 0):.0f}s")
         self._publish_llm_state()
 

@@ -81,3 +81,18 @@ def test_intensity_uses_only_running_layers():
     hybrid.note_specialist(10, 1.0)
     hybrid.note_llm_intensity(10, 100)
     assert hybrid.intensity(loud) == 100
+
+
+def test_scoreboard_tells_a_new_goal_from_a_replayed_one(fusion):
+    from story.fusion import scoreboard_total
+    assert scoreboard_total("2-1") == 3 and scoreboard_total("2 : 0") == 2 and scoreboard_total(None) is None
+    first, _ = fusion.add_event(ev("goal", 61.0, conf=0.95, team="white"), is_replay=False)
+    fusion.count_goal(first)
+    # 33 s later, scoreboard reads 2-0 (total 2 > 1 counted): a NEW goal, not merged.
+    assert fusion.scoreboard_says_new_goal("2-0")
+    second, is_new = fusion.add_event(ev("goal", 94.0, conf=0.95, team="white"), is_replay=False, force_new=True)
+    assert is_new and fusion.count_goal(second) and fusion.score == {"white": 2}
+    # A replay of it with the scoreboard still at 2-0 is not new: merged by the 60 s window.
+    assert not fusion.scoreboard_says_new_goal("2-0")
+    again, is_new = fusion.add_event(ev("goal", 105.0, conf=0.95, team="white"), is_replay=False)
+    assert again is second and not is_new and fusion.score == {"white": 2}
