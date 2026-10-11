@@ -194,3 +194,80 @@ story:
     #                                  highlights). Gemini's is_replay always blocks them.
   eval:
     match_window_s: 10
+
+# =====================================================================================
+# MVP 3 — Directed Story (spec: docs/MVP3_SPEC.md). Uses MVP 1 + MVP 2 above, never changes them.
+# Footage: SoccerTrack v2 (CC BY 4.0). Download: venv/bin/python -m studio.soccertrack --match 128057 --half 2
+# =====================================================================================
+studio:
+  data_dir: "data/soccertrack" # downloaded videos + annotations (gitignored)
+  work_dir: "data/studio" # prepared segments: data/studio/<segment>/...
+  outputs_dir: "outputs/studio" # runs: outputs/studio/<segment>/<run_id>/
+  # Tune on "dev", report on "eval" (never tune on eval). Times are seconds into the half's video.
+  segments:
+    # degrade = bad-feed test: this camera is made blurry/shaky for a while; the director must never air it then.
+    dev:
+      { match: "128057", half: 2, start_s: 30, end_s: 390, # 1 goal (91.2 s)
+        degrade: { cam: 3, start_s: 200, end_s: 240, blur: 31, shake_px: 0 } }
+    eval:
+      { match: "128057", half: 2, start_s: 1380, end_s: 2220, # 3 goals (1497.8, 1874.1, 2155.0 s)
+        degrade: { cam: 2, start_s: 300, end_s: 345, blur: 31, shake_px: 6 } }
+  cameras:
+    size: [1280, 720] # every camera video
+    # Fixed cameras: rect = [x, y, width, height] in the 4096x1080 panorama (16:9 rects avoid black bars).
+    fixed:
+      cam1: { name: "LEFT", shot_type: "medium", rect: [0, 60, 1440, 810] }
+      cam2: { name: "CENTRE", shot_type: "medium", rect: [1328, 60, 1440, 810] }
+      cam3: { name: "RIGHT", shot_type: "medium", rect: [2656, 60, 1440, 810] }
+      cam4: { name: "WIDE", shot_type: "wide", rect: [0, 0, 4096, 1080] }
+    close: # cam5: the virtual operator
+      name: "CLOSE"
+      shot_type: "close_up"
+      zoom_width: 960 # width of the zoomed crop in panorama pixels (16:9)
+      smoothing: 0.08 # share of the gap to the aim point closed per frame (smaller = calmer)
+      max_speed_px: 14 # never pan faster than this many panorama pixels per frame
+      dead_zone_px: 40 # ignore aim movements smaller than this
+      group_radius_m: 15 # oracle aim: players within this many metres count as one group
+      group_radius_px: 350 # detector aim (no ball seen): players within this many panorama pixels = one group
+  detect_fps: 5 # MVP 1 detector on cams 1-3 this many times per second (M1: ~0.3 s per cam per frame)
+  ball_tracker: # MVP 1's BallTracker, run once on the whole panorama (all 5 cams are views of it)
+    buffer_size: 5
+    max_jump_px: 300 # panorama px between two detections (~0.2 s apart at 5 fps); ~39 px per metre
+    max_predict_updates: 5 # keep guessing a missing ball for this many detections (~1 s), then "lost"
+  quality: # bad-feed check per camera (cards.QualityMeter)
+    width: 160 # pictures are shrunk to this width first (cheap)
+    history: 150 # remember this many sharpness samples (5/s -> 30 s) as "normal" for the camera
+    min_history: 10 # need this many before judging blur
+    blur_bad: 0.6 # 60% less sharp than normal = unusable
+    shake_samples: 10 # average the frame-to-frame jump over this many frames
+    shake_max_px: 4 # average frame-to-frame jump (camera pixels, after removing planned pans) = full shake
+    recover_s: 2.0 # a bad camera must look fine this long before it can be used again
+  director:
+    start_cam: 4
+    min_shot_seconds: 3.0 # plan: 3-4 s (MVP 1 uses 2.0)
+    hysteresis_seconds: 0.6
+    mvp1: { score_detected: 100, score_predicted: 60, score_center_max: 30, score_per_player: 1, score_players_max: 10 }
+    wide_base: 70 # WIDE is a safe shot: beats a follow cam that has lost the ball
+    wide_fast_bonus: 80 # ...and wins when play is fast
+    fast_play: 0.6 # play_speed (0..1) at or above this = fast play
+    fast_play_px_s: 400 # action point moving this many panorama px per second = play_speed 1.0
+    action_smoothing: 0.3 # smoothing of the action point (past only)
+    slow_play: 0.15 # play_speed at or below this = slow play (CLOSE may be used)
+    close_slow_score: 0 # CLOSE score during slow play (0 = only used for reactions)
+    reaction_events: [card_red, card_yellow, penalty, injury] # these story events also trigger a REACTION
+    reaction_min_confidence: 0.6
+    reaction_phases: [celebration] # story phases that trigger a REACTION
+    play_phases: [build_up, attack, chance, set_piece] # phases that end a REACTION (after reaction_hold_s)
+    reaction_hold_s: 6
+    reaction_max_s: 15
+    reaction_max_age_s: 40 # ignore story events older than this (too late to react)
+    goal_min_confidence: 0.6
+    goal_min_looks: 2 # independent looks that must agree on a goal (no scoreboard to confirm it)
+    goal_corroborate_s: 30
+  story: # MVP 2 settings used for the story pass on the panorama (merged over the story: section)
+    overrides:
+      sport: "soccer (an amateur university match filmed by ONE fixed panoramic camera showing the whole pitch; players look small; there are no TV graphics, no scoreboard, no replays and no commentary)"
+      llm: { video_height: 540 } # the panorama is very wide: more pixels so small players stay visible
+  eval: # scoring only (studio.evaluate)
+    reaction_window_s: 20 # a close-up within this many seconds after a real goal counts as a reaction
+    match_window_s: 10 # a story event within this many seconds of a true one is a match
