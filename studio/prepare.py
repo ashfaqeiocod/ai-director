@@ -11,10 +11,11 @@ Writes data/studio/<segment>/:
 
 Frame numbers: segment frame i (0-based) = video frame first_frame + i of the half (0-based)
              = annotation frame first_frame + i + 1 + offset (the annotations count from 1).
-`offset` is MEASURED here (annotation_offset in segment.json): on match 128057 the annotated players sit
-where the players were ~22 frames (0.9 s) EARLIER, although the dataset says they line up. prepare tries
-offsets and keeps the one where the boxes cover the most "not grass" (= players). Use annotation_frame() /
-segment_time() everywhere, never first_frame directly.
+`offset` is MEASURED here as a safety check (annotation_offset in segment.json): prepare tries offsets and
+keeps the one where the annotated boxes cover the most "not grass" (= players). It should be ~0: the dataset's
+annotations are in sync with its video. (The first dev cut was 24 frames early because the video stream starts
+at timestamp 1.0 s and the fast seek did not allow for it; the measured offset of -23 corrected that segment.)
+Use annotation_frame() / segment_time() everywhere, never first_frame directly.
 """
 from __future__ import annotations
 
@@ -98,6 +99,15 @@ def measure_offset(meta: dict, players: dict, video: Path, samples: int = 8, sea
     return best, fit(best), fit(0)
 
 
+def stream_start(video: Path) -> float:
+    """Timestamp (s) of the video stream's first frame."""
+    import av
+
+    with av.open(str(video)) as c:
+        st = c.streams.video[0]
+        return float(st.start_time * st.time_base) if st.start_time else 0.0
+
+
 def cut_segment(name: str, seg: dict, out: Path) -> dict:
     """Re-encode [start_s, end_s) of the half into out/source.mp4, frame-exact."""
     src = half_video(seg)
@@ -108,17 +118,19 @@ def cut_segment(name: str, seg: dict, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     video = out / "source.mp4"
     print(f"[prepare] cutting {src.name} frames {first}..{first + count - 1} ({count / fps / 60:.1f} min) ...", flush=True)
-    # "select" picks frames by their number, so the cut is exact whatever the keyframes are.
-    # (-ss before -i jumps close to the start quickly; select then trims to the exact frame.)
-    jump = max(0.0, first / fps - 5)
-    jump_frames = round(jump * fps)
-    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-ss", f"{jump:.3f}", "-i", str(src),
-           "-vf", f"select='between(n\\,{first - jump_frames}\\,{first - jump_frames + count - 1})',setpts=N/{fps}/TB",
-           "-r", str(fps), "-fps_mode", "cfr",
+    # Frame k of the half has the timestamp start + k / fps (this video's stream starts at 1.0 s, not 0).
+    # -copyts keeps those original timestamps, so "select" can pick exactly [first, first + count) by time,
+    # whatever frame the fast seek (-ss before -i, 5 s early) lands on. -frames:v stops decoding afterwards.
+    t0 = stream_start(src) + first / fps
+    half_frame = 0.5 / fps
+    jump = max(0.0, t0 - 5)
+    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-ss", f"{jump:.3f}", "-copyts", "-i", str(src),
+           "-vf", f"select='between(t\\,{t0 - half_frame:.4f}\\,{t0 + (count - 0.5) / fps:.4f})',setpts=N/{fps}/TB",
+           "-frames:v", str(count), "-r", str(fps), "-fps_mode", "cfr", "-output_ts_offset", "0",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-g", str(round(fps)),
            "-movflags", "+faststart"]
-    cmd += ["-af", f"atrim=start={first / fps - jump:.3f}:duration={count / fps:.3f},asetpts=PTS-STARTPTS",
-            "-c:a", "aac"] if info["has_audio"] else ["-an"]
+    cmd += ["-af", f"atrim=start={t0:.4f}:duration={count / fps:.4f},asetpts=PTS-STARTPTS", "-c:a", "aac",
+            "-t", f"{count / fps:.4f}"] if info["has_audio"] else ["-an"]
     subprocess.run(cmd + [str(video)], check=True)
     got = video_info(video)
     meta = {"segment": name, "match": seg["match"], "half": seg["half"], "first_frame": first,

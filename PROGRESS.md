@@ -225,9 +225,14 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - The dataset's ball track is rebuilt from the annotated events (straight lines between them), so it knows
   the future: scoring only. Per-frame player positions (gsr) may drive an "oracle" mode, always labelled.
 
-- Annotation offset: the gsr players line up with the video ~23 frames (0.92 s) EARLIER than the dataset says
-  (measured on dev: -22 at the start, -23 at the end; fit 0.21 vs 0.14). prepare measures it per segment
-  (`annotation_offset` in segment.json); every annotation lookup uses annotation_frame()/segment_time().
+- Annotation offset: on dev the annotated players lined up ~23 frames EARLIER than expected. Cause found: MY cut,
+  not the dataset. The half's video stream starts at timestamp 1.0 s and the fast seek didn't allow for it, so dev
+  starts 24 frames early (checked by decoding the half frame by frame). The dataset IS in sync. dev keeps its
+  measured offset (-23, corrects everything; no need to redo it); new cuts select frames by their original
+  timestamps (-copyts) and were verified frame-exact (frames 0/250/499 of a 20 s test cut). prepare still measures
+  the offset as a safety check (`annotation_offset` in segment.json); lookups use annotation_frame()/segment_time().
+- Segment cuts stop decoding right after the segment (-frames:v): the dev cut took 5.5 min because ffmpeg read
+  the whole 47-min half.
 - Video encoding: libx264. VideoToolbox (hardware) refused 5 parallel sessions ("cannot create compression session").
 - Ground-truth player boxes cover the feet area (small boxes), fine for counting and aiming.
 - Director: the oracle "players group" gets MVP 1's centred bonus (else it tied with WIDE at 70 and never cut).
