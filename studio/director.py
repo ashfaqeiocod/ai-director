@@ -64,8 +64,10 @@ class DirectorV2:
                 # MVP 1 scoring, on this camera's own ball status and players.
                 if card.ball:
                     ball = BallState(card.ball.status, (card.ball.x * 1000, card.ball.y * 1000))
-                elif card.action_in_view and card.source == "oracle":
-                    ball = BallState("predicted", None)   # oracle: no ball, the players' group stands in
+                elif card.action and card.source == "oracle":
+                    # Oracle has no ball: the players' group stands in, scored like a predicted ball
+                    # (so a camera centred on the play wins over one that only touches it).
+                    ball = BallState("predicted", (card.action[0] * 1000, card.action[1] * 1000))
                 else:
                     ball = BallState("lost", None)
                 out.append(score_camera(ball, card.players, 1000, c["mvp1"]))

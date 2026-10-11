@@ -1,0 +1,257 @@
+<!doctype html>
+<!--
+  studio.html — MVP 3 "Studio" tab: replay a directed run (one static page, no build step).
+  - program.mp4 plays in the big <video>: its currentTime is the clock for everything on the page.
+  - The 5 camera videos play muted below and are re-synced to the program whenever they drift.
+  - Cards, cuts, story and ground truth come from /studio/run/<segment>/<run_id> once, then are
+    drawn for the current time. Story items appear only after their known time (what the director knew).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio Replay</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .tile { border: 2px solid #1e293b; }
+    .tile.live { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+    .tile.bad video { filter: grayscale(.6); opacity: .6; }
+    .mark { position: absolute; transform: translateX(-50%); font-size: 13px; line-height: 1; cursor: default; }
+    .mark .tip { display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%);
+      white-space: nowrap; background: #020617; border: 1px solid #334155; padding: 2px 6px; border-radius: 4px;
+      font-size: 11px; z-index: 10; }
+    .mark:hover .tip { display: block; }
+    #report pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+<div class="max-w-[1600px] mx-auto p-4 space-y-3">
+
+  <header class="flex flex-wrap items-center gap-3 justify-between">
+    <div class="flex items-center gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">Studio <span class="text-slate-500 font-normal text-sm">MVP 3 · directed story replay</span></h1>
+      <a href="/" class="text-xs text-slate-400 hover:text-white border border-slate-700 rounded px-2 py-0.5">Camera director (MVP 1)</a>
+      <a href="/story" class="text-xs text-slate-400 hover:text-white border border-slate-700 rounded px-2 py-0.5">Story (MVP 2)</a>
+    </div>
+    <div class="flex items-center gap-2 text-sm">
+      <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 mono text-xs max-w-[420px]"></select>
+      <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-sm">Load</button>
+      <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> show ground truth</label>
+    </div>
+  </header>
+
+  <p id="empty" class="text-slate-400 text-sm hidden">No finished runs yet. Run <code class="mono">venv/bin/python -m studio.run --segment dev</code> first.</p>
+
+  <main id="main" class="grid grid-cols-1 lg:grid-cols-12 gap-3 hidden">
+    <section class="lg:col-span-8 space-y-3">
+      <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video">
+        <video id="program" class="w-full h-full" controls playsinline></video>
+        <div class="absolute top-3 left-3 flex gap-2 pointer-events-none">
+          <span class="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded">LIVE</span>
+          <span id="liveLabel" class="bg-black/70 mono text-xs px-2 py-0.5 rounded">CAM –</span>
+          <span id="stateBadge" class="bg-black/70 mono text-xs px-2 py-0.5 rounded">–</span>
+        </div>
+      </div>
+      <div id="tiles" class="grid grid-cols-5 gap-2"></div>
+      <!-- timeline -->
+      <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50">
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span>Timeline: live camera · story events (top) · ground truth (bottom)</span>
+          <span class="mono" id="clock">00:00 / 00:00</span>
+        </div>
+        <div class="relative h-5" id="storyMarks"></div>
+        <div class="relative h-6 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
+          <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
+        </div>
+        <div class="relative h-5" id="truthMarks"></div>
+        <div id="legend" class="flex flex-wrap gap-3 text-xs text-slate-400 mt-1"></div>
+      </div>
+    </section>
+
+    <aside class="lg:col-span-4 space-y-3">
+      <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50 space-y-1 text-sm">
+        <div class="flex justify-between"><span class="text-slate-400">State</span><span id="nState" class="mono">–</span></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-400 shrink-0">Reason</span><span id="nReason" class="mono text-xs text-right">–</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Play speed</span><span id="nSpeed" class="mono">–</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Story phase</span><span id="nPhase" class="mono">–</span></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-400 shrink-0">Last story event</span><span id="nEvent" class="mono text-xs text-right">–</span></div>
+        <div class="text-xs text-slate-500 pt-1" id="runInfo"></div>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900/50">
+        <div class="px-3 py-2 text-xs text-slate-400 border-b border-slate-800">Story (as the director knew it) — newest first</div>
+        <ul id="storyLog" class="max-h-[300px] overflow-y-auto text-sm divide-y divide-slate-800"></ul>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900/50">
+        <div class="px-3 py-2 text-xs text-slate-400 border-b border-slate-800">Director decisions</div>
+        <ul id="cutLog" class="max-h-[220px] overflow-y-auto text-xs mono divide-y divide-slate-800"></ul>
+      </div>
+      <details id="report" class="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs">
+        <summary class="cursor-pointer text-slate-400">Evaluation report</summary>
+        <pre class="mono mt-2 text-slate-300" id="reportText">No report yet: venv/bin/python -m studio.evaluate --segment &lt;segment&gt;</pre>
+      </details>
+    </aside>
+  </main>
+</div>
+
+<script>
+const CAM_COLORS = {1: "#38bdf8", 2: "#a78bfa", 3: "#f472b6", 4: "#4ade80", 5: "#fbbf24"};
+const ICONS = {goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
+               corner: "🚩", free_kick: "🦶", celebration: "🎉", penalty: "⚠️", whistle: "📯"};
+let data = null, runs = [];
+const $ = (id) => document.getElementById(id);
+const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+async function loadRuns() {
+  runs = await (await fetch("/studio/runs")).json();
+  $("empty").classList.toggle("hidden", runs.length > 0);
+  $("runSelect").innerHTML = runs.map((r, i) =>
+    `<option value="${i}">${r.segment} · ${r.run_id} · ${r.summary.cuts} cuts${r.has_report ? " · report" : ""}</option>`).join("");
+  if (runs.length) loadRun(0);
+}
+
+async function loadRun(index) {
+  const r = runs[index];
+  data = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
+  $("main").classList.remove("hidden");
+  $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
+  $("tiles").innerHTML = data.cams.cams.map(c => `
+    <div class="tile rounded overflow-hidden bg-black" id="tile${c.cam}">
+      <div class="relative aspect-video">
+        <video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full"
+               src="/studio/cam/${r.segment}/${r.run_id}/${c.cam}"></video>
+        <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded"
+              style="color:${CAM_COLORS[c.cam]}">${c.cam} ${c.name}</span>
+      </div>
+      <div class="p-1.5 text-[11px] mono space-y-0.5 bg-slate-900" id="card${c.cam}">–</div>
+    </div>`).join("");
+  $("runInfo").textContent = `source: ${data.info.source} · story: ${data.info.story_mode || "none"} · ` +
+    `${data.info.summary.cuts} cuts · avg shot ${data.info.summary.average_shot_s}s`;
+  $("reportText").textContent = data.report || "No report yet: venv/bin/python -m studio.evaluate --segment " + r.segment;
+  drawTimeline();
+}
+
+function drawTimeline() {
+  const tl = $("timeline"), D = data.duration;
+  tl.querySelectorAll(".seg").forEach(e => e.remove());
+  data.timeline.forEach((s, i) => {
+    const end = i + 1 < data.timeline.length ? data.timeline[i + 1].t : D;
+    const div = document.createElement("div");
+    div.className = "seg absolute top-0 bottom-0";
+    div.style.left = `${100 * s.t / D}%`;
+    div.style.width = `${100 * (end - s.t) / D}%`;
+    div.style.background = CAM_COLORS[s.cam];
+    div.style.opacity = s.state === "REACTION" ? "1" : ".55";
+    div.title = `cam${s.cam} ${s.state} @ ${fmt(s.t)}: ${s.reason}`;
+    tl.appendChild(div);
+  });
+  $("legend").innerHTML = data.cams.cams.map(c =>
+    `<span><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.cam} ${c.name}</span>`).join("")
+    + `<span class="text-slate-500">(bright = REACTION)</span>`;
+  drawTruth();
+}
+
+function drawTruth() {
+  const box = $("truthMarks");
+  box.innerHTML = "";
+  if (!$("truthToggle").checked) return;
+  data.truth.forEach(e => {
+    const m = document.createElement("span");
+    m.className = "mark";
+    m.style.left = `${100 * e.t / data.duration}%`;
+    m.innerHTML = `${e.label === "GOAL" ? "⚽" : "·"}<span class="tip">truth ${e.label} ${fmt(e.t)} (${e.team})</span>`;
+    box.appendChild(m);
+  });
+}
+
+let lastKnown = -1, lastCutCount = -1;
+function render() {
+  requestAnimationFrame(render);
+  if (!data) return;
+  const p = $("program"), t = p.currentTime;
+  // Keep the camera tiles in sync with the program.
+  data.cams.cams.forEach(c => {
+    const v = $("cam" + c.cam);
+    if (!v) return;
+    if (Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
+    if (p.paused && !v.paused) v.pause();
+    if (!p.paused && v.paused) v.play().catch(() => {});
+  });
+  $("playhead").style.left = `${100 * t / data.duration}%`;
+  $("clock").textContent = `${fmt(t)} / ${fmt(data.duration)}`;
+
+  // Live camera + state at t.
+  let seg = data.timeline[0];
+  for (const s of data.timeline) { if (s.t <= t) seg = s; else break; }
+  const cam = data.cams.cams[seg.cam - 1];
+  $("liveLabel").textContent = `CAM ${seg.cam} · ${cam.name}`;
+  $("stateBadge").textContent = seg.state;
+  $("stateBadge").className = `mono text-xs px-2 py-0.5 rounded ${seg.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
+  $("nState").textContent = seg.state;
+  $("nReason").textContent = seg.reason;
+  data.cams.cams.forEach(c => $("tile" + c.cam).classList.toggle("live", c.cam === seg.cam));
+
+  // Cards (one per second).
+  const cards = data.cards[String(Math.floor(t))] || [];
+  cards.forEach(c => {
+    const q = c.quality;
+    $("tile" + c.cam).classList.toggle("bad", !q.usable);
+    $("card" + c.cam).innerHTML =
+      `<div>${c.shot_type} · ${c.players} pl</div>` +
+      `<div>ball ${c.ball ? `<span class="${c.ball.status === "detected" ? "text-green-400" : "text-orange-400"}">${c.ball.status}</span>` : "–"}` +
+      ` · action ${c.action_in_view ? "✓" : "–"}</div>` +
+      `<div class="${q.usable ? "text-slate-400" : "text-red-400 font-bold"}">${q.usable ? "OK" : "BAD"} blur ${q.blur.toFixed(2)} shake ${q.shake.toFixed(2)}</div>`;
+  });
+  if (cards.length) {
+    $("nSpeed").textContent = cards[0].play_speed.toFixed(2);
+    $("nPhase").textContent = cards[0].phase || "–";
+    const e = cards[0].event;
+    $("nEvent").textContent = e ? `${e.type} @ ${fmt(e.event_time)} (known ${fmt(e.known_at)})` : "–";
+  }
+
+  // Story items known by now (newest first). Redraw only when the set changes.
+  const known = data.story.updates.filter(u => u.logged_at <= t).length +
+                1000 * data.story.events.filter(e => e.known_at <= t).length;
+  if (known !== lastKnown) {
+    lastKnown = known;
+    const items = [
+      ...data.story.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
+        `<span class="text-slate-500 mono text-xs">${fmt(u.window_end)} +${(u.logged_at - u.window_end).toFixed(1)}s</span> ` +
+        `<span class="text-sky-300 text-xs">${u.phase}</span> ${u.narration}`})),
+      ...data.story.events.filter(e => e.known_at <= t && e.type !== "whistle").map(e => ({at: e.known_at, html:
+        `<span class="text-slate-500 mono text-xs">${fmt(e.event_time)} +${(e.known_at - e.event_time).toFixed(1)}s</span> ` +
+        `<b>${ICONS[e.type] || "•"} ${e.type}</b> <span class="text-slate-500 text-xs">${(e.confidence * 100).toFixed(0)}% ${e.sources.join("+")}</span>`})),
+    ].sort((a, b) => b.at - a.at);
+    $("storyLog").innerHTML = items.map(i => `<li class="px-3 py-1.5">${i.html}</li>`).join("");
+    const marks = $("storyMarks");
+    marks.innerHTML = "";
+    data.story.events.filter(e => e.known_at <= t && ICONS[e.type] && e.type !== "whistle").forEach(e => {
+      const m = document.createElement("span");
+      m.className = "mark";
+      m.style.left = `${100 * e.event_time / data.duration}%`;
+      m.innerHTML = `${ICONS[e.type]}<span class="tip">${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)}</span>`;
+      marks.appendChild(m);
+    });
+  }
+  // Director decisions so far.
+  const done = data.director_events.filter(e => e.time <= t);
+  if (done.length !== lastCutCount) {
+    lastCutCount = done.length;
+    $("cutLog").innerHTML = done.slice().reverse().map(e =>
+      `<li class="px-3 py-1"><span class="text-slate-500">${fmt(e.time)}</span> <b>${e.type}</b> ${e.message}</li>`).join("");
+  }
+}
+
+$("loadBtn").onclick = () => { lastKnown = lastCutCount = -1; loadRun(+$("runSelect").value); };
+$("truthToggle").onchange = () => data && drawTruth();
+$("timeline").onclick = (ev) => {
+  const box = $("timeline").getBoundingClientRect();
+  $("program").currentTime = data.duration * (ev.clientX - box.left) / box.width;
+  lastKnown = lastCutCount = -1;
+};
+loadRuns();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

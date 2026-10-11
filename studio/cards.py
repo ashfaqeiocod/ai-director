@@ -52,6 +52,7 @@ class CamCard:
     phase: str | None = None       # latest story phase known at this time
     source: str = "detector"       # detector | oracle
     action_in_view: bool = False   # is the action point inside this camera's view?
+    action: tuple[float, float] | None = None   # where the action point is in this camera (0..1), if in view
 
     def to_dict(self) -> dict:
         return asdict(self)

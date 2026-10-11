@@ -197,18 +197,25 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 ## Status
 | Step | Status | Notes |
 |---|---|---|
-| 0. Plan + data access | in progress | HF token OK; SoccerTrack v2 128057 2nd half downloading; SoccerNet NDA requested |
-| 1. Intake + calibration check | not started | |
-| 2. Virtual cameras | not started | |
-| 3. Detection + cards | not started | |
-| 4. Story layer on wide feed | not started | |
-| 5. Director v2 | not started | |
-| 6. Run + render | not started | |
-| 7. Studio tab | not started | |
-| 8. Evaluation | not started | |
+| 0. Plan + data access | done | HF token OK; 128057 2nd half (3.45 GB, 4096x1080, 25 fps, 70,350 frames, audio); SoccerNet NDA requested |
+| 1. Intake + calibration check | done | dev segment cut; annotation offset measured (-23 frames); overlays checked by eye |
+| 2. Virtual cameras | done | 5 cams x 9000 frames, ~15 fps render (libx264) |
+| 3. Detection + cards | in progress | dev detection re-running with the real football model (first run silently used YOLO) |
+| 4. Story layer | in progress | wide feed: goal missed; close-up feed being measured |
+| 5. Director v2 | done (tuning) | 7 unit tests; oracle smoke test: cuts at exactly 3.0 s |
+| 6. Run + render | done (tuning) | program.mp4 + debug.mp4 + logs, ~9 fps |
+| 7. Studio tab | built, untested in browser | /studio |
+| 8. Evaluation | done (first version) | ball on air (all / not WIDE), WIDE share, shots, reactions + false reactions, story R/P, bad feed, baselines |
 | 9. Docs | not started | |
 
 ## Key results (MVP 3)
+- Baseline on dev (never cut): always CENTRE = 52% ground-truth ball on air; always WIDE = 100% but 100% WIDE time.
+- Detector on this 4K panorama (60 sample frames, 3 cams): football model finds the ball in 9/57 frames (~16%),
+  345 ms per cam-frame on CoreML. Tiling (InferenceSlicer 640) 2/57 at 2.8 s; ball-only model + tiling 2/57 at 1.4 s.
+  So the plain model stays. Worse than the plan's "4 in 10": the ball is a few pixels on this camera.
+- Story on the WIDE panorama (dev, Flash Lite, 44 looks, avg delay 6.2 s): missed the goal at 62 s completely and
+  repeated "blue builds from the back" for 6 min. The goal is real (attack on the left goal at 61-62 s, kick-off
+  at ~85 s) but players are a few pixels tall on the panorama.
 
 ## Decisions made (MVP 3)
 - Footage: SoccerTrack v2 (CC BY 4.0). No open dataset has full matches from several real broadcast angles
@@ -218,9 +225,28 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - The dataset's ball track is rebuilt from the annotated events (straight lines between them), so it knows
   the future: scoring only. Per-frame player positions (gsr) may drive an "oracle" mode, always labelled.
 
+- Annotation offset: the gsr players line up with the video ~23 frames (0.92 s) EARLIER than the dataset says
+  (measured on dev: -22 at the start, -23 at the end; fit 0.21 vs 0.14). prepare measures it per segment
+  (`annotation_offset` in segment.json); every annotation lookup uses annotation_frame()/segment_time().
+- Video encoding: libx264. VideoToolbox (hardware) refused 5 parallel sessions ("cannot create compression session").
+- Ground-truth player boxes cover the feet area (small boxes), fine for counting and aiming.
+- Director: the oracle "players group" gets MVP 1's centred bonus (else it tied with WIDE at 70 and never cut).
+- Story feed: default is the CLOSE-up (detector-aimed for honest runs, oracle-aimed for oracle runs), with the
+  match sound added. A story run with lag skips or > 3 AI errors is marked invalid and never used.
+- Scoring: "ball on air" counts WIDE as always right, so the report leads with ball on air EXCLUDING WIDE time,
+  plus WIDE share, false reactions and never-cut baselines (compare.md).
+
 ## Problems / open issues (MVP 3)
+- SANDBOX: inside Claude Code's sandbox, CoreML cannot write its compiled model to the macOS temp folder, so
+  MVP 1's Detector silently falls back to generic YOLO (ball rate ~2%). This also affects MVP 1's live mode when
+  run from the sandbox. Detection was therefore run with the sandbox disabled. studio.detect now refuses the fallback.
+- A story pass run at the same time as detection fell 240 s behind and lost Gemini calls: discarded. Real-time
+  story passes must run alone.
+- Detection speed with the real model while other jobs ran: 0.44 frames/s (3 cams); to re-measure alone.
+- Gemini free tier: ~500 Flash Lite calls/day; a 14-min eval story pass needs ~120. Plan eval passes per day.
 - The HF token was pasted in chat: regenerate it on huggingface.co when setup is done and update `.env`.
 - Disk: ~19 GB free before the 6.7 GB download.
 
 ## Next action (MVP 3)
-Step 1: verify the video (resolution, fps, frames vs gsr, audio) and check the calibration overlay.
+Finish dev: detection (real model) -> close-up aimed by the detector -> story passes (close_oracle, close_detector)
+-> runs + reports -> tune director thresholds on dev only -> prepare + run eval.

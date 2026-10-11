@@ -15,7 +15,8 @@ def cards(ball_cam=None, bad=(), speed=0.3, action_cam=None):
         ball = BallInfo(0.5, 0.5, "detected") if cam in (ball_cam, 4) and ball_cam else None
         out.append(CamCard(cam=cam, name=f"c{cam}", time=0, logged_at=0, shot_type=shot, ball=ball, players=5,
                            play_speed=speed, quality=Quality(usable=cam not in bad),
-                           action_in_view=cam in (action_cam, 4, 5)))
+                           action_in_view=cam in (action_cam, 4, 5),
+                           action=(0.5, 0.5) if cam in (action_cam, 4, 5) else None))
     return out
 
 

@@ -70,6 +70,7 @@ def ball_on_air(meta: dict, run_info: dict, cams_chosen: list[int]) -> dict:
     rows = {int(f): k for k, f in enumerate(ball["frame"])}
     hits = total = 0
     per_cam = {c["cam"]: [0, 0] for c in cams["cams"]}
+    wide = {c["cam"] for c in cams["cams"] if c["shot_type"] == "wide"}
     for i, cam in enumerate(cams_chosen):
         k = rows.get(annotation_frame(meta, i))
         if k is None or not np.isfinite(ball["x"][k]):
@@ -84,7 +85,13 @@ def ball_on_air(meta: dict, run_info: dict, cams_chosen: list[int]) -> dict:
         total += 1
         per_cam[cam][0] += seen
         per_cam[cam][1] += 1
+    # WIDE shows the whole pitch, so it always "has the ball": staying on WIDE would score 100%.
+    # The honest number is ball on air on the OTHER cameras, next to the share of time spent on WIDE.
+    not_wide = [v for c, v in per_cam.items() if c not in wide]
+    hits_nw, total_nw = sum(v[0] for v in not_wide), sum(v[1] for v in not_wide)
     return {"ball_on_air": hits / max(1, total), "frames_scored": total,
+            "ball_on_air_not_wide": hits_nw / total_nw if total_nw else None,
+            "wide_share": 1 - total_nw / max(1, total),
             "per_cam": {f"cam{c}": (v[0] / v[1] if v[1] else None) for c, v in per_cam.items()}}
 
 
@@ -102,6 +109,13 @@ def shot_stats(cams_chosen: list[int], reasons: list[str], fps: float, min_shot:
             "too_short": sum(1 for s in normal if s < min_shot - 1e-6),
             "bad_feed_escapes": sum(1 for s in complete if s["escape"]),
             "cuts_per_min": (len(shots) - 1) / (len(cams_chosen) / fps / 60)}
+
+
+def false_reactions(truth: list[dict], states: list[str], fps: float, window: float) -> int:
+    """REACTIONs that started with no real goal in the `window` seconds before them."""
+    goals = [e["t"] for e in truth if e["label"] == "GOAL"]
+    starts = [i / fps for i in range(len(states)) if states[i] == "REACTION" and (i == 0 or states[i - 1] != "REACTION")]
+    return sum(1 for s in starts if not any(0 <= s - g <= window for g in goals))
 
 
 def reactions(truth: list[dict], cams_chosen: list[int], states: list[str], fps: float, window: float) -> list[dict]:
@@ -167,6 +181,7 @@ def evaluate(segment: str, run_id: str | None) -> Path:
          "ball": ball_on_air(meta, info, cams_chosen),
          "shots": shot_stats(cams_chosen, reasons, fps, cfg["director"]["min_shot_seconds"]),
          "reactions": reactions(truth, cams_chosen, states, fps, cfg["eval"]["reaction_window_s"]),
+         "false_reactions": false_reactions(truth, states, fps, cfg["eval"]["reaction_window_s"]),
          "story": story_scores(truth, info, cfg["eval"]["match_window_s"]),
          "bad_feed": bad_feed(meta, cams_chosen), "summary": info["summary"]}
     (run / "report.json").write_text(json.dumps(r, indent=2))
@@ -185,8 +200,10 @@ def write_report(run: Path, r: dict, cfg: dict) -> Path:
              f"Source: **{r['source']}**{' (oracle = annotated players, not the detector)' if r['source'] == 'oracle' else ''}"
              f" · story: **{r['story_mode'] or 'none'}** · {r['summary']['seconds']} s directed", "",
              "| Check | Result | Target |", "|---|---|---|",
-             f"| Ball on air (ground-truth ball inside the live camera) | {_pct(b['ball_on_air'])} "
-             f"({b['frames_scored']} frames) | ≥ 80% oracle / ≥ 60% detector |",
+             f"| Ball on air, all cameras (ground-truth ball inside the live camera) | {_pct(b['ball_on_air'])} "
+             f"({b['frames_scored']} frames) | (WIDE always counts) |",
+             f"| **Ball on air, excluding WIDE time** | **{_pct(b['ball_on_air_not_wide'])}** | ≥ 80% oracle / ≥ 60% detector |",
+             f"| Time on WIDE | {_pct(b['wide_share'])} | (lower = more real directing) |",
              f"| Shortest shot (normal cuts) | {s['shortest_shot_s']:.2f} s ({s['too_short']} too short) "
              f"| ≥ {cfg['director']['min_shot_seconds']} s |" if s["shortest_shot_s"] is not None else
              "| Shortest shot | – (no complete shot) | |",
@@ -199,6 +216,7 @@ def write_report(run: Path, r: dict, cfg: dict) -> Path:
     reacted = sum(x["reacted"] for x in r["reactions"])
     lines.append(f"| Close-up within {cfg['eval']['reaction_window_s']} s after a real goal | "
                  f"{reacted}/{len(r['reactions'])} | ≥ 2/3 |")
+    lines.append(f"| False reactions (no real goal before them) | {r['false_reactions']} | low |")
     if story:
         for k, v in story.items():
             lines.append(f"| Story {k}s: recall / precision / delay | {_pct(v['recall'])} / {_pct(v['precision'])} / "
@@ -219,19 +237,34 @@ def write_report(run: Path, r: dict, cfg: dict) -> Path:
     return path
 
 
+def baseline(segment: str, name: str, cam: int) -> dict:
+    """A director that never cuts (always `cam`): what any real director must beat."""
+    meta = load_segment(segment)
+    chosen = [cam] * meta["frames"]
+    return {"run": f"baseline: always {name}", "source": "–", "story_mode": None,
+            "ball": ball_on_air(meta, {"source": "oracle"}, chosen), "shots": {"cuts": 0, "shortest_shot_s": None},
+            "reactions": reactions(truth_events(meta), chosen, ["IN_PLAY"] * len(chosen), meta["fps"], 1),
+            "false_reactions": 0, "bad_feed": bad_feed(meta, chosen), "story": None}
+
+
 def compare(segment: str) -> Path:
-    rows = ["| Run | Source | Story | Ball on air | Cuts | Shortest | Goals reacted | Bad cam on air | Story goals R/P |",
-            "|---|---|---|---|---|---|---|---|---|"]
-    for run in sorted(runs_dir(segment).glob("*/report.json")):
-        r = json.loads(run.read_text())
+    rows = ["| Run | Source | Story | Ball on air (not WIDE) | Time on WIDE | Cuts | Shortest | Goals reacted | "
+            "False reactions | Bad cam on air | Story goals R/P |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
+    reports = [baseline(segment, "WIDE", 4), baseline(segment, "CENTRE", 2)]
+    reports += [json.loads(p.read_text()) for p in sorted(runs_dir(segment).glob("*/report.json"))]
+    for r in reports:
         g = r["story"]["goal"] if r["story"] else None
-        rows.append(f"| {r['run']} | {r['source']} | {r['story_mode'] or '–'} | {_pct(r['ball']['ball_on_air'])} | "
-                    f"{r['shots']['cuts']} | {r['shots']['shortest_shot_s'] or 0:.1f} s | "
-                    f"{sum(x['reacted'] for x in r['reactions'])}/{len(r['reactions'])} | "
+        b = r["ball"]
+        rows.append(f"| {r['run']} | {r['source']} | {r['story_mode'] or '–'} | {_pct(b.get('ball_on_air_not_wide'))} | "
+                    f"{_pct(b.get('wide_share'))} | {r['shots']['cuts']} | "
+                    f"{(r['shots']['shortest_shot_s'] or 0):.1f} s | "
+                    f"{sum(x['reacted'] for x in r['reactions'])}/{len(r['reactions'])} | {r.get('false_reactions', '–')} | "
                     f"{_pct(r['bad_feed']['on_air_share']) if r['bad_feed'] else '–'} | "
                     f"{(_pct(g['recall']) + ' / ' + _pct(g['precision'])) if g else '–'} |")
     path = runs_dir(segment) / "compare.md"
-    path.write_text(f"# MVP 3 — runs on segment '{segment}'\n\n" + "\n".join(rows) + "\n")
+    path.write_text(f"# MVP 3 — runs on segment '{segment}'\n\nBaselines never cut: every real run must beat them on "
+                    "'ball on air (not WIDE)' while reacting to goals.\n\n" + "\n".join(rows) + "\n")
     print(path.read_text())
     return path
 

@@ -64,10 +64,14 @@ def build_cards(t: float, cams: dict, rects: list, world, quality: list, phase, 
             x, y = to_camera(rect, w, h, world.ball)
             ball = BallInfo(round(x / w, 3), round(y / h, 3), world.ball_status)
         players = sum(1 for p in world.players if inside(p, rect))
+        action = None
+        if inside(world.action, rect):
+            ax, ay = to_camera(rect, w, h, world.action)
+            action = (round(ax / w, 3), round(ay / h, 3))
         cards.append(CamCard(cam=cam["cam"], name=cam["name"], time=round(t, 2), logged_at=round(t, 2),
                              shot_type=cam["shot_type"], ball=ball, players=players,
                              play_speed=round(world.play_speed, 2), quality=quality[k], event=event, phase=phase,
-                             source=source, action_in_view=inside(world.action, rect)))
+                             source=source, action_in_view=action is not None, action=action))
     return cards
 
 
@@ -85,7 +89,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     oracle_players = OraclePlayers(meta, cfg["cameras"]["close"]["group_radius_m"]) if oracle else None
     detections = None if oracle else PanoramaDetections(segment)
 
-    story = None if no_story else story_run(segment, story_run_id)
+    story = None if no_story else story_run(segment, story_run_id, None if story_run_id else f"close_{aim}")
     feed = StoryFeed(story["folder"] if story else None, story.get("wall_start", 0.0) if story else 0.0,
                      story["speed"] if story else 1.0)
 

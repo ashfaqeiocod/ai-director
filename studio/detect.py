@@ -54,7 +54,7 @@ def _save(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def run(segment: str) -> None:
+def run(segment: str, allow_fallback: bool = False) -> None:
     from src.detect import Detector                 # slow import (model libraries)
 
     meta = load_segment(segment)
@@ -73,6 +73,17 @@ def run(segment: str) -> None:
         report(segment)
         return
     detector = Detector(cfg)
+    if detector.backend != "roboflow" and not allow_fallback:
+        # This happened: CoreML could not write its compiled model (sandboxed temp folder), the football
+        # model silently fell back to generic YOLO, and the ball rate dropped from ~16% to ~2%.
+        raise SystemExit("[detect] the football model did not load (see the error above) and the generic YOLO "
+                         "fallback finds almost no balls on this footage. Fix the model, or pass --allow-fallback.")
+    for c in DETECT_CAMS:
+        if caches[c].get("setup") not in (None, detector.describe()):
+            print(f"[detect] cam{c}: cache was made with '{caches[c]['setup']}', starting again")
+            caches[c] = {"cam": c, "step": step, "frames": {}}
+        caches[c]["setup"] = detector.describe()
+    todo = [i for i in wanted if any(str(i) not in caches[c]["frames"] for c in DETECT_CAMS)]
     caps = {c: cv2.VideoCapture(str(cam_video(segment, c))) for c in DETECT_CAMS}
     pool = ThreadPoolExecutor(max_workers=len(DETECT_CAMS))
     print(f"[detect] {segment}: {len(todo)} frames to do (every {step}th frame), cams {DETECT_CAMS}", flush=True)
@@ -176,8 +187,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--segment", required=True)
     parser.add_argument("--report", action="store_true", help="only print the ball rates")
+    parser.add_argument("--allow-fallback", action="store_true", help="accept the generic YOLO fallback detector")
     args = parser.parse_args()
-    report(args.segment) if args.report else run(args.segment)
+    report(args.segment) if args.report else run(args.segment, args.allow_fallback)
     return 0
 
 

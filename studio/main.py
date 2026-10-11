@@ -42,10 +42,12 @@ def main() -> int:
 
     runs_file = prepare.work_dir(seg) / "story_runs.json"
     runs = json.loads(runs_file.read_text()) if runs_file.exists() else []
-    story = [r for r in runs if r["mode"] == args.story_mode and r["speed"] == 1.0]
-    story_id = story[-1]["run_id"] if story else story_pass.run(seg, args.story_mode, 1.0, args.specialist_url)
-
     for oracle in ([True] if args.skip_detector else [False, True]):
+        # Each run's story watches ITS close-up (detector-aimed or oracle-aimed), so the two stay separate.
+        feed = "close_oracle" if oracle else "close_detector"
+        story = [r for r in runs if r["mode"] == args.story_mode and r["speed"] == 1.0 and r.get("feed") == feed
+                 and r.get("valid", True)]
+        story_id = story[-1]["run_id"] if story else story_pass.run(seg, args.story_mode, 1.0, args.specialist_url, feed)
         out = run.run(seg, oracle, story_id, no_story=False, max_seconds=None)
         evaluate.evaluate(seg, out.name)
     evaluate.compare(seg)

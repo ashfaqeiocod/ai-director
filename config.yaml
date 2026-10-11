@@ -264,10 +264,14 @@ studio:
     goal_min_confidence: 0.6
     goal_min_looks: 2 # independent looks that must agree on a goal (no scoreboard to confirm it)
     goal_corroborate_s: 30
-  story: # MVP 2 settings used for the story pass on the panorama (merged over the story: section)
-    overrides:
-      sport: "soccer (an amateur university match filmed by ONE fixed panoramic camera showing the whole pitch; players look small; there are no TV graphics, no scoreboard, no replays and no commentary)"
-      llm: { video_height: 540 } # the panorama is very wide: more pixels so small players stay visible
+  story: # MVP 2 settings for the story pass, per feed (merged over the story: section above)
+    max_llm_errors: 3 # more failed AI looks than this (or any lag skip) = the run is marked invalid
+    feeds:
+      close: # the virtual close-up (default): the action is big enough to see
+        sport: "soccer (an amateur university match; one camera follows the play; there are no TV graphics, no scoreboard, no replays and no commentary)"
+      wide: # the whole panorama: on dev Gemini missed the goal (players a few pixels tall)
+        sport: "soccer (an amateur university match filmed by ONE fixed panoramic camera showing the whole pitch; players look small; there are no TV graphics, no scoreboard, no replays and no commentary)"
+        llm: { video_height: 540 } # the panorama is very wide: more pixels so small players stay visible
   eval: # scoring only (studio.evaluate)
     reaction_window_s: 20 # a close-up within this many seconds after a real goal counts as a reaction
     match_window_s: 10 # a story event within this many seconds of a true one is a match

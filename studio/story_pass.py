@@ -1,6 +1,7 @@
 """story_pass.py — MVP 3 Step 4: MVP 2's story engine on the wide panorama, at real speed, without a browser.
 
-  venv/bin/python -m studio.story_pass --segment dev --mode gemini_only
+  venv/bin/python -m studio.story_pass --segment dev --mode gemini_only                       # watches the close-up
+  venv/bin/python -m studio.story_pass --segment dev --mode gemini_only --feed wide           # the whole panorama
   venv/bin/python -m studio.story_pass --segment dev --mode fast_only --speed 4    # quick test, no AI
 
 In MVP 2 the browser's <video> is the clock. Here a simple loop plays that role: it moves the playhead
@@ -18,10 +19,11 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import subprocess
 import time
 from pathlib import Path
 
-from src.common import load_config
+from src.common import ffmpeg_exe, load_config
 from story.common import story_config
 from story.intake import clip_dir, intake
 from studio.prepare import load_segment, work_dir
@@ -35,22 +37,48 @@ def deep_merge(base: dict, extra: dict) -> dict:
     return out
 
 
-def story_clip(segment: str) -> Path:
-    """The segment's panorama as an MVP 2 clip folder (data/clips/studio-<segment>/), made once."""
-    name = f"studio-{segment}"
+FEEDS = ("close_detector", "close_oracle", "wide")
+
+
+def story_clip(segment: str, feed: str) -> Path:
+    """The video the story layer watches, as an MVP 2 clip folder (data/clips/studio-<segment>-<feed>/), made once.
+
+    wide            the whole panorama: the action is tiny (Gemini missed the dev goal on it)
+    close_detector  the virtual close-up aimed by the MVP 1 detector (honest)
+    close_oracle    the close-up aimed by the annotated players (oracle, labelled)
+    The camera videos have no sound, so the match sound from the panorama is added.
+    """
+    name = f"studio-{segment}-{feed}"
     folder = clip_dir(name)
-    if not (folder / "meta.json").exists():
-        print(f"[story] making MVP 2 clip {name} from the panorama ...", flush=True)
-        intake(str(work_dir(segment) / "source.mp4"), name=name)
+    if (folder / "meta.json").exists():
+        return folder
+    from studio.cameras import CLOSE_CAM, cam_video
+
+    source = work_dir(segment) / "source.mp4"
+    print(f"[story] making MVP 2 clip {name} ...", flush=True)
+    if feed == "wide":
+        intake(str(source), name=name)
+        return folder
+    video = cam_video(segment, CLOSE_CAM, feed.split("_")[1])
+    if not video.exists():
+        raise SystemExit(f"{video.name} is missing: render the close-up first (studio.cameras --only 5 --aim ...)")
+    with_sound = work_dir(segment) / f"story_{feed}.mp4"
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(video), "-i", str(source),
+                    "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-c:a", "aac", "-shortest", str(with_sound)], check=True)
+    try:
+        intake(str(with_sound), name=name)
+    finally:
+        with_sound.unlink(missing_ok=True)
     return folder
 
 
-def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "") -> str:
+def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "", feed: str = "close_detector") -> str:
     from story.engine import StoryEngine          # imports the AI libraries
 
     meta = load_segment(segment)
-    folder = story_clip(segment)
-    cfg = deep_merge(story_config(), load_config()["studio"]["story"]["overrides"])
+    folder = story_clip(segment, feed)
+    feed_cfg = load_config()["studio"]["story"]["feeds"]["wide" if feed == "wide" else "close"]
+    cfg = deep_merge(story_config(), feed_cfg)
     events: list[dict] = []
 
     def publish(message: dict) -> None:
@@ -68,7 +96,7 @@ def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "") -
     engine = StoryEngine(folder, cfg, mode, publish, send_audio=meta["has_audio"], specialist_url=specialist_url)
     engine.start()
     duration = engine.reader.duration
-    print(f"[story] {segment}: {duration:.0f} s at {speed}x, mode {mode}, run {engine.run_id}", flush=True)
+    print(f"[story] {segment}: {duration:.0f} s at {speed}x, mode {mode}, feed {feed}, run {engine.run_id}", flush=True)
     start = time.time()
     try:
         while True:
@@ -87,21 +115,29 @@ def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "") -
     print(f"[story] done: {summary['events']} events, headline {summary['events_by_type']}, "
           f"gemini looks {summary['story_gemini']}, template {summary['story_template']}, "
           f"avg delay {summary['avg_llm_delay']} s, errors {summary['llm_errors']}")
-    record_run(segment, engine.run_id, engine.clip, mode, speed, summary, wall_start=start)
+    # A run that fell behind the video (machine overloaded) or lost many AI answers is not a fair
+    # measurement: it is kept on disk but marked invalid, and story_run() skips it.
+    valid = summary["lag_skips"] == 0 and summary["llm_errors"] <= load_config()["studio"]["story"]["max_llm_errors"]
+    if not valid:
+        print(f"[story] run marked INVALID (lag skips {summary['lag_skips']}, AI errors {summary['llm_errors']}): "
+              "run it again with nothing heavy running alongside")
+    record_run(segment, engine.run_id, engine.clip, mode, speed, summary, wall_start=start, feed=feed, valid=valid)
     return engine.run_id
 
 
-def record_run(segment: str, run_id: str, clip: str, mode: str, speed: float, summary: dict, wall_start: float) -> None:
+def record_run(segment: str, run_id: str, clip: str, mode: str, speed: float, summary: dict, wall_start: float,
+               feed: str, valid: bool = True) -> None:
     path = work_dir(segment) / "story_runs.json"
     runs = json.loads(path.read_text()) if path.exists() else []
     # wall_start = wall-clock time at playhead 0: turns log lines' wall_time into playhead time.
-    runs.append({"run_id": run_id, "clip": clip, "mode": mode, "speed": speed, "wall_start": wall_start,
+    runs.append({"run_id": run_id, "clip": clip, "feed": feed, "mode": mode, "speed": speed, "valid": valid,
+                 "wall_start": wall_start,
                  "summary": summary})
     path.write_text(json.dumps(runs, indent=2))
 
 
-def story_run(segment: str, run_id: str | None) -> dict:
-    """A recorded story run (the newest real-time one if run_id is None), with its MVP 2 run folder."""
+def story_run(segment: str, run_id: str | None, feed: str | None = None) -> dict:
+    """A recorded story run (the newest real-time one on `feed` if run_id is None), with its MVP 2 run folder."""
     from story.run_log import run_folder
 
     path = work_dir(segment) / "story_runs.json"
@@ -109,11 +145,12 @@ def story_run(segment: str, run_id: str | None) -> dict:
     if run_id is not None:
         runs = [r for r in runs if r["run_id"] == run_id]
     else:
-        runs = [r for r in runs if r["speed"] == 1.0]
+        runs = [r for r in runs if r["speed"] == 1.0 and r.get("valid", True)
+                and (feed is None or r.get("feed", "wide") == feed)]
     if not runs:
         raise SystemExit(f"no {'story run ' + run_id if run_id else 'real-time story run'} for '{segment}': run  "
                          f"venv/bin/python -m studio.story_pass --segment {segment} --mode gemini_only")
-    return {**runs[-1], "folder": run_folder(f"studio-{segment}", runs[-1]["run_id"])}
+    return {**runs[-1], "folder": run_folder(runs[-1]["clip"], runs[-1]["run_id"])}
 
 
 def main() -> int:
@@ -122,8 +159,9 @@ def main() -> int:
     parser.add_argument("--mode", default="gemini_only", choices=["fast_only", "specialist_only", "gemini_only", "hybrid"])
     parser.add_argument("--speed", type=float, default=1.0, help="1 = real time (needed for honest AI delays)")
     parser.add_argument("--specialist-url", default="", help="Colab URL for hybrid / specialist_only")
+    parser.add_argument("--feed", default="close_detector", choices=FEEDS, help="which video the story layer watches")
     args = parser.parse_args()
-    run(args.segment, args.mode, args.speed, args.specialist_url)
+    run(args.segment, args.mode, args.speed, args.specialist_url, args.feed)
     return 0
 
 
