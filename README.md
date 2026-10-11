@@ -101,3 +101,9 @@ spec: [docs/MVP2_STORY_SPEC.md](docs/MVP2_STORY_SPEC.md) · results: [compare.md
 | `dashboard/story_api.py`, `dashboard/static/story.html` | the Story tab |
 | `colab/` | the Colab notebook (built from `specialist_server.py` by `build_notebook.py`) |
 | `tests/` | `venv/bin/python -m pytest tests -q` |
+
+## MVP 3 — Directed Story (in progress)
+Combines MVP 1 and MVP 2 on real full-match footage. Spec: `docs/MVP3_SPEC.md`; plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`.
+
+Footage and annotations: **SoccerTrack v2** (Scott et al.), https://huggingface.co/datasets/atomscott/soccertrack-v2,
+licensed CC BY 4.0. Downloaded locally only (needs `HF_TOKEN` in `.env`); never committed.

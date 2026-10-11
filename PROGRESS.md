@@ -189,3 +189,38 @@ Spec: `docs/MVP2_STORY_SPEC.md`. Last updated: 2026-10-09
 ## Next action (MVP 2)
 MVP 2 complete. User: rate commentary lines (👍/👎) in a run to measure narration accuracy, check truth.csv,
 and see TESTING_MVP2.md / DEMO.md. MVP 1 quick check passed on 2026-10-09 (5 cuts, shortest shot 2.00 s).
+---
+
+# MVP 3 — Directed Story
+Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 2026-10-11
+
+## Status
+| Step | Status | Notes |
+|---|---|---|
+| 0. Plan + data access | in progress | HF token OK; SoccerTrack v2 128057 2nd half downloading; SoccerNet NDA requested |
+| 1. Intake + calibration check | not started | |
+| 2. Virtual cameras | not started | |
+| 3. Detection + cards | not started | |
+| 4. Story layer on wide feed | not started | |
+| 5. Director v2 | not started | |
+| 6. Run + render | not started | |
+| 7. Studio tab | not started | |
+| 8. Evaluation | not started | |
+| 9. Docs | not started | |
+
+## Key results (MVP 3)
+
+## Decisions made (MVP 3)
+- Footage: SoccerTrack v2 (CC BY 4.0). No open dataset has full matches from several real broadcast angles
+  with sound (see plan section 14), so the 4K panorama is cut into 5 virtual cameras.
+- Match 128057 (M7, a dataset TEST match), 2nd half: 5 goals at frames 2282, 37446, 46854, 53875, 67791.
+  Dev segment 00:30-06:30, eval segment 23:00-37:00.
+- The dataset's ball track is rebuilt from the annotated events (straight lines between them), so it knows
+  the future: scoring only. Per-frame player positions (gsr) may drive an "oracle" mode, always labelled.
+
+## Problems / open issues (MVP 3)
+- The HF token was pasted in chat: regenerate it on huggingface.co when setup is done and update `.env`.
+- Disk: ~19 GB free before the 6.7 GB download.
+
+## Next action (MVP 3)
+Step 1: verify the video (resolution, fps, frames vs gsr, audio) and check the calibration overlay.

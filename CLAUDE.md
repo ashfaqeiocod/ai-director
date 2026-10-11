@@ -3,14 +3,20 @@
 ## Phases
 - **MVP 1 (camera switching): DONE** (Steps 1–9 below). Its rules still apply and it must keep working:
   run the quick check in `TESTING.md` (section 1) after any change that could touch it.
-- **MVP 2 (Live Story Reader): CURRENT.** Full spec: `docs/MVP2_STORY_SPEC.md` (read it fully before working on MVP 2).
+- **MVP 2 (Live Story Reader): DONE.** Full spec: `docs/MVP2_STORY_SPEC.md`.
   All MVP 2 code lives in `story/` (plus a Story tab in the dashboard and `colab/`). Its non-negotiable rules
   (spec section 2) apply at all times: never read video/audio beyond the playhead (`CausalReader`), the browser
   `<video>` is the master clock, store `event_time` + `logged_at` for every story item, don't break MVP 1,
   never commit `.env`, clips, model weights or outputs. Progress is tracked in the "MVP 2" section of `PROGRESS.md`.
   Secrets: `GEMINI_API_KEY` in `.env` (stop and ask the user if it is missing or fails).
 
-The rest of this file is the MVP 1 brief; the Working mode, Hardware rules and Coding style sections apply to MVP 2 too.
+- **MVP 3 (Directed Story): CURRENT.** Full spec: `docs/MVP3_SPEC.md` (read it fully before working on MVP 3);
+  big picture: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Combines MVP 1 + MVP 2 on real SoccerTrack v2 footage
+  (5 virtual cameras, camera cards, director state machine). All MVP 3 code lives in `studio/` and only USES
+  `src/` and `story/` (never change their defaults). Ground truth (`bas/`, `ball/`) is for scoring only.
+  Progress: "MVP 3" section of `PROGRESS.md`. Secrets: `HF_TOKEN` in `.env` (never print it).
+
+The rest of this file is the MVP 1 brief; the Working mode, Hardware rules and Coding style sections apply to MVP 2 and MVP 3 too.
 
 # MVP 1 — camera switching (done)
 
