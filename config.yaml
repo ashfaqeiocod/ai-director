@@ -247,6 +247,7 @@ studio:
     min_shot_seconds: 3.0 # plan: 3-4 s (MVP 1 uses 2.0)
     hysteresis_seconds: 0.6
     mvp1: { score_detected: 100, score_predicted: 60, score_center_max: 30, score_per_player: 1, score_players_max: 10 }
+    action_as_ball: true # no ball seen: the players' group counts like a predicted ball (false = MVP 1 behaviour: ping-pong)
     wide_base: 70 # WIDE is a safe shot: beats a follow cam that has lost the ball
     wide_fast_bonus: 80 # ...and wins when play is fast
     fast_play: 0.6 # play_speed (0..1) at or above this = fast play
