@@ -21,6 +21,79 @@ cd ~/Documents/ai-director
 
 ---
 
+## 0. The 6-camera match (ISSIA): the main demo
+
+Six REAL fixed cameras of one Serie A match (ISSIA-CNR Soccer Dataset, 2 min, no sound), two per area:
+right goal (cam1, cam2), midfield (cam3, cam4), left goal (cam5, cam6). Cameras 1/3/5 are on stand A,
+2/4/6 on the opposite stand B. Every camera is calibrated to the pitch, so all six feed ONE pitch map.
+
+### 0a. Prepare (only once; already done for take 2)
+
+Put the six `Film Role-0 ID-<cam> T-<take> ....avi` files in the project folder, then:
+
+```bash
+venv/bin/python -m studio.issia            # moves the AVIs to data/issia/raw/, makes cam1-6.mp4 + story mosaic (~3 min)
+venv/bin/python -c "from pathlib import Path; from studio.intensity import detect; detect(Path('data/issia/T2'))"
+                                           # football detector on all 6 cams, 5x per second (~30 min, own Terminal)
+venv/bin/python -m studio.issia --calibrate
+```
+
+Check: open `data/issia/T2/calibration_check/cam1.jpg` … `cam6.jpg`. The red lines (the calibrated pitch) must
+sit on the painted lines. The `--calibrate` output prints, for each stand-B camera, how far apart it and its
+stand-A partner put the same players (metres); the chosen "turn" has the smallest distance.
+
+### 0b. Go live
+
+```bash
+venv/bin/python -m dashboard.server
+```
+
+Open http://localhost:8000/studio → **● Live**. The setup panel opens:
+1. **Match**: ISSIA Serie A · 6 stadium cameras.
+2. **AI story layer**: Hybrid (Gemini + Colab), Gemini, Colab only, or Off (saves quota). The line under it shows
+   how many Gemini keys were found in `.env` (`GEMINI_API_KEY`, `GEMINI_API_KEY1`, …) and the model order.
+3. **Colab**: paste the URL, press **Test** (green dot = connected; it switches the story to Hybrid).
+4. **Goal watcher** on → **● Go live**. You should see:
+
+- the program (big picture) and the six cameras in a 3 x 2 grid, laid out as they stand around the pitch
+  (top row stand A: left goal · midfield · right goal; bottom row stand B), red border = on air;
+- a coloured bar under each camera = the director's score for it; it cuts when another camera wins for 0.6 s
+  and never before 3 s;
+- the pitch map: dots from all six cameras merged, the ball (filled = seen, hollow = remembered), the live
+  camera's view filled, the other cameras as dashed outlines;
+- when play gets near a goal: "AI checking goal…" on that goal's camera (Gemini looks at its last seconds);
+- the status strip on the right: Cameras, Detector, Director, Gemini, Colab, Goal AI (green = working);
+- the TV scoreboard on the program: the two teams named after their shirt colours (learned in the first second),
+  score and match clock; the match card: possession, intensity (🔥 hot / ⚡ building / 😌 calm), the AI's phase;
+- the AI caption at the bottom of the program (what Gemini says is happening, with its delay), and the
+  "📖 story so far" summary above the Live feed;
+- the Live feed with emoji, filterable: 🧠 AI (Gemini + goal looks), 🤖 Colab (➡️ pass, 🏃 run with the ball,
+  🎯 shot …), 🗺️ map (📦 ball into the box …), 🎬 cuts;
+- the timeline: lanes for AI events, Colab model outputs and pitch-map triggers, the camera on air, and the
+  intensity graph (blue = AI story, amber = pitch map, yellow ticks = goal-camera looks);
+- **What MVP 3 proves** (top bar): the five claims, each with live evidence numbers.
+
+When the 2 minutes end, the run appears in **Replay** (newest first): **Load**, press ▶.
+
+### 0c. Connect Colab (optional, needs a free GPU)
+
+1. Open `colab/specialist_server.ipynb` in Google Colab, Runtime → GPU, run all, copy the URL it prints.
+2. In the Live bar paste it into **Colab URL** and press **Test**: green dot = connected (model, GPU, fps shown).
+3. Choose story **hybrid** (Gemini + Colab) and Go live. The "Colab" light next to Gemini shows its state.
+
+No GPU ("Cannot connect to GPU backend: usage limits")? Leave the URL empty: everything else works.
+The Colab model watches the PROGRAM (the camera on air), like the TV pictures it was trained on; Gemini watches the
+3-camera strip so it sees the whole pitch.
+
+### 0d. Notes
+- Open the page as `http://localhost:8000/studio` (or `127.0.0.1`): half the camera videos load from the other
+  name, because a browser allows only 6 connections per host.
+- The page's styles are pre-built in `dashboard/static/studio.css` (works offline). After adding new Tailwind
+  classes to `studio.html`, rebuild it: `npx tailwindcss@3.4.17 -i in.css -o dashboard/static/studio.css --minify`
+  with `content: ["dashboard/static/studio.html"]` and a safelist for `grid-cols-1..6` (the CDN covers it meanwhile).
+
+---
+
 ## 1. One-time setup: the footage (~3.5 GB per half)
 
 1. Hugging Face account → accept the terms on https://huggingface.co/datasets/atomscott/soccertrack-v2

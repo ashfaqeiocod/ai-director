@@ -29,7 +29,15 @@ def test_429_backoff_doubles_and_resets():
     assert rl.hit_429(200) == 10
 
 
+def no_extra_keys(monkeypatch) -> None:
+    """Only GEMINI_API_KEY counts in these tests (a real .env may also have GEMINI_API_KEY1 ...)."""
+    import os
+    for name in [k for k in os.environ if k.startswith("GEMINI_API_KEY") and k != "GEMINI_API_KEY"]:
+        monkeypatch.delenv(name)
+
+
 def test_missing_key_raises(monkeypatch):
+    no_extra_keys(monkeypatch)
     monkeypatch.setenv("GEMINI_API_KEY", "")
     with pytest.raises(NoKeyError):
         GeminiStoryLLM(story_config())
@@ -49,6 +57,7 @@ class FakeModels:
 
 
 def fake_llm(monkeypatch, answer: str) -> GeminiStoryLLM:
+    no_extra_keys(monkeypatch)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     calls = []
     llm = GeminiStoryLLM(story_config(), on_call=calls.append)
@@ -125,3 +134,18 @@ def test_daily_quota_switches_to_fallback_then_stops(monkeypatch):
     with pytest.raises(Exception):
         llm.describe_window(ctx())
     assert not llm.available() and llm.state() == "daily_quota"
+
+
+def test_two_keys_take_turns_and_quota_moves_to_the_other_key(monkeypatch):
+    no_extra_keys(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "key-a")
+    monkeypatch.setenv("GEMINI_API_KEY1", "key-b")
+    llm = GeminiStoryLLM(story_config())
+    assert llm.keys == 2
+    llm._take_turn()
+    first = llm.key_i
+    llm._take_turn()
+    assert llm.key_i != first                         # requests alternate between the keys
+    item = {"key": llm.key_i, "model": llm.model}
+    llm._daily_quota_used(item)                       # this key's daily quota for the model is gone...
+    assert not llm.daily_quota_out and llm.key_i != item["key"] and llm.model == item["model"]  # ...other key, same model

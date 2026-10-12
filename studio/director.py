@@ -22,6 +22,8 @@ from src.director import score_camera
 from studio.cards import CamCard
 
 IN_PLAY, REACTION = "IN_PLAY", "REACTION"
+# Camera roles on SoccerTrack (the defaults). Other footage sets them in its own director settings:
+# follow_cams (scored like MVP 1), wide_cam / close_cam (null = this footage has no such camera).
 FOLLOW_CAMS = (1, 2, 3)
 WIDE, CLOSE = 4, 5
 
@@ -50,6 +52,9 @@ class DirectorV2:
         self.reaction_start: float | None = None
         self.reaction_reason = ""
         self.handled: set[str] = set()            # story events already reacted to
+        self.follow_cams = tuple(cfg.get("follow_cams", FOLLOW_CAMS))
+        self.wide_cam = cfg.get("wide_cam", WIDE)
+        self.close_cam = cfg.get("close_cam", CLOSE)
 
     # ------------------------------------------------------------------ scores
     def scores(self, cards: list[CamCard]) -> list[float]:
@@ -64,7 +69,14 @@ class DirectorV2:
                 out.append(-1.0)             # already shaking hard: don't cut TO it (staying on it is allowed)
                 continue
             bonus = c.get("cam_bonus", {}).get(card.cam, 0)   # a preferred viewing angle (set per venue)
-            if card.cam in FOLLOW_CAMS:
+            # 180-degree rule: a camera on the OTHER stand flips left and right for the viewer, so it must be
+            # clearly better before we cut across (cameras -> stand in config; footage without stands: no rule).
+            stands = c.get("stands") or {}
+            if stands and stands.get(card.cam) != stands.get(self.current):
+                bonus -= c.get("cross_line_penalty", 0)
+            if card.cam == self.current:
+                bonus += c.get("live_bonus", 0)   # a challenger must be clearly better, not just a little
+            if card.cam in self.follow_cams:
                 # MVP 1 scoring, on this camera's own ball status and players.
                 if card.ball:
                     ball = BallState(card.ball.status, (card.ball.x * 1000, card.ball.y * 1000))
@@ -76,15 +88,17 @@ class DirectorV2:
                 else:
                     ball = BallState("lost", None)
                 out.append(score_camera(ball, card.players, 1000, c["mvp1"]) + bonus)
-            elif card.cam == WIDE:
+            elif card.cam == self.wide_cam:
                 score = c["wide_base"] + (c["wide_fast_bonus"] if card.play_speed >= c["fast_play"] else 0)
                 out.append(float(score))
-            else:                                   # CLOSE
+            elif card.cam == self.close_cam:
                 slow = card.play_speed <= c["slow_play"] and card.action_in_view
                 # The ball is in a penalty box (pitch map) and the close-up shows it: the danger moment.
                 box = card.zone in ("left_box", "right_box") and card.ball is not None \
                     and card.map_intensity >= c["box_min_intensity"]
                 out.append(float(c["close_box_score"] if box else c["close_slow_score"] if slow else 0))
+            else:
+                out.append(0.0)
         return out
 
     # ------------------------------------------------------------------ decide
@@ -159,8 +173,9 @@ class DirectorV2:
             events.append({"type": "REACTION_END", "message": "back to play" if play_again else "reaction time over"})
             return self._follow(i, scores, can_cut, events)
         # The close-up; if it is unusable, the best on-air camera instead.
-        has_close = self.num_cams >= CLOSE and usable[CLOSE - 1]   # footage without a close-up: best camera
-        target = CLOSE if has_close else max(range(self.num_cams), key=lambda k: scores[k]) + 1
+        close = self.close_cam
+        has_close = close is not None and self.num_cams >= close and usable[close - 1]   # no close-up: best camera
+        target = close if has_close else max(range(self.num_cams), key=lambda k: scores[k]) + 1
         if self.current == target:
             return Decision(self.current, self.state, scores, f"reaction: holding cam{target} ({self.reaction_reason})", events)
         if not can_cut:

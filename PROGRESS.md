@@ -355,6 +355,53 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   used up today (464/~500 on gemini-3.5-flash-lite): its goal test + the hybrid live test run after the reset
   (12:30 IST) on the same model, so the results stay comparable.
 
+### 2026-10-12 night: ISSIA (6 real stadium cameras) = the main live demo; production-style Studio
+- Footage: ISSIA-CNR Soccer Dataset (D'Orazio et al., AVSS 2009, research use), Serie A, 6 FIXED synced 1080p
+  cameras, 2 per area (right goal cam1/2, midfield cam3/4, left goal cam5/6), take 2 = 2:00, no sound.
+  `python -m studio.issia` moved the 6 AVIs from the repo root to data/issia/raw/, made cam1-6.mp4 (H.264,
+  1088-row cameras cropped to 1080) + story_mosaic.mp4 (cams 5|3|1 side by side) in ~3 min.
+- Detection (football model, 5x/s, 6 cams): 24.9 min on the M1. Ball rate 10-43% per cam, BUT cam1's 43% was
+  mostly the PENALTY SPOT (149 of 600 frames): the parked-ball rule now also runs in pitch metres (0.6 m).
+- Calibration: pitch landmarks clicked per camera (config studio.issia.calibration), red lines checked by eye
+  (data/issia/T2/calibration_check). Stand B (cams 2/4/6) is on the other side; which way each picture is turned
+  was MEASURED: median distance between the same players seen by both cameras of a pair: cam2 mirror_y 0.7 m
+  (vs 7.2 / 50 m), cam4 rotated 0.5 m, cam6 mirror_y 0.6 m. So the 6 cameras agree to ~0.5 m and are in sync.
+- `studio/multicam.py` CalibratedPipeline: all cameras -> one pitch map (players merged across cameras at 1.5 m,
+  ball from the camera nearest the last ball), MVP 1 scoring per camera from the map's ball, DirectorV2.
+  Director roles now config (follow_cams / wide_cam / close_cam; SoccerTrack + MUVS unchanged).
+- Director tuning (offline, 2:00): first run cut cam3<->cam4 (same area, opposite stands) every 3 s ->
+  180-degree rule (cross_line_penalty 40 for the other stand) -> then cam2<->cam4 ping-pong at the view overlap
+  -> live_bonus 20 + stand A main side (+10). Result: 12 cuts, avg shot 9.2 s, shortest 3.0 s, all stand A.
+  Ball on air when the map knows the ball: 79% (best never-cut camera: cam3 57%; best possible from stand A 94%).
+  No ground truth for ISSIA here (the annotation files are not in the folder): these are self-measured numbers.
+- Teams (`studio/teams.py`): shirt colour of outfield players (detector class "player"), k-means into 2 teams
+  after 150 shirts (~1 s): WHITE vs PURPLE (navy shirts look purple on these cameras; Gemini says "blue", the page
+  then uses Gemini's word). Possession = team of the player nearest the ball (3 m): 41-59 / 50-50 / 47-53 per run.
+  Score = confirmed goals credited to the team last on the ball (no goal in this 2-min take, so untested).
+- Gemini: TWO keys now (GEMINI_API_KEY, GEMINI_API_KEY1). Requests take turns between keys; a key whose daily quota
+  is used up (or a 404 model) is skipped per model; chain for MVP 3 in config studio.llm (MVP 2 defaults unchanged):
+  3.5-flash-lite -> 3.5-flash -> 2.5-flash -> 3.1-flash-lite (overloaded today: 24-111 s answers). Live: key 1 was
+  out for 3.5-flash-lite -> switched to key 2 at once; 12-14 looks per 2 min, delay 1.6-5 s, "story so far" summary.
+- Colab specialist (user's T4, RTF 0.12-0.13): on the mosaic it fired ONCE in 2 min (players a few px tall in
+  398x224). It now watches the PROGRAM (the camera on air, frames pushed by the live loop, never ahead of the
+  playhead): 54 outputs in 2 min (PASS, DRIVE, HIGH PASS, HEADER, OUT). Its PASS/DRIVE signals are now logged
+  (SPECIALIST_PLAY) so the page can show them. Gemini keeps the mosaic (whole pitch).
+- Live fixes: program.mp4 kept only SHOWN frames (75 s file for a 120 s run -> Replay clock wrong; also MUVS):
+  skipped frames now repeat the last picture; the match clock starts after the AI is ready (was 9 s missing);
+  shortest shot ignores the last shot (cut by the clip end).
+- Studio page rebuilt: setup panel (match, story mode, Colab URL + Test, goal watcher, Gemini keys/models),
+  program with TV scoreboard bug (team colours, score, clock) + AI caption (lower third, with its delay), 3x2
+  camera grid by stand with director score bars, status strip (cameras/detector/director/Gemini/Colab/goal AI),
+  match card (score, possession, intensity, phase), team-coloured pitch map with every camera's view, Live feed
+  (AI / Colab / map / cuts filters, emoji) + "story so far", timeline lanes (AI events, Colab model, pitch map,
+  camera on air, intensity graph), "What MVP 3 proves" panel with live evidence numbers.
+  Two browser limits found: 6 connections per host (6 camera videos blocked the program and API) -> half the
+  cameras load from 127.0.0.1 / localhost; this Mac can't resolve cdn.tailwindcss.com -> pre-built
+  dashboard/static/studio.css (CDN kept as a backup).
+- Live checks in the browser (Playwright + Chrome): setup -> Test Colab -> Go live -> all six lights green,
+  lag 0.02 s, ~13-19 fps shown (6 x 1080p decode + 7 MJPEG streams), run valid, appears in Replay.
+
 ## Next action (MVP 3)
-After 12:30 IST (Gemini quota reset): held-out `test` goal test (goalwatch -> run -> evaluate, frozen settings),
-then the hybrid live test in the Studio (Colab link from the user). Then update TESTING_MVP3.md + plan doc.
+ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
+(25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match
+can be prepared quickly; check team colours + possession on a second ISSIA take if one is available.

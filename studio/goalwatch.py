@@ -121,7 +121,10 @@ def ask(llm, video: Path, start: float, end: float, system: str, schema, text: s
                                              media_resolution=getattr(types.MediaResolution, cfg["media_resolution"]))
         for attempt in range(2):
             asked = time.time()
-            item = {"kind": schema.__name__, "model": llm.model, "window": [round(start, 2), round(end, 2)],
+            if hasattr(llm, "_take_turn"):
+                llm._take_turn()                  # share the requests between the Gemini keys
+            item = {"kind": schema.__name__, "model": llm.model, "key": getattr(llm, "key_i", 0),
+                    "window": [round(start, 2), round(end, 2)],
                     "requested_at": round(asked, 3)}
             try:
                 r = llm.client.models.generate_content(model=llm.model, contents=[types.Content(role="user", parts=parts)],
@@ -132,10 +135,12 @@ def ask(llm, video: Path, start: float, end: float, system: str, schema, text: s
             except errors.APIError as error:
                 item.update(latency_s=round(time.time() - asked, 2), error=f"{error.code}: {str(error)[:200]}")
                 log(item)
-                fallback = llm.cfg.get("fallback_model")
-                if error.code == 429 and "PerDay" in str(error) and fallback and llm.model != fallback:
-                    llm.model = fallback          # daily quota of this model used up: same key, other model
-                    continue
+                if ((error.code == 429 and "PerDay" in str(error)) or error.code == 404) and hasattr(llm, "rate_limited_key"):
+                    llm._daily_quota_used(item)   # this key + model is used up today: next key, then next model
+                    if not llm.daily_quota_out:
+                        continue
+                if error.code == 429 and hasattr(llm, "rate_limited_key") and llm.rate_limited_key(item):
+                    continue                      # per-minute limit on this key: try the next key now
                 if error.code in (500, 503, 504) and attempt == 0:
                     continue
                 raise
@@ -288,6 +293,13 @@ def run(segment: str, max_seconds: float | None = None) -> str:
     return run_id
 
 
+def studio_story_config() -> dict:
+    """MVP 2's settings with MVP 3's Gemini model chain (config studio.llm) on top."""
+    from studio.story_pass import deep_merge
+
+    return deep_merge(story_config(), {"llm": load_config()["studio"].get("llm", {})})
+
+
 class LiveGoalWatcher:
     """Live mode: the same GoalPlanner, but the looks really run in the background while the match plays.
 
@@ -296,14 +308,16 @@ class LiveGoalWatcher:
     It can share MVP 2's Gemini client (and so its requests-per-minute limiter) with the live story layer."""
 
     def __init__(self, segment: str, cams: dict, clock, on_look, publish, shared_llm=None, out_dir: Path | None = None,
-                 snapshot=None):
+                 snapshot=None, video_of=None):
         from story.llm.gemini import GeminiStoryLLM
 
         self.cfg = load_config()["studio"]["goalwatch"]
         self.segment, self.clock, self.on_look, self.publish = segment, clock, on_look, publish
         self.snapshot = snapshot                    # snapshot(side, video, t): show the picture the AI is checking
+        # video_of(cam) -> that camera's video file (default: SoccerTrack's rendered cameras)
+        self.video_of = video_of or (lambda cam: cam_video(segment, cam))
         self.goal_cams = {g["side"]: g["cam"] for g in cams.get("goal_cams", [])}
-        self.llm = shared_llm or GeminiStoryLLM(story_config())
+        self.llm = shared_llm or GeminiStoryLLM(studio_story_config())
         self.planner = GoalPlanner(self.cfg)
         self.lock = threading.Lock()
         self.busy_until = -1.0
@@ -335,10 +349,10 @@ class LiveGoalWatcher:
     def _look(self, job: dict) -> None:
         log = (lambda item: self.calls.write(json.dumps(item, default=str) + "\n")) if self.calls else (lambda item: None)
         if self.snapshot:
-            self.snapshot(job["side"], cam_video(self.segment, self.goal_cams[job["side"]]), job["end"])
+            self.snapshot(job["side"], self.video_of(self.goal_cams[job["side"]]), job["end"])
         try:
             self.llm.limiter.record()
-            result, _ = ask(self.llm, cam_video(self.segment, self.goal_cams[job["side"]]), job["start"], job["end"],
+            result, _ = ask(self.llm, self.video_of(self.goal_cams[job["side"]]), job["start"], job["end"],
                             job["system"], job["schema"], job["text"], self.cfg, log)
         except Exception as error:                 # noqa: BLE001 — a failed look is logged, not fatal
             with self.lock:

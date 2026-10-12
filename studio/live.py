@@ -3,6 +3,7 @@
   venv/bin/python -m studio.live --segment dev --seconds 60                      # director only, headless
   venv/bin/python -m studio.live --segment eval --story gemini_only --goalwatch  # + AI story + goal watcher
   venv/bin/python -m studio.live --segment muvs-P19 --seconds 60                 # real phone cameras (MUVS)
+  venv/bin/python -m studio.live --segment issia-T2 --goalwatch                  # 6 real stadium cameras (ISSIA)
 
 A wall clock decides which frame is "now" (like a real broadcast). Each loop:
   1. read the newest frame of every on-air camera (frames we are too slow for are skipped: that's live);
@@ -22,6 +23,7 @@ import csv
 import json
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -97,6 +99,40 @@ class LiveFeed:
         return None
 
 
+class ProgramFeed:
+    """The program (camera on air) as a frame source for the Colab specialist: the action model was trained on TV
+    broadcasts, so it should watch the directed picture, not a squeezed mosaic (ISSIA mosaic: 1 event in 2 min).
+    The live loop pushes each shown program frame (already played = causal); frames() returns those in (t0, t1]."""
+
+    def __init__(self, size: tuple[int, int] = (398, 224), keep_s: float = 20.0):
+        self.size, self.keep_s = size, keep_s
+        self.items: deque = deque()
+        self.lock = threading.Lock()
+
+    def push(self, t: float, image: np.ndarray) -> None:
+        small = cv2.resize(image, self.size, interpolation=cv2.INTER_AREA)
+        with self.lock:
+            self.items.append((t, small))
+            while self.items and t - self.items[0][0] > self.keep_s:
+                self.items.popleft()
+
+    def __call__(self):
+        return self                                 # the specialist asks for "a video": this feed is it
+
+    def frames(self, t0: float, t1: float, fps: float | None = None):
+        with self.lock:
+            items = [x for x in self.items if t0 < x[0] <= t1]
+        last = -1e9
+        for t, frame in items:
+            if fps and t - last < 1.0 / fps - 1e-3:
+                continue
+            last = t
+            yield t, frame
+
+    def close(self) -> None:
+        pass
+
+
 class LiveStudio:
     def __init__(self, source: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
                  goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True,
@@ -116,6 +152,8 @@ class LiveStudio:
         self.jpegs: dict[str, tuple[int, bytes]] = {}      # stream name -> (sequence number, JPEG)
         self.jpeg_lock = threading.Lock()
         self.story_engine = None
+        # Folder footage (ISSIA, MUVS): the Colab model watches the program. SoccerTrack keeps MVP 2's clip feed.
+        self.program_feed = ProgramFeed() if self.src.kind != "soccertrack" else None
         self.watcher = None
         self.status = {"state": "idle", "t": 0.0, "lag_s": 0.0, "shown_fps": 0.0, "skipped": 0}
         self.run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-live"
@@ -160,10 +198,10 @@ class LiveStudio:
                                                                       "sentiment", "narration", "intensity", "source",
                                                                       "events")})
                 self.publish({"type": "story_msg", **{k: v for k, v in message.items() if k != "type"},
-                              "kind": kind})
+                              "kind": kind, "log_kind": message.get("kind") if kind == "log" else None})
 
             self.story_engine = StoryEngine(folder, cfg, self.story_mode, on_story, send_audio=self.src.has_audio,
-                                            specialist_url=self.specialist_url)
+                                            specialist_url=self.specialist_url, specialist_video=self.program_feed)
             self.story_engine.start()
         if self.use_goalwatch:
             from studio.goalwatch import LiveGoalWatcher
@@ -171,7 +209,15 @@ class LiveStudio:
             llm = self.story_engine.llm if self.story_engine and self.story_engine.llm else None
             self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, self.feed.add_look, self.publish,
                                            shared_llm=llm, out_dir=work_dir(self.src.segment) / "goalwatch" / self.run_id,
-                                           snapshot=self._goal_snapshot)
+                                           snapshot=self._goal_snapshot, video_of=self._goal_video)
+
+    def _goal_video(self, cam: int) -> Path:
+        """The goal camera's video: SoccerTrack renders its own goal views; other footage films them for real."""
+        if self.src.kind == "soccertrack":
+            from studio.cameras import cam_video
+
+            return cam_video(self.src.segment, cam)
+        return self.src.video(cam)
 
     def _goal_snapshot(self, side: str, video: Path, t: float) -> None:
         """The goal camera picture at the moment the AI starts checking it (one frame, read in the AI thread)."""
@@ -216,12 +262,15 @@ class LiveStudio:
             frame_clock = {"t": 0.0}
             clock = lambda: frame_clock["t"]                                             # noqa: E731
         self._start_ai(clock)
+        if self.realtime:
+            start = time.time()   # the match clock starts once the AI is ready (its start-up took seconds)
         self.status["state"] = "live"
         self.publish({"type": "live_started", "segment": self.segment, "run_id": self.run_id,
                       "duration": self.total / fps, "story": self.story_mode, "goalwatch": self.use_goalwatch})
         i, last_det, last_pub, last_tiles = -1, -1, 0.0, 0.0
         images = {}
         decision = None
+        last_program = None                          # the last picture written to program.mp4
         try:
             while not self.stop_flag.is_set():
                 if not self.realtime:
@@ -240,9 +289,15 @@ class LiveStudio:
                         cap.grab()
                     i += 1
                     skipped += 1
-                    if chosen:                     # a skipped frame still shows the live camera
+                    if not chosen:                 # skipped before the first decision: the start camera
+                        chosen.append(self.cfg["director"]["start_cam"] if self.src.kind == "soccertrack"
+                                      else self.pipe.director.current)
+                        states.append("IN_PLAY")
+                    elif chosen:                   # a skipped frame still shows the live camera
                         chosen.append(chosen[-1])
                         states.append(states[-1])
+                        if program and last_program is not None:
+                            program.write(last_program)   # keep program.mp4 in real time (Replay's clock)
                 for c, cap in caps.items():
                     ok, img = cap.read()
                     images[c] = img if ok else images.get(c, blank)
@@ -257,7 +312,11 @@ class LiveStudio:
                 det_frame = i - i % step
                 if det_frame != last_det:
                     last_det = det_frame
-                    events = self.pipe.detections(det_frame, det_frame / fps, detector=self.src.detection_at(det_frame))
+                    if hasattr(self.pipe, "teams"):      # calibrated cameras: shirt colours from these pictures
+                        events = self.pipe.detections(det_frame, det_frame / fps, detector=self.src.detection_at(det_frame),
+                                                      images=images)
+                    else:
+                        events = self.pipe.detections(det_frame, det_frame / fps, detector=self.src.detection_at(det_frame))
                     if self.watcher:
                         self.watcher.consider(t, self.pipe.pitch_state)
                     if files and self.pipe.pitch_state is not None:
@@ -281,8 +340,11 @@ class LiveStudio:
                             files["cards"].write(json.dumps(card.to_dict()) + "\n")
                 live_img = images.get(decision.cam, blank)
                 if program:
-                    program.write(live_img if live_img.shape[1] == w else cv2.resize(live_img, (w, h)))
+                    last_program = live_img if live_img.shape[1] == w else cv2.resize(live_img, (w, h))
+                    program.write(last_program)
                 wall = time.time()
+                if self.program_feed is not None and self.story_engine is not None:
+                    self.program_feed.push(t, live_img)
                 self._put_jpeg("program", live_img, 960, 70)
                 if wall - last_tiles >= 1 / self.cfg["live"]["tile_fps"]:
                     last_tiles = wall
@@ -316,8 +378,10 @@ class LiveStudio:
                 lags: list, start: float) -> dict:
         fps = self.fps
         shots = shot_lengths(chosen, fps) if chosen else [0.0]
+        # The last shot is cut short by the end of the clip, not by the director: leave it out of "shortest".
+        whole = shots[:-1] or shots
         summary = {"frames": len(chosen), "seconds": round(len(chosen) / fps, 1), "cuts": max(0, len(shots) - 1),
-                   "shortest_shot_s": round(min(shots), 2), "average_shot_s": round(sum(shots) / len(shots), 2),
+                   "shortest_shot_s": round(min(whole), 2), "average_shot_s": round(sum(shots) / len(shots), 2),
                    "time_per_state_s": {s: round(states.count(s) / fps, 1) for s in sorted(set(states))},
                    "frames_shown": shown, "frames_skipped": skipped,
                    "avg_lag_s": round(float(np.mean(lags)), 2) if lags else 0.0,
@@ -337,7 +401,9 @@ class LiveStudio:
                 "source_kind": self.src.kind,
                 "story_clip": self.story_engine.clip if self.story_engine else None, "story_wall_start": start,
                 "story_run": story["run_id"] if story else None, "story_mode": story["mode"] if story else None,
+                "specialist_feed": "program" if self.program_feed is not None else "story clip",
                 "goal_looks": len(self.feed.looks), "goalwatch_run": self.run_id if self.watcher else None,
+                "teams": self.pipe.team_info() if hasattr(self.pipe, "team_info") else None,
                 "config": self.cfg, "summary": summary}, indent=2))
             if self.story_engine and self.src.kind == "soccertrack":
                 from studio.story_pass import record_run
@@ -357,6 +423,8 @@ class LiveStudio:
                               "usable": c.quality.usable} for c in r.cards if c.cam in self.on_air}
         i = round(t * self.fps)
         return {"type": "state", "t": round(t, 2), "cam": d.cam, "state": d.state, "reason": d.reason,
+                "scores": [round(float(x), 1) for x in d.scores],
+                "teams": self.pipe.team_info() if hasattr(self.pipe, "team_info") else None,
                 "overlays": self.src.overlays(i, self.pipe, r.rects),
                 "cards": cards, "map": ps.to_dict() if ps else None, "story_line": r.story_line,
                 "lag_s": self.status["lag_s"], "shown_fps": self.status["shown_fps"],
@@ -366,7 +434,7 @@ class LiveStudio:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--segment", required=True, help="a SoccerTrack segment (dev, eval, test) or muvs-P19 / muvs-P15")
+    parser.add_argument("--segment", required=True, help="a SoccerTrack segment (dev, eval, test), muvs-P19 / muvs-P15 or issia-T2")
     parser.add_argument("--seconds", type=float, default=None)
     parser.add_argument("--story", default="off", choices=["off", "fast_only", "gemini_only", "hybrid"])
     parser.add_argument("--specialist-url", default="")

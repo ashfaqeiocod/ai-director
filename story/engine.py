@@ -44,8 +44,9 @@ Publish = Callable[[dict], None]
 
 class StoryEngine:
     def __init__(self, clip_folder: Path, cfg: dict, mode: str, publish: Publish, send_audio: bool = True,
-                 specialist_url: str = "", proof: bool = False):
+                 specialist_url: str = "", proof: bool = False, specialist_video=None):
         self.cfg = cfg
+        self.specialist_video = specialist_video   # None = the specialist watches the clip (MVP 2)
         self.mode = mode
         self.layers = MODE_LAYERS[mode]
         self.publish_raw = publish
@@ -222,7 +223,8 @@ class StoryEngine:
 
         self.specialist = SpecialistClient(self.cfg, self.reader, self.specialist_url,
                                            on_event=self._on_specialist_event, on_status=self._on_specialist_status,
-                                           log_call=lambda item: self.log_file.append("specialist_calls", item))
+                                           log_call=lambda item: self.log_file.append("specialist_calls", item),
+                                           video_source=self.specialist_video)
         self.specialist.start()
 
     # ------------------------------------------------------------------ main loop
@@ -515,6 +517,7 @@ class StoryEngine:
         if self.llm is not None:
             state = self.llm.state()
             rpm = self.llm.requests_last_minute()
+            max_rpm = getattr(getattr(self.llm, "limiter", None), "per_minute", max_rpm)   # all keys together
             latency = self.llm.last_latency
         self.publish({"type": "gemini", "state": state, "rpm": rpm, "max_rpm": max_rpm, "latency": latency,
                       "avg_delay": round(sum(self.delays) / len(self.delays), 2) if self.delays else None})
@@ -525,6 +528,8 @@ class StoryEngine:
         with self.lock:
             self.fusion.note_specialist(self.playhead.now(), strength)
         if event is None:
+            # Low-priority play signal (PASS, DRIVE...): only logged, so dashboards can show what the model sees
+            self.log("SPECIALIST_PLAY", f"{name} ({strength:.2f})")
             return
         if event.type in ("shot", "goal", "free_kick"):
             self.pending_triggers.append(f"specialist:{event.type}")

@@ -19,7 +19,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-from story.common import gemini_key
+from story.common import gemini_keys
 from story.llm.base import MemoryContext, StoryLLM, WindowContext
 from story.schema import Event, LLMMemory, LLMStory, Memory, StoryUpdate
 
@@ -115,8 +115,8 @@ class GeminiStoryLLM(StoryLLM):
     name = "gemini"
 
     def __init__(self, cfg: dict, on_call: Callable[[dict], None] | None = None):
-        key = gemini_key()
-        if not key:
+        keys = gemini_keys()
+        if not keys:
             raise NoKeyError("GEMINI_API_KEY is missing in .env")
         from google import genai
         from google.genai import types
@@ -125,14 +125,18 @@ class GeminiStoryLLM(StoryLLM):
         self.cfg = cfg["llm"]
         self.sport = cfg["sport"]
         self.model = self.cfg["model"] or "gemini-2.5-flash"
-        self.client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(self.cfg["timeout_s"] * 1000)))
-        self.limiter = RateLimiter(self.cfg["max_requests_per_minute"], self.cfg["backoff_start_s"],
+        http = types.HttpOptions(timeout=int(self.cfg["timeout_s"] * 1000))
+        # One client per key. Requests take turns between keys (each key = its own free quota), and a key whose
+        # quota is used up for a model is skipped. Never logged: only the key's NUMBER (0, 1 ...) is recorded.
+        self.clients = [genai.Client(api_key=k, http_options=http) for k in keys]
+        self.key_i = 0
+        self.limiter = RateLimiter(self.cfg["max_requests_per_minute"] * len(keys), self.cfg["backoff_start_s"],
                                    self.cfg["backoff_max_s"])
         self.on_call = on_call or (lambda item: None)
         self.in_flight = 0
         self.last_latency: float | None = None
         self.last_error = ""
-        self.exhausted: set[str] = set()       # models whose daily free quota is used up
+        self.exhausted: set[tuple[int, str]] = set()   # (key number, model) whose daily free quota is used up
         self.daily_quota_out = False
         self.use_thinking_setting = self.cfg.get("thinking_budget") is not None
 
@@ -144,18 +148,51 @@ class GeminiStoryLLM(StoryLLM):
     def requests_last_minute(self) -> int:
         return self.limiter.count()
 
+    @property
+    def client(self):
+        """The client of the key in use (studio.goalwatch calls it directly)."""
+        return self.clients[self.key_i]
+
+    @client.setter
+    def client(self, value) -> None:
+        """Replace all clients by one (tests use a fake client)."""
+        self.clients, self.key_i = [value], 0
+
+    @property
+    def keys(self) -> int:
+        return len(self.clients)
+
+    def _take_turn(self) -> None:
+        """Next request on the next key that still has quota for the current model (spreads the per-minute limit)."""
+        for step in range(1, self.keys + 1):
+            k = (self.key_i + step) % self.keys
+            if (k, self.model) not in self.exhausted:
+                self.key_i = k
+                return
+
     def _daily_quota_used(self, item: dict) -> None:
-        """Google's free tier has a small DAILY request quota per model (20 for gemini-3.5-flash in
-        Oct 2026). Waiting won't help today: switch to the fallback model (its own quota), or stop
-        calling Gemini for this run (templates take over)."""
-        self.exhausted.add(item.get("model", self.model))
-        fallback = self.cfg.get("fallback_model")
-        if fallback and fallback not in self.exhausted:
-            item.update(daily_quota=True, switched_to=fallback)
-            self.model = fallback
-        else:
-            item.update(daily_quota=True, switched_to=None)
-            self.daily_quota_out = True
+        """Google's free tier has a small DAILY request quota per key and model (20 for gemini-3.5-flash in
+        Oct 2026). Waiting won't help today: use another key with the same model, else the next model in
+        the list (model, fallback_model, extra_models), else stop calling Gemini (templates take over)."""
+        self.exhausted.add((item.get("key", self.key_i), item.get("model", self.model)))
+        models = dict.fromkeys(m for m in [self.model, self.cfg.get("fallback_model"),
+                                           *(self.cfg.get("extra_models") or [])] if m)
+        for model in models:
+            for k in range(self.keys):
+                if (k, model) not in self.exhausted:
+                    item.update(daily_quota=True, switched_to=f"{model} (key {k})")
+                    self.model, self.key_i = model, k
+                    return
+        item.update(daily_quota=True, switched_to=None)
+        self.daily_quota_out = True
+
+    def rate_limited_key(self, item: dict) -> bool:
+        """A per-minute 429 on one key: with several keys, just move to the next one (no waiting)."""
+        if self.keys < 2:
+            return False
+        self._take_turn()
+        item.update(switched_key=self.key_i)
+        return True
 
     def state(self) -> str:
         if self.daily_quota_out:
@@ -271,7 +308,8 @@ class GeminiStoryLLM(StoryLLM):
         self.limiter.record()
         self.in_flight += 1
         start = time.time()
-        item = {"kind": kind, "model": self.model, "requested_at": round(start, 3), **extra}
+        self._take_turn()
+        item = {"kind": kind, "model": self.model, "key": self.key_i, "requested_at": round(start, 3), **extra}
         try:
             try:
                 response = self._send(self.model, parts, config)
@@ -292,9 +330,9 @@ class GeminiStoryLLM(StoryLLM):
             return parsed
         except errors.APIError as error:
             item.update(latency_s=round(time.time() - start, 2), error=f"{error.code}: {str(error)[:300]}")
-            if error.code == 429 and "PerDay" in str(error):
-                self._daily_quota_used(item)
-            elif error.code == 429:
+            if (error.code == 429 and "PerDay" in str(error)) or error.code == 404:
+                self._daily_quota_used(item)       # 404 = this key can't use this model: skip the pair too
+            elif error.code == 429 and not self.rate_limited_key(item):
                 item.update(rate_limited=True, backoff_s=self.limiter.hit_429())
             elif error.code == 400 and "thinking" in str(error).lower() and self.use_thinking_setting:
                 self.use_thinking_setting = False      # this model doesn't take the setting: drop it next time

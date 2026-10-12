@@ -91,13 +91,16 @@ class MapState:
     players_in_box: int = 0
     intensity: float = 0.0                        # 0..1, from the map only
     events: list[dict] = field(default_factory=list)   # BOX_ENTRY / BOX_EXIT / BALL_OUT / GOAL_LINE
+    teams: list[int | None] = field(default_factory=list)   # team (0/1) of each player, when shirts are known
+    ball_team: int | None = None                  # team of the player nearest the ball (= possession)
 
     def to_dict(self) -> dict:
         r = lambda v: None if v is None else [round(v[0], 1), round(v[1], 1)]   # noqa: E731
         return {"t": round(self.t, 2), "ball": r(self.ball), "status": self.ball_status,
                 "age": round(self.ball_age_s, 1), "speed": round(self.speed_ms, 1), "zone": self.zone,
                 "players": [r(p) for p in self.players], "in_box": self.players_in_box,
-                "intensity": round(self.intensity, 2), "events": self.events}
+                "intensity": round(self.intensity, 2), "events": self.events,
+                **({"teams": self.teams, "ball_team": self.ball_team} if self.teams else {})}
 
 
 class PitchMap:

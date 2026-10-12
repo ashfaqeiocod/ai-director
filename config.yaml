@@ -254,6 +254,63 @@ studio:
     ball_tracker: { buffer_size: 5, max_jump_px: 250, max_predict_updates: 5, min_confidence: 0.3 }
     story_cam: 2 # the story layer watches this phone (the side view)
     story_sport: "soccer (a professional MLS match filmed by a fan's phone from the stands; no TV graphics, no commentary, no sound)"
+  issia: # ISSIA-CNR Soccer (studio.issia, studio.sources.IssiaSource): 6 real FIXED cameras, 2 per area, no sound
+    dir: "data/issia" # data/issia/T<take>/cam1-6.mp4 + detections/ + calibration.json (python -m studio.issia)
+    cam_names:
+      cam1: { name: "GOAL R · stand A", shot_type: "medium" }
+      cam2: { name: "GOAL R · stand B", shot_type: "medium" }
+      cam3: { name: "MIDFIELD · stand A", shot_type: "medium" }
+      cam4: { name: "MIDFIELD · stand B", shot_type: "medium" }
+      cam5: { name: "GOAL L · stand A", shot_type: "medium" }
+      cam6: { name: "GOAL L · stand B", shot_type: "medium" }
+    # Every camera follows play like MVP 1's cameras; there is no WIDE and no virtual CLOSE-up here.
+    director: { on_air_cams: [1, 2, 3, 4, 5, 6], follow_cams: [1, 2, 3, 4, 5, 6], wide_cam: null, close_cam: null,
+                start_cam: 3,
+                # 180-degree rule: cutting to the other stand flips left/right for viewers. First run without
+                # it: cam3 <-> cam4 (same area, opposite stands) every 3 s. Cross only when clearly better.
+                stands: { 1: A, 3: A, 5: A, 2: B, 4: B, 6: B }, cross_line_penalty: 40,
+                # live_bonus: where two cameras' views overlap (edge of the box) the scores swap back and forth
+                # (cam2 <-> cam4 every 3 s): the live camera keeps the shot unless another is clearly better.
+                # cam_bonus: stand A is the main side, like a real broadcast's main camera position.
+                live_bonus: 20, cam_bonus: { 1: 10, 3: 10, 5: 10 } }
+    ball_tracker: { buffer_size: 5, max_jump_px: 250, max_predict_updates: 5, min_confidence: 0.3 }
+    merge_players_m: 1.5 # the same player seen by two cameras: points closer than this on the pitch are one player
+    parked_radius_m: 0.6 # parked-ball check (studio.parked_ball rules) in metres: cam1 sees the penalty spot as a ball
+    goal_cams: { left: 5, right: 1 } # the goal watcher (Gemini) checks these cameras when play is near that goal
+    story_sport: "soccer (an Italian Serie A match; the video is a mosaic of three FIXED cameras side by side: left goal area, midfield, right goal area; no TV graphics, no commentary, no sound)"
+    # Calibration (a one-time setup measurement, like installing a real camera): pitch landmarks clicked on
+    # each camera's 1920x1080 picture, [pitch x m, pitch y m, picture x px, picture y px]. Pitch x/y are
+    # written as if every camera stood on stand A (right goal at +x, far touchline at -y); stand B cameras look
+    # from the other side, and `python -m studio.issia --calibrate` finds how each one's picture is turned
+    # (it compares where two cameras put the same players) and saves the result in calibration.json.
+    calibration:
+      cam1: [[36, -20.16, 998, 205], [36, 20.16, 1025, 705], [47, -9.16, 1533, 305], [47, 9.16, 1648, 525],
+             [52.5, -34, 1642, 103], [52.5, -20.16, 1721, 205], [52.5, -9.16, 1798, 305], [36, -34, 992, 100],
+             [36, 34, 1042, 1027]]
+      cam2: [[36, -20.16, 990, 203], [36, 20.16, 1017, 707], [47, -9.16, 1525, 300], [47, 9.16, 1645, 522],
+             [52.5, -34, 1628, 100], [52.5, -20.16, 1713, 203], [52.5, -9.16, 1794, 300], [36, -34, 985, 100],
+             [36, 34, 1035, 1042]]
+      cam3: [[0, -34, 940, 95], [0, 34, 942, 1025], [0, 0, 942, 397], [-9.15, 0, 455, 403], [9.15, 0, 1428, 400],
+             [0, -9.15, 940, 300], [0, 9.15, 942, 517]]
+      cam4: [[0, -34, 955, 97], [0, 34, 940, 1030], [0, 0, 948, 403], [-9.15, 0, 468, 405], [9.15, 0, 1437, 400],
+             [0, -9.15, 950, 297], [0, 9.15, 943, 517]]
+      cam5: [[-36, -20.16, 932, 198], [-36, 20.16, 895, 708], [-47, -9.16, 385, 298], [-47, 9.16, 262, 522],
+             [-52.5, -34, 278, 92], [-52.5, -20.16, 193, 198], [-52.5, -9.16, 113, 298], [-36, -34, 940, 90],
+             [-36, 34, 871, 1035]]
+      cam6: [[-36, -20.16, 912, 202], [-36, 20.16, 893, 697], [-47, -9.16, 385, 298], [-47, 9.16, 268, 517],
+             [-52.5, -34, 280, 102], [-52.5, -20.16, 200, 202], [-52.5, -9.16, 122, 298], [-36, -34, 916, 102],
+             [-36, 34, 880, 1027]]
+  teams: # studio.teams: two teams from shirt colours (k-means), learned from the first seconds of play
+    learn_samples: 150 # shirts collected before the 2 teams are fixed (~3-5 s with 6 cameras)
+    max_colour_distance: 45 # a shirt further than this (Lab) from both team colours = unknown (referee, keeper...)
+    possession_m: 3.0 # the nearest player within this many metres of the ball has it
+  llm: # MVP 3 only: merged over story.llm for the studio's story layer and goal watcher (MVP 2 defaults unchanged)
+    # Tested 2026-10-12 with 2 keys (GEMINI_API_KEY, GEMINI_API_KEY1): 3.5-flash-lite 1.3 s; 3.5-flash 2 s
+    # (20/day); 2.5-flash 1.2 s (first key only); 3.1-flash-lite overloaded (24-111 s) -> last.
+    # Order of use: model on every key, then each next model on every key (daily quota / 404 = skip that pair).
+    model: "gemini-3.5-flash-lite"
+    fallback_model: "gemini-3.5-flash"
+    extra_models: ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
   live: # studio.live: live mode (real speed)
     tile_fps: 8 # camera tiles are refreshed this many times a second (CPU budget on the M1)
     state_hz: 10 # state messages to the dashboard per second

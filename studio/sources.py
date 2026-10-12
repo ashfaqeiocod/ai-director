@@ -1,13 +1,15 @@
 """sources.py — the footage a live (or replayed) run plays, behind one small interface.
 
-Two kinds:
+Three kinds:
   SoccerTrackSource("eval")   one 4K panorama cut into virtual cameras; pitch map, goal cameras, kick-off check;
                               answer key = the real goal times
   MuvsSource(19)              3 fans' phones filming the same match (MUVS); every camera is its own; no pitch
                               map; answer key = which camera a human picked every 3 s
+  IssiaSource(2)              6 REAL fixed stadium cameras (ISSIA-CNR), each calibrated to the pitch: one pitch
+                              map from all cameras, goal cameras, kick-off check; no answer key
 
 Everything that differs between them lives here, so studio.live and the dashboard don't need to care.
-Names: a source's `key` is used for folders and URLs ("eval", "muvs-P19").
+Names: a source's `key` is used for folders and URLs ("eval", "muvs-P19", "issia-T2").
 """
 from __future__ import annotations
 
@@ -24,7 +26,14 @@ from src.common import ROOT, load_config, video_info
 def get_source(key: str):
     if key.startswith("muvs-P"):
         return MuvsSource(int(key[len("muvs-P"):]))
+    if key.startswith("issia-T"):
+        return IssiaSource(int(key[len("issia-T"):]))
     return SoccerTrackSource(key)
+
+
+def is_folder_source(key: str) -> bool:
+    """Footage that lives in its own folder with real cameras (not a SoccerTrack segment)."""
+    return key.startswith(("muvs-P", "issia-T"))
 
 
 def ready_sources() -> list[str]:
@@ -37,6 +46,10 @@ def ready_sources() -> list[str]:
     for folder in sorted(muvs.glob("P*")):
         if (folder / "detections" / "cam1.json").exists() and (folder / "cam1.mp4").exists():
             out.append(f"muvs-{folder.name}")
+    issia = ROOT / load_config()["studio"]["issia"]["dir"]
+    for folder in sorted(issia.glob("T*")):
+        if (folder / "calibration.json").exists() and (folder / "detections" / "cam6.json").exists():
+            out.append(f"issia-{folder.name}")
     return out
 
 
@@ -202,3 +215,101 @@ class MuvsSource:
         return {"kind": self.kind, "key": self.key, "cams": self.cams, "fps": self.fps, "duration": self.frames / self.fps,
                 "on_air_cams": self.on_air, "goal_cams": [], "pitch": None, "truth": [],
                 "human": self.human_picks(), "credit": self.meta.get("credit", "")}
+
+
+# The camera tiles on the page, as they stand around the pitch: stand A on top (left goal, midfield, right
+# goal), stand B below. Stand B films from the other side, but its pictures show the same areas in the same order.
+LAYOUT_ISSIA = [[5, 3, 1], [6, 4, 2]]
+
+
+def source_label(key: str) -> str:
+    """A friendly name for the match picker."""
+    if key.startswith("issia-T"):
+        return f"ISSIA Serie A · 6 stadium cameras · take {key[len('issia-T'):]}"
+    if key.startswith("muvs-P"):
+        return f"MUVS MLS · 3 fans' phones · period {key[len('muvs-P'):]}"
+    return f"SoccerTrack · 4K panorama · {key}"
+
+
+class IssiaSource:
+    """ISSIA-CNR: 6 real fixed cameras around one stadium (2 per area), calibrated to the pitch, no sound."""
+    kind = "issia"
+    goalwatch = True                   # cam1 / cam5 film the goals: the goal watcher can check them
+
+    def __init__(self, take: int):
+        from studio.prepare import work_dir
+
+        self.cfg_all = load_config()["studio"]
+        s = self.settings = self.cfg_all["issia"]
+        self.take, self.key = take, f"issia-T{take}"
+        self.segment = self.key                         # goal-watch runs are saved under data/studio/<key>/
+        self.folder = ROOT / s["dir"] / f"T{take}"
+        self.meta = json.loads((self.folder / "meta.json").read_text())
+        info = video_info(self.folder / "cam1.mp4")
+        self.fps, self.has_audio, self.frames = info["fps"], False, self.meta["frames"]
+        self.cam_ids = list(range(1, 7))
+        names = s["cam_names"]
+        self.cams = {"size": [info["width"], info["height"]],
+                     "cams": [{"cam": c, "name": names[f"cam{c}"]["name"], "shot_type": names[f"cam{c}"]["shot_type"],
+                               "rect": None} for c in self.cam_ids],
+                     "goal_cams": [{"cam": cam, "side": side, "name": names[f"cam{cam}"]["name"]}
+                                   for side, cam in s["goal_cams"].items()]}
+        self.cfg = copy.deepcopy(self.cfg_all)
+        self.cfg["director"].update(s["director"])
+        self.on_air = self.cfg["director"]["on_air_cams"]
+        calib = json.loads((self.folder / "calibration.json").read_text())
+        self.H = {c: np.asarray(calib[f"cam{c}"]["pitch_to_image"]) for c in self.cam_ids}
+        self.dets = {c: json.loads((self.folder / "detections" / f"cam{c}.json").read_text()) for c in self.cam_ids}
+        self.step = self.dets[1]["step"]
+        self.work = work_dir(self.key)
+
+    def video(self, cam: int) -> Path:
+        return self.folder / f"cam{cam}.mp4"
+
+    def pipeline(self, feed):
+        from studio.multicam import CalibratedPipeline
+
+        return CalibratedPipeline(self.cfg, self.cams, self.fps, feed, self.step, self.H, self.settings)
+
+    def detection_at(self, frame: int) -> dict:
+        return {c: self.dets[c]["frames"].get(str(frame), {"players": [], "ball": None}) for c in self.cam_ids}
+
+    def story_clip(self) -> tuple[Path, dict]:
+        """The story layer watches the mosaic of the three stand-A cameras (left goal | midfield | right goal)."""
+        from story.common import story_config
+        from story.intake import clip_dir, intake
+        from studio.story_pass import deep_merge, without_missing_sound
+
+        name = f"{self.key.lower()}-mosaic"
+        if not (clip_dir(name) / "meta.json").exists():
+            intake(str(self.folder / "story_mosaic.mp4"), name=name)
+        cfg = deep_merge(story_config(), {"sport": self.settings["story_sport"], "llm": self.cfg_all.get("llm", {})})
+        return clip_dir(name), without_missing_sound(cfg, False)
+
+    def overlays(self, i: int, pipe, rects: list) -> dict:
+        """Per camera: its own player boxes + the map's ball drawn where it falls in that picture."""
+        w, h = self.cams["size"]
+        frame = i - i % self.step
+        st = pipe.pitch_state
+        out = {}
+        for c in self.cam_ids:
+            det = self.dets[c]["frames"].get(str(frame), {})
+            item = {"players": [[round(v / s, 3) for v, s in zip(p["box"], (w, h, w, h))] for p in det.get("players", [])]}
+            spot = pipe.in_picture(c, st.ball if st is not None and st.ball_status != "lost" else None)
+            if spot:
+                item["ball"] = list(spot)
+            out[str(c)] = item
+        return out
+
+    def coverage(self) -> dict:
+        """What each camera sees on the pitch (polygon in metres), for the map. The top of each picture is stands."""
+        from studio.pitchmap import Projection
+
+        w, h = self.cams["size"]
+        return {str(c): Projection(self.H[c]).coverage((0, 0.09 * h, w, 0.91 * h)) for c in self.cam_ids}
+
+    def info(self) -> dict:
+        return {"kind": self.kind, "key": self.key, "cams": self.cams, "fps": self.fps, "duration": self.frames / self.fps,
+                "on_air_cams": self.on_air, "goal_cams": self.cams["goal_cams"], "layout": LAYOUT_ISSIA,
+                "pitch": {"coverage": self.coverage(), "close_coverage": {}, "close_cam": None},
+                "truth": [], "human": [], "credit": self.meta.get("credit", "")}

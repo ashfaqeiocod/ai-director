@@ -24,6 +24,14 @@ def gemini_key() -> str:
     return "" if key in ("", "your_key_here") else key
 
 
+def gemini_keys() -> list[str]:
+    """Every Gemini key in .env: GEMINI_API_KEY, then GEMINI_API_KEY1, GEMINI_API_KEY2 ... (each Google account
+    has its own free quota, so a second key doubles the requests per minute and per day)."""
+    names = sorted((k for k in os.environ if re.fullmatch(r"GEMINI_API_KEY\d*", k)), key=lambda k: (len(k), k))
+    keys = [os.environ[k].strip() for k in names]
+    return list(dict.fromkeys(k for k in keys if k and k != "your_key_here"))
+
+
 def safe_name(text: str) -> str:
     """Turn any file name or title into a short, safe folder name (letters, digits, - and _)."""
     if Path(text).suffix.lower() in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"):

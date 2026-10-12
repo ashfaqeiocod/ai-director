@@ -41,6 +41,13 @@ def page() -> str:
     return (STATIC / "studio.html").read_text()
 
 
+@router.get("/studio.css")
+def page_css() -> FileResponse:
+    """The page's Tailwind classes, built once (no internet needed). Rebuild after changing classes in studio.html:
+    npx tailwindcss@3.4.17 -i in.css -o dashboard/static/studio.css --minify (content: studio.html; see TESTING_MVP3.md)."""
+    return FileResponse(STATIC / "studio.css", media_type="text/css")
+
+
 @router.get("/runs")
 def runs() -> list[dict]:
     out = []
@@ -60,8 +67,10 @@ def runs() -> list[dict]:
 def run_data(segment: str, run_id: str) -> dict:
     folder = _run_dir(segment, run_id)
     info = json.loads((folder / "run.json").read_text())
-    if segment.startswith("muvs-"):
-        return muvs_run_data(segment, folder, info)
+    from studio.sources import is_folder_source
+
+    if is_folder_source(segment):
+        return folder_run_data(segment, folder, info)
     from studio.cameras import load_cams
     from studio.evaluate import truth_events
     from studio.prepare import load_segment
@@ -111,6 +120,22 @@ def run_data(segment: str, run_id: str) -> dict:
             "goal_cams": cams.get("goal_cams", []), "goal_looks": goal_looks(segment, info)}
 
 
+def _jsonl(path: Path, keep: tuple) -> list[dict]:
+    if not path.exists():
+        return []
+    return [{k: x.get(k) for k in keep} for x in map(json.loads, path.read_text().splitlines()) if x]
+
+
+def scores_by_second(folder: Path, fps: float) -> dict[str, list[float]]:
+    """The director's score per camera, once per second (for the score bars under the camera tiles)."""
+    out = {}
+    with open(folder / "director_log.csv") as f:
+        for row in csv.DictReader(f):
+            if int(row["frame"]) % round(fps) == 0:
+                out[str(int(int(row["frame"]) / fps))] = [round(float(v), 1) for k, v in row.items() if k.startswith("score_cam")]
+    return out
+
+
 def _timeline_cards_events(folder: Path) -> tuple[list, dict, list]:
     timeline = []
     with open(folder / "director_log.csv") as f:
@@ -126,8 +151,10 @@ def _timeline_cards_events(folder: Path) -> tuple[list, dict, list]:
     return timeline, cards, events
 
 
-def muvs_run_data(key: str, folder: Path, info: dict) -> dict:
-    """A run on MUVS (fans' phones): no pitch map or goal cameras; answer key = the human's camera picks."""
+def folder_run_data(key: str, folder: Path, info: dict) -> dict:
+    """A run on footage with real cameras in its own folder.
+    MUVS (fans' phones): no pitch map or goal cameras; answer key = the human's camera picks.
+    ISSIA (6 calibrated stadium cameras): pitch map from all cameras + the goal watcher's looks; no answer key."""
     from story.run_log import run_folder
     from studio.cards import StoryFeed
     from studio.sources import get_source
@@ -138,28 +165,56 @@ def muvs_run_data(key: str, folder: Path, info: dict) -> dict:
     if info.get("story_run") and info.get("story_clip"):
         sf = run_folder(info["story_clip"], info["story_run"])
         feed = StoryFeed(sf, info.get("story_wall_start", 0.0), 1.0)
+        if info.get("goal_looks") and info.get("goalwatch_run"):
+            from studio.goalwatch import load_looks
+            feed.add_goal_looks(load_looks(key, info["goalwatch_run"]), load_config()["studio"]["goalwatch"])
         story["updates"] = [{k: u.get(k) for k in ("logged_at", "window_start", "window_end", "phase", "sentiment",
-                                                   "narration", "intensity", "source")} for u in feed.updates]
+                                                   "narration", "intensity", "source", "team_in_control")}
+                            for u in feed.updates]
         latest: dict[str, dict] = {}
         for e in feed.events:
             latest.setdefault(e["id"], e)
-        story["events"] = [{k: e[k] for k in ("id", "type", "event_time", "known_at", "confidence", "sources")}
+        story["events"] = [{k: e.get(k) for k in ("id", "type", "event_time", "known_at", "confidence", "sources", "team")}
                            for e in latest.values() if e["type"] != "none"]
         if (sf / "intensity.csv").exists():
             intensity = [[float(r["t"]), float(r["intensity"])] for r in csv.DictReader(open(sf / "intensity.csv"))]
+        # The overall "story so far" (MVP 2 memory) and the Colab model's outputs, as they were known
+        story["memory"] = _jsonl(sf / "memory.jsonl", ("logged_at", "story_so_far", "score", "momentum", "teams"))
+        story["signals"] = [x for x in _jsonl(sf / "signals.jsonl", ("t", "kind", "message"))
+                            if x["kind"] in ("SPECIALIST", "SPECIALIST_PLAY", "TRIGGER", "LLM")]
+    cam_ids = [c["cam"] for c in src.cams["cams"]]
     w, h = src.cams["size"]
+    rows = [json.loads(x) for x in (folder / "map.jsonl").read_text().splitlines()] if (folder / "map.jsonl").exists() else []
     frames = {}
-    for f in sorted({int(k) for k in src.dets[1]["frames"]}):
+    for f in sorted({int(k) for k in src.dets[cam_ids[0]]["frames"]}):
         frames[str(f)] = {str(c): {"players": [[round(v / q, 3) for v, q in zip(p["box"], (w, h, w, h))]
                                                for p in src.dets[c]["frames"].get(str(f), {}).get("players", [])]}
-                          for c in (1, 2, 3)}
+                          for c in cam_ids}
+    pitch = None
+    if src.kind == "issia":
+        import numpy as np
+        from studio.multicam import to_picture
+        # The map's ball, drawn into every camera it falls in (like live mode does)
+        for r in rows:
+            if not r["ball"] or r["status"] == "lost":
+                continue
+            f = str(round(r["t"] * src.fps) // src.step * src.step)
+            for c in cam_ids:
+                pt = to_picture(np.asarray(src.H[c]), tuple(r["ball"]))
+                if pt and 0 <= pt[0] < w and 0 <= pt[1] < h and f in frames:
+                    frames[f][str(c)]["ball"] = [round(pt[0] / w, 3), round(pt[1] / h, 3)]
+        pitch = {"rows": rows, "step": src.step, "coverage": src.coverage(), "close_coverage": {}, "close_cam": None}
     report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
-    return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary")},
-            "kind": "muvs", "cams": src.cams, "fps": src.fps, "duration": info["summary"]["seconds"],
+    looks = goal_looks(key, info) if src.kind == "issia" else []
+    return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
+                                                "goal_looks")},
+            "kind": src.kind, "cams": src.cams, "fps": src.fps, "duration": info["summary"]["seconds"],
             "timeline": timeline, "cards": cards, "director_events": events, "story": story, "truth": [],
-            "human": src.human_picks(), "report": report, "on_air_cams": src.on_air,
-            "overlays": {"step": src.step, "frames": frames}, "pitch": None, "intensity": intensity,
-            "goal_cams": [], "goal_looks": [], "credit": src.meta.get("credit", "")}
+            "human": src.human_picks() if src.kind == "muvs" else [], "report": report, "on_air_cams": src.on_air,
+            "overlays": {"step": src.step, "frames": frames}, "pitch": pitch, "intensity": intensity,
+            "goal_cams": src.cams.get("goal_cams", []), "goal_looks": looks, "credit": src.meta.get("credit", ""),
+            "scores": scores_by_second(folder, src.fps), "layout": src.info().get("layout"),
+            "teams": info.get("teams")}
 
 
 def goal_looks(segment: str, info: dict) -> list[dict]:
@@ -253,8 +308,9 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     from studio.cameras import cam_video as path_of
 
     info = json.loads((_run_dir(segment, run_id) / "run.json").read_text())
-    if segment.startswith("muvs-"):
-        from studio.sources import get_source
+    from studio.sources import get_source, is_folder_source
+
+    if is_folder_source(segment):
         path = get_source(segment).video(cam)
     else:
         aim = "oracle" if info["source"] == "oracle" else "detector"
@@ -322,8 +378,35 @@ def _ready_segments() -> list[str]:
 @router.get("/live/sources")
 def live_sources() -> dict:
     """Matches that can be played live (cameras + detections ready), and the defaults."""
+    from studio.sources import source_label
+
     cfg = load_config()["story"]
-    return {"segments": _ready_segments(), "specialist_url": cfg["specialist"]["server_url"] or ""}
+    segments = _ready_segments()
+    # ISSIA first: the real multi-camera match is the main demo
+    segments.sort(key=lambda k: (not k.startswith("issia-"), k))
+    from story.common import gemini_keys
+
+    llm = {**cfg["llm"], **load_config()["studio"].get("llm", {})}
+    models = [m for m in [llm["model"], llm.get("fallback_model"), *(llm.get("extra_models") or [])] if m]
+    return {"segments": segments, "labels": {k: source_label(k) for k in segments},
+            "specialist_url": cfg["specialist"]["server_url"] or "",
+            "gemini": {"keys": len(gemini_keys()), "models": models}}
+
+
+@router.post("/live/colab")
+def live_colab(body: dict) -> dict:
+    """Test a Colab specialist URL (GET /health) before going live. Saves nothing: the URL is sent with Go live."""
+    from story.specialist_client import check_health, normalize_url
+
+    url = normalize_url(body.get("url", ""))
+    if not url:
+        return {"state": "off", "message": "no URL: the story runs without the Colab specialist"}
+    try:
+        health = check_health(url)
+    except Exception as error:                     # noqa: BLE001 — shown on the page
+        return {"state": "error", "url": url, "message": f"can't reach {url}/health: {type(error).__name__}: {error}"}
+    return {"state": "connected", "url": url,
+            "message": f"{health['model'].split('/')[-1]} on {health.get('gpu') or 'CPU'} · {health['fps']:.2f} fps"}
 
 
 @router.get("/live/info/{segment}")
