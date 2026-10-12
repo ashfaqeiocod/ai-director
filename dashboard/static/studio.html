@@ -48,7 +48,7 @@
     <section class="lg:col-span-8 space-y-3">
       <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video">
         <video id="program" class="w-full h-full" controls playsinline></video>
-        <div class="absolute top-3 left-3 flex gap-2 pointer-events-none">
+        <div class="absolute top-3 right-3 flex gap-2 pointer-events-none">
           <span class="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded">LIVE</span>
           <span id="liveLabel" class="bg-black/70 mono text-xs px-2 py-0.5 rounded">CAM –</span>
           <span id="stateBadge" class="bg-black/70 mono text-xs px-2 py-0.5 rounded">–</span>
@@ -71,6 +71,15 @@
     </section>
 
     <aside class="lg:col-span-4 space-y-3">
+      <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50">
+        <div class="flex items-baseline justify-between">
+          <span class="text-xs text-slate-400">GOALS SEEN BY THE AI</span>
+          <span class="text-xs text-slate-500" id="truthGoals"></span>
+        </div>
+        <div class="mono text-3xl font-bold mt-1" id="aiGoals">0</div>
+        <ul id="goalList" class="text-xs mono text-slate-300 mt-1 space-y-0.5"></ul>
+        <div class="mt-3 text-sm"><span class="text-slate-400">Now:</span> <span id="nowText" class="text-slate-100">–</span></div>
+      </div>
       <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50 space-y-1 text-sm">
         <div class="flex justify-between"><span class="text-slate-400">State</span><span id="nState" class="mono">–</span></div>
         <div class="flex justify-between gap-3"><span class="text-slate-400 shrink-0">Reason</span><span id="nReason" class="mono text-xs text-right">–</span></div>
@@ -99,7 +108,7 @@
 const CAM_COLORS = {1: "#38bdf8", 2: "#a78bfa", 3: "#f472b6", 4: "#4ade80", 5: "#fbbf24"};
 const ICONS = {goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
                corner: "🚩", free_kick: "🦶", celebration: "🎉", penalty: "⚠️", whistle: "📯"};
-let data = null, runs = [];
+let data = null, runs = [], shown = [];
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
@@ -116,11 +125,14 @@ async function loadRun(index) {
   data = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
   $("main").classList.remove("hidden");
   $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
-  $("tiles").innerHTML = data.cams.cams.map(c => `
+  shown = data.cams.cams.filter(c => data.on_air_cams.includes(c.cam));
+  $("tiles").className = `grid gap-2 grid-cols-${shown.length}`;
+  $("tiles").innerHTML = shown.map(c => `
     <div class="tile rounded overflow-hidden bg-black" id="tile${c.cam}">
       <div class="relative aspect-video">
         <video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full"
                src="/studio/cam/${r.segment}/${r.run_id}/${c.cam}"></video>
+        <canvas id="ov${c.cam}" width="640" height="360" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
         <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded"
               style="color:${CAM_COLORS[c.cam]}">${c.cam} ${c.name}</span>
       </div>
@@ -146,7 +158,7 @@ function drawTimeline() {
     div.title = `cam${s.cam} ${s.state} @ ${fmt(s.t)}: ${s.reason}`;
     tl.appendChild(div);
   });
-  $("legend").innerHTML = data.cams.cams.map(c =>
+  $("legend").innerHTML = shown.map(c =>
     `<span><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.cam} ${c.name}</span>`).join("")
     + `<span class="text-slate-500">(bright = REACTION)</span>`;
   drawTruth();
@@ -171,7 +183,7 @@ function render() {
   if (!data) return;
   const p = $("program"), t = p.currentTime;
   // Keep the camera tiles in sync with the program.
-  data.cams.cams.forEach(c => {
+  shown.forEach(c => {
     const v = $("cam" + c.cam);
     if (!v) return;
     if (Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
@@ -190,11 +202,13 @@ function render() {
   $("stateBadge").className = `mono text-xs px-2 py-0.5 rounded ${seg.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
   $("nState").textContent = seg.state;
   $("nReason").textContent = seg.reason;
-  data.cams.cams.forEach(c => $("tile" + c.cam).classList.toggle("live", c.cam === seg.cam));
+  shown.forEach(c => $("tile" + c.cam).classList.toggle("live", c.cam === seg.cam));
+  drawOverlays(t);
+  drawScore(t, seg);
 
   // Cards (one per second).
   const cards = data.cards[String(Math.floor(t))] || [];
-  cards.forEach(c => {
+  cards.filter(c => data.on_air_cams.includes(c.cam)).forEach(c => {
     const q = c.quality;
     $("tile" + c.cam).classList.toggle("bad", !q.usable);
     $("card" + c.cam).innerHTML =
@@ -241,6 +255,43 @@ function render() {
     $("cutLog").innerHTML = done.slice().reverse().map(e =>
       `<li class="px-3 py-1"><span class="text-slate-500">${fmt(e.time)}</span> <b>${e.type}</b> ${e.message}</li>`).join("");
   }
+}
+
+// What the detector saw, drawn on each tile (like MVP 1): player boxes, ball (green), close-up dots.
+function drawOverlays(t) {
+  const o = data.overlays;
+  if (!o || !o.step) return;
+  const f = String(Math.floor(t * data.fps / o.step) * o.step);
+  const frame = o.frames[f] || {};
+  shown.forEach(c => {
+    const cv = $("ov" + c.cam), g = cv.getContext("2d"), item = frame[String(c.cam)] || {};
+    g.clearRect(0, 0, cv.width, cv.height);
+    g.lineWidth = 1.5; g.strokeStyle = "rgba(56,189,248,.9)";
+    (item.players || []).forEach(([x1, y1, x2, y2]) => g.strokeRect(x1 * cv.width, y1 * cv.height, (x2 - x1) * cv.width, (y2 - y1) * cv.height));
+    g.fillStyle = "rgba(56,189,248,.9)";
+    (item.dots || []).forEach(([x, y]) => { g.beginPath(); g.arc(x * cv.width, y * cv.height, 3, 0, 7); g.fill(); });
+    if (item.ball) {
+      g.strokeStyle = "#4ade80"; g.lineWidth = 3;
+      g.beginPath(); g.arc(item.ball[0] * cv.width, item.ball[1] * cv.height, 9, 0, 7); g.stroke();
+    }
+  });
+}
+
+// Goals the story AI reported (only once it knew them), the real goals, and a plain-English "now".
+function drawScore(t, seg) {
+  const goals = data.story.events.filter(e => e.type === "goal" && e.known_at <= t);
+  $("aiGoals").textContent = goals.length;
+  $("goalList").innerHTML = goals.map(e =>
+    `<li>⚽ ${fmt(e.event_time)} · noticed ${(e.known_at - e.event_time).toFixed(0)} s later · ${(e.confidence * 100).toFixed(0)}%</li>`).join("");
+  const real = data.truth.filter(e => e.label === "GOAL");
+  $("truthGoals").textContent = $("truthToggle").checked
+    ? `real goals so far: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
+  const cam = data.cams.cams[seg.cam - 1].name;
+  let now;
+  if (seg.state === "REACTION") now = `Showing the CLOSE-up as a reaction (${seg.reason.replace(/^CUT: /, "")}).`;
+  else if (/unusable/.test(seg.reason)) now = `Left a camera with a bad picture; now on ${cam}.`;
+  else now = `Following play on ${cam}: the ball or the main group of players is in this view.`;
+  $("nowText").textContent = now;
 }
 
 $("loadBtn").onclick = () => { lastKnown = lastCutCount = -1; loadRun(+$("runSelect").value); };

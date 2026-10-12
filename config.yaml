@@ -248,7 +248,10 @@ studio:
     shake_max_px: 4 # average frame-to-frame jump (camera pixels, after removing planned pans) = full shake
     recover_s: 2.0 # a bad camera must look fine this long before it can be used again
   director:
-    start_cam: 4
+    start_cam: 2
+    # Cameras the director may put on air. WIDE (cam4) is the whole panorama squeezed into 16:9: too small to
+    # watch, so it is never aired (user feedback 2026-10-12). Its card still exists for the record.
+    on_air_cams: [1, 2, 3, 5]
     min_shot_seconds: 3.0 # plan: 3-4 s (MVP 1 uses 2.0)
     hysteresis_seconds: 0.6
     mvp1: { score_detected: 100, score_predicted: 60, score_center_max: 30, score_per_player: 1, score_players_max: 10 }
@@ -281,3 +284,20 @@ studio:
   eval: # scoring only (studio.evaluate)
     reaction_window_s: 20 # a close-up within this many seconds after a real goal counts as a reaction
     match_window_s: 10 # a story event within this many seconds of a true one is a match
+  vision_intensity: # studio.intensity: "how intense is play?" from pictures only (footage with no sound, e.g. MUVS)
+    detect_fps: 5 # detector runs this many times per second on each camera
+    shift_width: 320 # camera-movement estimate on frames shrunk to this width (fast)
+    sprint_heights_s: 4.0 # player speed in body-heights per second that counts as a full sprint (~7 m/s)
+    fast_players: 3 # speed = average of the N fastest tracked players in view
+    pressure_radius_heights: 5 # players within this many body heights of the goalkeeper = pressure near goal
+    pressure_full: 6 # this many players near the keeper = full pressure (1.0)
+    ball_near_keeper_bonus: 0.3 # extra pressure when the ball is also near the keeper
+    weights: { pressure: 0.6, speed: 0.4 } # plan: pressure 0.3, motion 0.2, specialist 0.25, llm 0.25 (only pressure + speed run here, rescaled)
+    stop_fast: 0.5 # "sudden stop": speed was above this in the last few seconds ...
+    stop_slow: 0.2 # ... and is now below this
+    stop_lookback_s: 4
+    smooth_s: 2 # intensity = average of the last N seconds (past only)
+    pitch_hsv_low: [25, 80, 60] # a "player" counts only if the grass under his feet is pitch green (fans in the
+    pitch_hsv_high: [90, 255, 255] # stands and stewards are not); OpenCV HSV, hue 0-180
+    pitch_min_share: 0.5 # share of green pixels needed in the small patch under the feet
+    pressure_per_second: max # max: a keeper hidden for a moment in a crowded box doesn't erase the pressure

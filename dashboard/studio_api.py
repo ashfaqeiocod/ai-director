@@ -93,9 +93,49 @@ def run_data(segment: str, run_id: str) -> dict:
     truth = [{"t": round(e["t"], 2), "label": e["label"], "team": e["team"]} for e in truth_events(meta)
              if e["label"] in ("GOAL", "SHOT")]
     report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
+    on_air = load_config()["studio"]["director"].get("on_air_cams", [c["cam"] for c in cams["cams"]])
     return {"info": {k: info[k] for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary")},
             "cams": cams, "fps": meta["fps"], "duration": info["summary"]["seconds"], "timeline": timeline,
-            "cards": cards, "director_events": events, "story": story, "truth": truth, "report": report}
+            "cards": cards, "director_events": events, "story": story, "truth": truth, "report": report,
+            "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams)}
+
+
+def overlays(segment: str, source: str, cams: dict) -> dict:
+    """What the detector saw, to draw on the camera tiles (like MVP 1): per detection step and camera,
+    player boxes and the ball, in 0..1 of that camera's picture. Detector runs only (oracle runs have no
+    detector boxes). The ball is the match ball after the parked-spare-ball filter, mapped into every camera.
+    """
+    if source != "detector":
+        return {"step": 0, "frames": {}}
+    import numpy as np
+    from studio.cameras import CLOSE_CAM, cam_rect, cams_dir
+    from studio.detect import DETECT_CAMS, PanoramaDetections
+    from studio.video import to_camera
+
+    pano = PanoramaDetections(segment)
+    w, h = cams["size"]
+    close_rects = np.load(cams_dir(segment) / "cam5_detector_rects.npy")
+    frames = {}
+    for i in sorted(pano.dets[DETECT_CAMS[0]]["frames"]):
+        here = pano.at(i)
+        per_cam = {}
+        for cam in cams["cams"]:
+            c = cam["cam"]
+            rect = cam_rect(cams, c, i, close_rects)
+            item: dict = {}
+            if c in DETECT_CAMS:
+                det = pano.dets[c]["frames"].get(i, {})
+                item["players"] = [[round(v / s, 3) for v, s in zip(p["box"], (w, h, w, h))] for p in det.get("players", [])]
+            elif c == CLOSE_CAM:
+                pts = [to_camera(rect, w, h, p) for p in here["players"]]
+                item["dots"] = [[round(x / w, 3), round(y / h, 3)] for x, y in pts if 0 <= x < w and 0 <= y < h]
+            if here["ball"]:
+                bx, by = to_camera(rect, w, h, here["ball"][:2])
+                if 0 <= bx < w and 0 <= by < h:
+                    item["ball"] = [round(bx / w, 3), round(by / h, 3)]
+            per_cam[str(c)] = item
+        frames[str(i)] = per_cam
+    return {"step": pano.step, "frames": frames}
 
 
 @router.get("/video/{segment}/{run_id}/{name}")

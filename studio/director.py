@@ -1,8 +1,8 @@
 """director.py — MVP 3 Step 5: director v2, a small state machine over the camera cards.
 
 States (plan section 6):
-  IN_PLAY    follow the ball between LEFT / CENTRE / RIGHT with MVP 1's scoring; go WIDE when play is
-             fast or nobody knows where the ball is.
+  IN_PLAY    follow the ball (or the main group of players) between LEFT / CENTRE / RIGHT with MVP 1's
+             scoring. Only `on_air_cams` can be chosen: WIDE (the whole panorama) is too small to watch.
   REACTION   the story layer reported a goal (corroborated) or a celebration / foul / injury: show the
              CLOSE-up for a while, then go back to IN_PLAY.
 Always:
@@ -57,8 +57,8 @@ class DirectorV2:
         c = self.cfg
         out = []
         for card in cards:
-            if not card.quality.usable:
-                out.append(-1.0)
+            if not card.quality.usable or card.cam not in c["on_air_cams"]:
+                out.append(-1.0)             # never chosen
                 continue
             if card.cam in FOLLOW_CAMS:
                 # MVP 1 scoring, on this camera's own ball status and players.
@@ -84,7 +84,8 @@ class DirectorV2:
     def decide(self, i: int, t: float, cards: list[CamCard], story_events: list[dict],
                story_updates: list[dict], phase: str | None) -> Decision:
         scores = self.scores(cards)
-        usable = [card.quality.usable for card in cards]
+        # "usable" = a picture we may air: sharp, steady, and one of the on-air cameras.
+        usable = [card.quality.usable and card.cam in self.cfg["on_air_cams"] for card in cards]
         events: list[dict] = []
         can_cut = i - self.shot_start >= self.min_shot
 
@@ -148,7 +149,8 @@ class DirectorV2:
             self.state = IN_PLAY
             events.append({"type": "REACTION_END", "message": "back to play" if play_again else "reaction time over"})
             return self._follow(i, scores, can_cut, events)
-        target = CLOSE if usable[CLOSE - 1] else WIDE
+        # The close-up; if it is unusable, the best on-air camera instead.
+        target = CLOSE if usable[CLOSE - 1] else max(range(self.num_cams), key=lambda k: scores[k]) + 1
         if self.current == target:
             return Decision(self.current, self.state, scores, f"reaction: holding cam{target} ({self.reaction_reason})", events)
         if not can_cut:
