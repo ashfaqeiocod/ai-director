@@ -275,6 +275,15 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   parked-ball filter (commit 8a8764a) and an eval story pass; they clashed on the Gemini quota. One session only.
 - 2026-10-12 ~07:00: the MacBook was on BATTERY (4%) and kept sleeping: renders slowed (eval cams 74 min), and an
   eval story pass "played" while asleep with 0 Gemini looks (marked invalid; story_pass now detects this).
+- REAL multi-camera footage (2026-10-12): MUVS (Zenodo 10.5281/zenodo.20708683, CC BY 4.0), fans' phones filming
+  Chicago Fire 0-1 Charlotte FC (MLS, 2024-05-15, goal 60') from 3 seats at once, synced to 0.07 s, plus a human's
+  camera pick per 3 s. No sound track. `python -m studio.muvs --period 19` -> data/muvs/P19/cam1-3.mp4 (1080p,
+  25 fps, 2875 frames each, 115 s), human_cuts.csv, meta.json; 4K originals deleted. P19 = 2nd-half STOPPAGE
+  TIME (ribbon: CHI 0 CLT 1, 48:43): Chicago attack, CORNER KICK (~75-105 s, on the ribbon) and a goalmouth
+  scramble at ~105 s (likely the keeper's late double save from the match report). Cam views: cam1 high corner,
+  cam2 side, cam3 low behind a fan's head (natural "bad feed"). Human picks: mostly cam2 (29 of the last 30).
+  Next MUVS stretch: P15 (5.6 min, 3 cams, 7.6 GB). Other searches (PolyU/Zhejiang 5-7 cam set: author emailed
+  2026-10-12; Alfheim; MVFouls NDA) are in the "MVP 3 Footage Recommendation" doc.
 
 ## Next action (MVP 3)
 PLUG THE MAC IN. Then eval: story pass close_oracle (14 min, alone) -> detection (~2.5 h, sandbox off)

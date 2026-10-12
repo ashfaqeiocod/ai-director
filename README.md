@@ -107,3 +107,7 @@ Combines MVP 1 and MVP 2 on real full-match footage. Spec: `docs/MVP3_SPEC.md`; 
 
 Footage and annotations: **SoccerTrack v2** (Scott et al.), https://huggingface.co/datasets/atomscott/soccertrack-v2,
 licensed CC BY 4.0. Downloaded locally only (needs `HF_TOKEN` in `.env`); never committed.
+
+Real multi-camera footage: **MUVS** (Pessoa, Alencar, de Freitas, UFAM), https://zenodo.org/records/20708683,
+licensed CC BY 4.0. `venv/bin/python -m studio.muvs --period 19` downloads and converts one stretch
+(3 phones, same moment); kept locally only, never committed.
