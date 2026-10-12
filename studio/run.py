@@ -125,6 +125,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     log.writerow(["frame", "time", "state", "chosen_cam", *[f"score_cam{c['cam']}" for c in cams["cams"]], "reason"])
     cards_file = open(out / "cards.jsonl", "w")
     map_file = open(out / "map.jsonl", "w")
+    confirmed: dict[str, dict] = {}            # goal id -> when the kick-off line-up confirmed it
     events_file = open(out / "director_events.jsonl", "w")
     chosen, states = [], []
     cards, phase, story_line, latest_event = [], None, "", None
@@ -157,10 +158,21 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                     else:
                         world.update(t, d["ball"][:2] if d["ball"] else None, d["players"])
                 map_file.write(json.dumps(pitch_state.to_dict()) + "\n")
+                if any(e["type"] == "KICKOFF_LINEUP" for e in pitch_state.events):
+                    # A kick-off line-up confirms a goal the goal camera reported in the last minute (past only).
+                    window = cfg["map"]["goal_confirm_window_s"]
+                    for g in feed.known_events(t):
+                        if (g["type"] == "goal" and "goalcam" in g["sources"] and g["id"] not in confirmed
+                                and 0 <= t - g["event_time"] <= window):
+                            confirmed[g["id"]] = {"goal_time": g["event_time"], "confirmed_at": round(t, 2)}
+                            msg = f"goal at {g['event_time']:.0f}s confirmed by the kick-off line-up"
+                            events_file.write(json.dumps({"frame": i, "time": round(t, 2), "type": "GOAL_CONFIRMED",
+                                                          "message": msg, "goal_time": g["event_time"]}) + "\n")
+                            print(f"  {t:7.1f}s  GOAL_CONFIRMED: {msg}")
                 for e in pitch_state.events:
                     events_file.write(json.dumps({"frame": i, "time": round(t, 2), "type": e["type"],
                                                   "message": f"{e['type'].lower().replace('_', ' ')} "
-                                                             f"({e.get('zone') or e.get('side') or e.get('line')})"}) + "\n")
+                                                             f"({e.get('zone') or e.get('side') or e.get('line') or ''})"}) + "\n")
             # Picture quality: shake every frame, blur on detection steps.
             quality = []
             for k, image in enumerate(images):
@@ -217,7 +229,8 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                "shortest_shot_s": round(min(shots), 2), "average_shot_s": round(sum(shots) / len(shots), 2),
                "time_per_cam_s": {f"cam{c['cam']}": round(chosen.count(c["cam"]) / fps, 1) for c in cams["cams"]},
                "time_per_state_s": {s: round(states.count(s) / fps, 1) for s in sorted(set(states))},
-               "processing_fps": round(len(chosen) / (time.time() - start), 1)}
+               "processing_fps": round(len(chosen) / (time.time() - start), 1),
+               "confirmed_goals": sorted(v["goal_time"] for v in confirmed.values())}
     (out / "run.json").write_text(json.dumps({"segment": segment, "run_id": run_id, "source": source,
                                               "story_run": story["run_id"] if story else None,
                                               "story_mode": story["mode"] if story else None,

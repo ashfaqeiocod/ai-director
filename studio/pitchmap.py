@@ -112,6 +112,8 @@ class PitchMap:
         self.last_t: float | None = None
         self.zone = "unknown"
         self.trail: deque = deque()
+        self.lineup_since: float | None = None   # since when the players stand like for a kick-off
+        self.lineup_reported = False
 
     def update(self, t: float, ball_px: tuple[float, float] | None,
                feet_px: list[tuple[float, float]]) -> MapState:
@@ -152,11 +154,31 @@ class PitchMap:
         if self.ball and status == "seen":
             events = self._zone_events(self.zone, zone, self.ball)
             self.zone = zone
+        events += self._kickoff_lineup(t, players)
         speed = math.hypot(*self.velocity)
         in_box = sum(1 for p in players if zone_of(*p) in ("left_box", "right_box"))
         state = MapState(t, self.ball, status, age, speed, zone, players, in_box, 0.0, events)
         state.intensity = self.intensity(state)
         return state
+
+    def _kickoff_lineup(self, t: float, players: list[tuple[float, float]]) -> list[dict]:
+        """KICKOFF_LINEUP: the players stand as for a kick-off (both halves evenly filled, a few at the centre
+        circle) for a few seconds. In football that only happens at the start of a half and after a GOAL, so it
+        confirms a goal the goal camera reported (it never finds one on its own: it can't tell which goal)."""
+        c = self.cfg["kickoff"]
+        left = sum(1 for p in players if p[0] < 0)
+        near = sum(1 for p in players if math.hypot(*p) < c["centre_radius_m"])
+        lined_up = (len(players) >= c["min_players"] and abs(left - (len(players) - left)) <= c["max_imbalance"]
+                    and near >= c["min_near_centre"])
+        if not lined_up:
+            self.lineup_since, self.lineup_reported = None, False
+            return []
+        if self.lineup_since is None:
+            self.lineup_since = t
+        if not self.lineup_reported and t - self.lineup_since >= c["hold_s"]:
+            self.lineup_reported = True
+            return [{"type": "KICKOFF_LINEUP", "since": round(self.lineup_since, 1)}]
+        return []
 
     def _zone_events(self, before: str, after: str, ball: tuple[float, float]) -> list[dict]:
         events = []

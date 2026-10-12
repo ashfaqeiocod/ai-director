@@ -257,6 +257,13 @@ studio:
     fast_ball_ms: 15 # ball this fast = full "speed" intensity
     box_crowd: 6 # players in a penalty box for full "crowd" intensity
     intensity_weights: { near_goal: 0.5, speed: 0.3, box_crowd: 0.2 }
+    kickoff: # KICKOFF_LINEUP: players lined up as for a kick-off (start of a half, or after a GOAL)
+      min_players: 16 # at least this many players seen on the pitch
+      max_imbalance: 3 # players in the left and right half differ by at most this
+      centre_radius_m: 12
+      min_near_centre: 3 # at least this many within centre_radius_m of the centre spot
+      hold_s: 3 # for at least this long
+    goal_confirm_window_s: 60 # a goal the goal camera saw counts when a kick-off line-up follows within this time
   parked_ball: # a spare ball lying off the pitch is a real ball, but not THE ball (eval: cam3, 2455 frames)
     window_seconds: 4 # look back this far (past only, so it stays causal)
     radius_px: 20 # "same spot" = within this many panorama pixels (~0.5 m)

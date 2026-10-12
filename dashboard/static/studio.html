@@ -73,7 +73,7 @@
             <div id="storyNow" class="text-xs text-sky-200 italic mt-1 truncate"></div>
           </div>
           <div class="text-right shrink-0">
-            <div class="text-[11px] text-slate-400">GOALS (AI)</div>
+            <div class="text-[11px] text-slate-400" title="counted when the goal camera saw it AND the kick-off line-up followed">GOALS (AI, confirmed)</div>
             <div class="mono text-3xl font-bold leading-none" id="aiGoals">0</div>
             <div class="text-[11px] text-slate-500" id="truthGoals"></div>
           </div>
@@ -130,7 +130,8 @@ const CAM_COLORS = {1: "#38bdf8", 2: "#a78bfa", 3: "#f472b6", 4: "#4ade80", 5: "
 const ICONS = {goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
                corner: "🚩", free_kick: "🦶", celebration: "🎉", penalty: "⚠️", kickoff: "▶️"};
 const MAP_EVENTS = {BOX_ENTRY: "ball into the box", BOX_EXIT: "ball out of the box", BALL_OUT: "ball out of play",
-                    GOAL_LINE: "ball over the goal line between the posts"};
+                    GOAL_LINE: "ball over the goal line between the posts",
+                    KICKOFF_LINEUP: "players lined up for a kick-off"};
 let data = null, runs = [], shown = [], tab = "story";
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
@@ -313,7 +314,7 @@ function logItems(t) {
   }
   return data.director_events.filter(e => e.time <= t).map(e => {
     const isMap = e.type in MAP_EVENTS;
-    const color = e.type === "GOAL_LINE" ? "text-yellow-300" : isMap ? "text-amber-200" : e.type.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
+    const color = e.type === "GOAL_CONFIRMED" ? "text-green-300" : e.type === "GOAL_LINE" ? "text-yellow-300" : isMap ? "text-amber-200" : e.type.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
     return {at: e.time, html: `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b class="${color}">${isMap ? "MAP" : e.type}</b> ` +
       (isMap ? MAP_EVENTS[e.type] : e.message.replace(/cam(\d)/g, (_, c) => camName(+c)))};
   });
@@ -370,11 +371,12 @@ function render() {
       : last ? (last.goal ? `<span class="text-yellow-300">⚽ goal!</span>` : `last check: ${last.shot ? "shot" : "no goal"}`) : "AI eyes";
   });
 
-  // goals + NOW
-  const goals = data.story.events.filter(e => e.type === "goal" && e.known_at <= t);
-  const goalTimes = []; goals.sort((a, b) => a.event_time - b.event_time).forEach(e => {
-    if (!goalTimes.length || e.event_time - goalTimes[goalTimes.length - 1] > 30) goalTimes.push(e.event_time); });
-  $("aiGoals").textContent = goalTimes.length;
+  // goals: COUNTED only once confirmed (goal camera saw it + the kick-off line-up followed); else "possible"
+  const confirmed = data.director_events.filter(e => e.type === "GOAL_CONFIRMED" && e.time <= t);
+  const possible = data.story.events.filter(e => e.type === "goal" && e.known_at <= t && t - e.event_time <= 60 &&
+    !confirmed.some(c => Math.abs(c.goal_time - e.event_time) < 30));
+  $("aiGoals").textContent = confirmed.length;
+  $("aiGoals").title = confirmed.map(c => `goal at ${fmt(c.goal_time)}, confirmed ${fmt(c.time)}`).join("\n");
   const real = data.truth.filter(e => e.label === "GOAL");
   $("truthGoals").textContent = $("truthToggle").checked ? `real: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
   let now;
@@ -389,6 +391,8 @@ function render() {
     row ? `<span class="chip">${row.players.length} players on the map</span>` : "",
     row && row.in_box ? `<span class="chip">${row.in_box} in a box</span>` : "",
     ai.asking ? `<span class="chip text-yellow-300">AI checking the ${ai.asking.side} goal</span>` : "",
+    possible.length ? `<span class="chip text-amber-300">possible goal at ${fmt(possible[possible.length - 1].event_time)}: waiting for the kick-off</span>` : "",
+    confirmed.length && t - confirmed[confirmed.length - 1].time < 15 ? `<span class="chip text-green-300">⚽ GOAL confirmed (kick-off seen)</span>` : "",
     `<span class="chip text-slate-400">${data.info.summary.cuts} cuts · avg shot ${data.info.summary.average_shot_s}s</span>`,
   ].join("");
   drawLog(t);

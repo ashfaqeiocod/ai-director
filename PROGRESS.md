@@ -276,6 +276,15 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   (avg shot 6.2 -> 13.3 s); ball position known 56% of the time (16% from detection alone). Studio tab rebuilt as
   one combined dashboard (program, tracked cameras, pitch map with camera views + ball trail, intensity meter,
   goals, story, triggers).
+- 2026-10-12 GOAL CAMERAS + GOAL WATCHER + KICK-OFF CONFIRMATION (studio.goalwatch, pitchmap KICKOFF_LINEUP):
+  two fixed sharp views on the goals; when the map says play is near a goal, Gemini (no sound) checks that goal
+  camera; after a shot it looks again at the aftermath (the celebration tells a goal from a save). MVP 2's LOW media
+  resolution missed the dev goal; HIGH detail saw "shot + save", the aftermath look saw "goal, attackers celebrate".
+  A goal is COUNTED only when a kick-off line-up (players evenly in both halves, some at the centre) follows within
+  60 s. dev: goal found + confirmed, 1/1, 0 false counted (1 false alarm -> extra close-up, not counted).
+  eval: close-up within 20 s after 2/3 real goals (target met); counted goals: 494 s correct, 775 s found but
+  stamped 10.3 s early (shot at 765 s was the first attempt, the goal came from the second) -> strict 10 s check
+  calls it false; goal at 118 s missed; 3 false alarms -> extra close-ups, none counted. Rules not tuned on eval.
 - CAMERA-ONLY TEST on real broadcast (SoccerNet, Arsenal 3-4 Liverpool 2016, 2nd half 0-20 min, 4 goals;
   NO sound to the AI, score graphic blacked out, Flash Lite, real time, 114 looks):
   goals 3/4 within +-10 s (608.5, 1051.3, 1123.3 s vs truth 608.4, 1051, 1123; the 4th at 226 s vs 209 s, with

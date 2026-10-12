@@ -167,6 +167,14 @@ def story_scores(truth: list[dict], run_info: dict, window: float) -> dict | Non
     return result
 
 
+def confirmed_goals(truth: list[dict], found: list[float], window: float) -> dict:
+    """Goals the system COUNTED (goal camera + kick-off line-up confirmation) vs the real goals."""
+    real = [e["t"] for e in truth if e["label"] == "GOAL"]
+    hit = [r for r in real if any(abs(f - r) <= window for f in found)]
+    false = [f for f in found if not any(abs(f - r) <= window for r in real)]
+    return {"real": len(real), "counted": len(found), "correct": len(hit), "false": len(false)}
+
+
 def bad_feed(meta: dict, cams_chosen: list[int]) -> dict | None:
     test = load_config()["studio"]["segments"][meta["segment"]].get("degrade")
     if not test:
@@ -194,7 +202,9 @@ def evaluate(segment: str, run_id: str | None) -> Path:
          "reactions": reactions(truth, cams_chosen, states, fps, cfg["eval"]["reaction_window_s"]),
          "false_reactions": false_reactions(truth, states, fps, cfg["eval"]["reaction_window_s"]),
          "story": story_scores(truth, info, cfg["eval"]["match_window_s"]),
-         "bad_feed": bad_feed(meta, cams_chosen), "summary": info["summary"]}
+         "bad_feed": bad_feed(meta, cams_chosen), "summary": info["summary"],
+         "confirmed_goals": confirmed_goals(truth, info["summary"].get("confirmed_goals", []),
+                                            cfg["eval"]["match_window_s"])}
     (run / "report.json").write_text(json.dumps(r, indent=2))
     path = write_report(run, r, cfg)
     print(path.read_text())
@@ -228,6 +238,10 @@ def write_report(run: Path, r: dict, cfg: dict) -> Path:
     lines.append(f"| Close-up within {cfg['eval']['reaction_window_s']} s after a real goal | "
                  f"{reacted}/{len(r['reactions'])} | ≥ 2/3 |")
     lines.append(f"| False reactions (no real goal before them) | {r['false_reactions']} | low |")
+    cg = r.get("confirmed_goals")
+    if cg:
+        lines.append(f"| **Goals counted** (goal camera + kick-off confirmation) | **{cg['correct']} of {cg['real']} real, "
+                     f"{cg['false']} false** | ≥ 2 of 3, 0 false |")
     if story:
         for k, v in story.items():
             lines.append(f"| Story {k}s: recall / precision / delay | {_pct(v['recall'])} / {_pct(v['precision'])} / "

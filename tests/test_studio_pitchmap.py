@@ -47,3 +47,15 @@ def test_impossible_jump_is_ignored():
     m.update(0.0, (0, 0), [])
     s = m.update(0.2, (40, 0), [])               # 200 m/s: not the same ball
     assert s.ball_status == "remembered"
+
+
+def test_kickoff_lineup_fires_once_after_hold():
+    m = PitchMap(CFG, IDENTITY)
+    lineup = [(-x, y) for x in (3, 8, 15, 25, 35, 45) for y in (-10, 10)][:10] + \
+             [(x, y) for x in (3, 8, 15, 25, 35, 45) for y in (-10, 10)][:10]          # 10 + 10, several near centre
+    fired = []
+    for k in range(30):                                                                # 6 s at 5 per second
+        fired += [e for e in m.update(k * 0.2, None, lineup).events if e["type"] == "KICKOFF_LINEUP"]
+    assert len(fired) == 1
+    attack = [(-30 - k, 0) for k in range(18)] + [(5, 0), (10, 0)]                     # everyone in one half
+    assert not [e for k in range(30) for e in m.update(10 + k * 0.2, None, attack).events if e["type"] == "KICKOFF_LINEUP"]
