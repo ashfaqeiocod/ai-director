@@ -1,10 +1,11 @@
 # How to test MVP 3 — Directed Story
 
 MVP 3 combines MVP 1 (camera switching) and MVP 2 (story reading) on a **real match**:
-one 4K panoramic recording from the SoccerTrack v2 dataset, cut into 5 virtual cameras
-(LEFT, CENTRE, RIGHT, WIDE, CLOSE-up). A director picks the camera every frame using a
-"camera card" per camera (ball, players, speed, picture quality, story), and a report scores
-the result against the dataset's ground truth.
+one 4K panoramic recording from the SoccerTrack v2 dataset, cut into virtual cameras
+(LEFT, CENTRE, RIGHT, CLOSE-up on air; WIDE is kept for the record only). A director picks the camera every
+frame using a "camera card" per camera (ball, players, picture quality, story) and a PITCH MAP (ball + players
+on the pitch, ball remembered for 3 s, ball-in-the-box / out / goal-line triggers, map intensity). A report
+scores the result against the dataset's ground truth.
 
 Spec: `docs/MVP3_SPEC.md` · Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md` · Progress + findings: `PROGRESS.md` (MVP 3 section).
 
@@ -48,7 +49,7 @@ It skips what is already done. Times on the M1 (8 GB):
 | prepare | `annotation offset: ... frames`, 3 check pictures, `ground-truth goals in this segment` | 1 / 3 min |
 | cameras | `[cameras] frame N/9000 (15 fps)` | 10 / 25 min |
 | detect | `[detect] 100/1800 frames, 0.8 frames/s` | 35 / 90 min |
-| story | Gemini lines as the clip "plays" in real time | 6 / 14 min (real time) |
+| story | Gemini lines as the clip "plays" in real time (on the close-up) | 6 / 14 min (real time) |
 | run (x2) | `CUT` / `REACTION` lines, then a summary | 15 / 35 min each |
 | evaluate | the report table (below) | seconds |
 
@@ -60,6 +61,13 @@ behind is marked invalid automatically and not used.
 Open `data/studio/dev/check_04500.png`: green boxes (annotated players) should sit on the players' feet,
 the yellow circle (ground-truth ball) near a player.
 
+## 3b. Fastest way to SEE it (everything is already prepared and run)
+
+```bash
+venv/bin/python -m dashboard.server
+```
+Open http://localhost:8000/studio, choose the newest **eval** run, **Load**, press ▶.
+
 ## 4. Watch a run
 
 ```bash
@@ -67,8 +75,14 @@ venv/bin/python -m dashboard.server
 ```
 
 Open http://localhost:8000/studio, pick a run, **Load**, press play:
-- big video = the program (what viewers would see), with `CAM n · NAME` and the director's state;
-- 5 tiles below = the 5 cameras, red border = live; under each, its card (shot type, players, ball, picture OK/BAD);
+- big video = the program (what viewers would see), with the camera name and the director's state;
+- tiles below = the on-air cameras with the detector's player boxes and the ball (green circle), red border = live;
+  under each, its card (shot type, players, ball seen/remembered, picture OK/BAD);
+- NOW panel = what the director is doing, in words, plus the latest AI commentary line;
+- GOALS SEEN BY THE AI + INTENSITY (map = from the pitch map, story = from the AI), with a 60 s graph;
+- PITCH MAP = players, the ball and its trail (hollow = remembered), what each camera sees on the pitch
+  (live camera highlighted), the penalty box glows when the ball is in it; next to it, the MAP triggers
+  (ball into the box, out of play, over the goal line) and every director decision;
 - right: the story **as the director knew it** (each line appears only after the AI produced it, with its delay),
   and every director decision;
 - timeline: colour = live camera (bright = REACTION), ⚽ marks; tick "show ground truth" for the real goals.
