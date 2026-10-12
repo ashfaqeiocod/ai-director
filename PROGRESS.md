@@ -269,6 +269,13 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   (one 0.24 s shot = the allowed escape from the blurred camera), degraded cam2 0% on air, 135 cuts (9.6/min,
   avg 6.2 s: busier than a human would cut), goals 0/3 found -> 0/3 reactions, 0 false reactions.
   compare.md: outputs/studio/eval/compare.md.
+- 2026-10-12 (user feedback): no WIDE on air + PITCH MAP (studio.pitchmap: ball + players on the 105x68 m pitch
+  via the fixed camera's calibration, ball remembered 3 s, BOX_ENTRY/BOX_EXIT/BALL_OUT/GOAL_LINE triggers, map
+  intensity). Cause of "no ball on air" (dev): 65% = live on CENTRE while the ball was on a wing; half within 2 s
+  of the last sighting. Results: dev 75 -> 76% ball on air, 27 -> 31 cuts; eval 74 -> 75%, 135 -> 62 cuts
+  (avg shot 6.2 -> 13.3 s); ball position known 56% of the time (16% from detection alone). Studio tab rebuilt as
+  one combined dashboard (program, tracked cameras, pitch map with camera views + ball trail, intensity meter,
+  goals, story, triggers).
 - CAMERA-ONLY TEST on real broadcast (SoccerNet, Arsenal 3-4 Liverpool 2016, 2nd half 0-20 min, 4 goals;
   NO sound to the AI, score graphic blacked out, Flash Lite, real time, 114 looks):
   goals 3/4 within +-10 s (608.5, 1051.3, 1123.3 s vs truth 608.4, 1051, 1123; the 4th at 226 s vs 209 s, with
