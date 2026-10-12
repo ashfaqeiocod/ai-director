@@ -129,18 +129,36 @@ class QualityMeter:
         self.sharpness: deque[float] = deque(maxlen=cfg["history"])
         self.prev: np.ndarray | None = None
         self.shake_samples: deque[float] = deque(maxlen=cfg["shake_samples"])
+        self.recent_moves: deque = deque(maxlen=cfg.get("pan_window", 12))   # jitter mode: the recent smooth move
         self.quality = Quality()
         self.bad_since: float | None = None
 
     def update(self, t: float, image: np.ndarray, planned_move: tuple[float, float] = (0.0, 0.0),
-               measure: bool = True) -> Quality:
+               measure: bool = True, frames_since: int = 1) -> Quality:
+        """frames_since: frames since the previous picture (live mode skips frames when it is late)."""
         width = self.cfg["width"]
         small = cv2.cvtColor(cv2.resize(image, (width, width * image.shape[0] // image.shape[1])), cv2.COLOR_BGR2GRAY)
         small = small.astype(np.float32)
-        if self.prev is not None:
+        if self.prev is not None and frames_since == 1:
+            # Only back-to-back frames: across skipped frames (live mode when late) the picture moved for
+            # several frames, which would look like shake.
             (dx, dy), _ = cv2.phaseCorrelate(self.prev, small)
             scale = width / image.shape[1]
-            jump = float(np.hypot(dx - planned_move[0] * scale, dy - planned_move[1] * scale)) / scale
+            # In pixels of a 1280-wide picture, whatever the camera's size (phones are 1920 wide), so one
+            # shake limit means the same on every camera. (SoccerTrack cameras are 1280 wide: unchanged.)
+            unit = 1280 / image.shape[1]
+            move = ((dx - planned_move[0] * scale) / scale * unit, (dy - planned_move[1] * scale) / scale * unit)
+            if self.cfg.get("shake_mode") == "jitter":
+                # Hand-held cameras pan smoothly all the time: that is filming, not shaking. Shake = how far
+                # this frame's move differs from the recent smooth move (past frames only).
+                if self.recent_moves:
+                    mx, my = np.mean(self.recent_moves, axis=0)
+                    jump = float(np.hypot(move[0] - mx, move[1] - my))
+                else:
+                    jump = 0.0
+                self.recent_moves.append(move)
+            else:
+                jump = float(np.hypot(*move))       # fixed cameras: any jump is shake
             self.shake_samples.append(jump)
         self.prev = small
         if not measure:

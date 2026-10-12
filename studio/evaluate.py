@@ -45,9 +45,16 @@ def resolve(segment: str, run_id: str | None) -> Path:
 
 
 def read_log(run: Path) -> tuple[list[int], list[str], list[str]]:
+    """Camera, state and reason for EVERY frame. A live run logs only the frames it showed (it skips frames
+    when it is late); a skipped frame still showed the camera that was on air, so gaps are filled with it."""
     cams, states, reasons = [], [], []
     with open(run / "director_log.csv") as f:
         for row in csv.DictReader(f):
+            frame = int(row["frame"])
+            while cams and len(cams) < frame:          # fill a gap with what was on air
+                cams.append(cams[-1])
+                states.append(states[-1])
+                reasons.append(reasons[-1])
             cams.append(int(row["chosen_cam"]))
             states.append(row["state"])
             reasons.append(row["reason"])
@@ -301,8 +308,58 @@ def main() -> int:
     parser.add_argument("--run", default=None)
     parser.add_argument("--compare", action="store_true")
     args = parser.parse_args()
-    compare(args.segment) if args.compare else evaluate(args.segment, args.run)
+    if args.segment.startswith("muvs-"):
+        evaluate_muvs(args.segment, args.run)
+    else:
+        compare(args.segment) if args.compare else evaluate(args.segment, args.run)
     return 0
+
+
+
+# ----------------------------------------------------------------------------- MUVS: agreement with a human
+def human_agreement(chosen: list[int], picks: list[dict], fps: float) -> dict:
+    """Per 3 s fragment the human picked one phone. Our pick for a fragment = the camera we showed most in it.
+    Agreement = share of fragments where both picked the same phone; compared with 'always phone N'."""
+    ours, theirs = [], []
+    for p in picks:
+        a, b = round(p["start"] * fps), min(len(chosen), round(p["end"] * fps))
+        if b <= a:
+            continue
+        span = chosen[a:b]
+        ours.append(max(set(span), key=span.count))
+        theirs.append(p["cam"])
+    n = len(theirs)
+    agree = sum(o == h for o, h in zip(ours, theirs)) / n if n else None
+    baselines = {f"always phone {c}": sum(h == c for h in theirs) / n for c in sorted(set(theirs) | {1, 2, 3})} if n else {}
+    return {"fragments": n, "agreement": agree, "baselines": baselines,
+            "ours": {c: ours.count(c) for c in sorted(set(ours))}, "human": {c: theirs.count(c) for c in sorted(set(theirs))}}
+
+
+def evaluate_muvs(key: str, run_id: str | None) -> dict:
+    from studio.sources import get_source
+
+    run = resolve(key, run_id)
+    src = get_source(key)
+    chosen, states, reasons = read_log(run)
+    info = json.loads((run / "run.json").read_text())
+    r = {"run": run.name, "source": key, "agreement": human_agreement(chosen, src.human_picks(), src.fps),
+         "shots": shot_stats(chosen, reasons, src.fps, src.cfg["director"]["min_shot_seconds"]), "summary": info["summary"]}
+    a = r["agreement"]
+    lines = [f"# MUVS report — {key} / {run.name}", "",
+             f"Real fans' phones, same match. Answer key: the camera a human picked every 3 s ({a['fragments']} fragments).", "",
+             "| Check | Result |", "|---|---|",
+             f"| **Agreement with the human's pick** | **{_pct(a['agreement'])}** |"]
+    lines += [f"| Baseline: {k} | {_pct(v)} |" for k, v in a["baselines"].items()]
+    s = r["shots"]
+    lines += [f"| Cuts / average shot | {s['cuts']} ({s['cuts_per_min']:.1f}/min), avg {s['average_shot_s']:.1f} s |",
+              f"| Shortest normal shot | {s['shortest_shot_s']:.2f} s ({s['too_short']} too short) |" if s["shortest_shot_s"] else "",
+              f"| Leaving a bad picture | {s['bad_feed_escapes']} times |",
+              f"| Fragments per phone: ours {a['ours']} · human {a['human']} | |",
+              "", "No goal in this stretch: it tests camera choice and the story, not goal detection."]
+    (run / "report.md").write_text("\n".join(x for x in lines if x is not None) + "\n")
+    (run / "report.json").write_text(json.dumps(r, indent=2))
+    print((run / "report.md").read_text())
+    return r
 
 
 if __name__ == "__main__":

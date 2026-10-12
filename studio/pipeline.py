@@ -89,6 +89,7 @@ class Pipeline:
         self.updates: list[dict] = []
         self.phase = None
         self.story_line = ""
+        self.last_i: int | None = None
 
     def rects(self, i: int) -> list:
         return [cam_rect(self.cams, c["cam"], i, self.close_rects) for c in self.cams["cams"]]
@@ -138,6 +139,8 @@ class Pipeline:
         cfg, cams = self.cfg, self.cams
         w = cams["size"][0]
         rects = self.rects(i)
+        gap = i - self.last_i if self.last_i is not None else 1   # live mode skips frames when it is late
+        self.last_i = i
         quality = []
         for k, image in enumerate(images):
             move = (0.0, 0.0)
@@ -145,7 +148,7 @@ class Pipeline:
                 prev = cam_rect(cams, CLOSE_CAM, i - 1, self.close_rects)
                 scale = w / rects[k][2]
                 move = ((rects[k][0] - prev[0]) * -scale, (rects[k][1] - prev[1]) * -scale)
-            quality.append(self.meters[k].update(t, image, move, measure=i % self.step == 0))
+            quality.append(self.meters[k].update(t, image, move, measure=i % self.step == 0, frames_since=gap))
         if i % self.step == 0 or not self.cards:
             self.known_events = self.feed.known_events(t)
             self.updates = self.feed.known_updates(t)
@@ -157,3 +160,79 @@ class Pipeline:
                                      event_summary(latest), self.source, self.pitch_state)
         decision = self.director.decide(i, t, self.cards, self.known_events, self.updates, self.phase)
         return StepResult(decision, self.cards, rects, self.pitch_state, events or [], self.story_line)
+
+
+class IndependentPipeline:
+    """The per-frame brain for footage where each camera is its own, real camera (MUVS fans' phones).
+
+    There is no shared panorama and no pitch calibration, so no pitch map, goal cameras or kick-off check:
+      - each camera keeps MVP 1's BallTracker on its OWN detections (pixels of that camera);
+      - the action point of a camera = the ball if it sees it, else its main group of players;
+      - cards, quality (hand-held "jitter" mode) and DirectorV2 are the same as for SoccerTrack.
+    Same interface as Pipeline (detections / frame / confirmed / pitch_state) so live mode can use either."""
+
+    def __init__(self, cfg: dict, cams: dict, fps: float, feed, step: int, ball_cfg: dict, quality_cfg: dict):
+        from src.ball_tracker import BallTracker
+
+        self.cfg, self.cams, self.feed, self.step, self.fps = cfg, cams, feed, step, fps
+        w, h = cams["size"]
+        self.trackers = {c["cam"]: BallTracker(ball_cfg["buffer_size"], ball_cfg["max_jump_px"],
+                                               ball_cfg["max_predict_updates"], (w, h)) for c in cams["cams"]}
+        self.meters = [QualityMeter(quality_cfg) for _ in cams["cams"]]
+        self.director = DirectorV2(cfg["director"], fps, len(cams["cams"]))
+        self.confirmed: dict[str, dict] = {}
+        self.pitch_state = None
+        self.balls: dict[int, object] = {}            # cam -> BallState
+        self.groups: dict[int, tuple | None] = {}     # cam -> main group of players (pixels)
+        self.players: dict[int, int] = {}
+        self.cards: list[CamCard] = []
+        self.known_events, self.updates, self.phase, self.story_line = [], [], None, ""
+        self.radius = cfg["cameras"]["close"]["group_radius_px"]
+        self.thr = ball_cfg["min_confidence"]
+        self.last_i: int | None = None
+
+    def detections(self, i: int, t: float, detector: dict | None = None, oracle=None) -> list[dict]:
+        """detector = {cam: {"players": [...], "ball": {...} | None}} for this detection frame."""
+        from studio.cameras import group_center
+
+        for c, det in (detector or {}).items():
+            b = det.get("ball")
+            box = b["box"] if b and b["conf"] >= self.thr else None
+            self.balls[c] = self.trackers[c].update(box)
+            feet = [((p["box"][0] + p["box"][2]) / 2, (p["box"][1] + p["box"][3]) / 2) for p in det.get("players", [])]
+            self.players[c] = len(feet)
+            pts = np.asarray(feet, dtype=float)
+            self.groups[c] = group_center(pts, pts, self.radius) if len(feet) else None
+        return []
+
+    def frame(self, i: int, t: float, images: list, events: list[dict] | None = None) -> StepResult:
+        from studio.cards import BallInfo
+
+        cams = self.cams
+        w, h = cams["size"]
+        gap = i - self.last_i if self.last_i is not None else 1
+        self.last_i = i
+        quality = [self.meters[k].update(t, img, (0.0, 0.0), measure=i % self.step == 0, frames_since=gap)
+                   for k, img in enumerate(images)]
+        if i % self.step == 0 or not self.cards:
+            self.known_events = self.feed.known_events(t)
+            self.updates = self.feed.known_updates(t)
+            self.phase = self.feed.latest_phase(t, self.cfg["director"]["reaction_max_s"])
+            self.story_line = self.updates[-1]["narration"] if self.updates else ""
+            headline = [e for e in self.known_events if e["type"] not in ("none", "whistle")]
+            latest = max(headline, key=lambda e: e["known_at"]) if headline else None
+            cards = []
+            for k, cam in enumerate(cams["cams"]):
+                c = cam["cam"]
+                b = self.balls.get(c)
+                ball = BallInfo(round(b.center[0] / w, 3), round(b.center[1] / h, 3), b.status) \
+                    if b is not None and b.center is not None else None
+                g = self.groups.get(c)
+                action = (round(g[0] / w, 3), round(g[1] / h, 3)) if g is not None else None
+                cards.append(CamCard(cam=c, name=cam["name"], time=round(t, 2), logged_at=round(t, 2),
+                                     shot_type=cam["shot_type"], ball=ball, players=self.players.get(c, 0),
+                                     play_speed=0.0, quality=quality[k], event=event_summary(latest), phase=self.phase,
+                                     source="detector", action_in_view=action is not None, action=action))
+            self.cards = cards
+        decision = self.director.decide(i, t, self.cards, self.known_events, self.updates, self.phase)
+        return StepResult(decision, self.cards, [None] * len(cams["cams"]), None, events or [], self.story_line)

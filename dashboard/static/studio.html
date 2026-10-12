@@ -141,6 +141,7 @@
     <div class="relative h-4 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
       <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
     </div>
+    <div class="relative h-2 mt-0.5 rounded overflow-hidden bg-slate-800 hidden" id="humanBar" title="the human director's pick (MUVS answer key)"></div>
     <canvas id="intensityLine" width="1600" height="40" class="w-full h-8 mt-0.5"></canvas>
     <div class="relative h-4" id="truthMarks"></div>
     <div class="flex justify-between text-[11px] text-slate-400"><span id="legend" class="flex gap-3"></span><span class="mono" id="clock"></span></div>
@@ -168,7 +169,8 @@ let M = null;
 function emptyModel() {
   return {cams: null, onAir: [], goalCams: [], fps: 25, duration: 1, truth: [], pitch: {coverage: {}, close_coverage: {}},
           timeline: [], mapRows: [], decisions: [], updates: [], events: [], looks: [], intensity: [],
-          overlays: null, cards: {}, cur: null, info: null, lights: {}, liveStatus: null, asking: null, report: null};
+          overlays: null, cards: {}, cur: null, info: null, lights: {}, liveStatus: null, asking: null, report: null,
+          human: [], kind: "soccertrack"};
 }
 const camName = (c) => (M.cams.cams.find(x => x.cam === c) || {name: "cam" + c}).name;
 const shown = () => M.cams.cams.filter(c => M.onAir.includes(c.cam));
@@ -192,7 +194,8 @@ async function loadRun(index) {
                     truth: d.truth, pitch: d.pitch, timeline: d.timeline, mapRows: d.pitch.rows,
                     decisions: d.director_events.map(e => ({...e, kind: e.type})), updates: d.story.updates,
                     events: d.story.events, looks: d.goal_looks || [], intensity: d.intensity,
-                    overlays: d.overlays, cardsBySecond: d.cards, info: d.info, report: d.report});
+                    overlays: d.overlays, cardsBySecond: d.cards, info: d.info, report: d.report,
+                    human: d.human || [], kind: d.kind || "soccertrack"});
   setupScreen(r.segment, r.run_id);
   $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
 }
@@ -209,7 +212,7 @@ async function prepareLive(segment) {
   const info = await (await fetch(`/studio/live/info/${segment}`)).json();
   M = emptyModel();
   Object.assign(M, {cams: info.cams, onAir: info.on_air_cams, goalCams: info.goal_cams, fps: info.fps,
-                    duration: info.duration, truth: info.truth, pitch: info.pitch});
+                    duration: info.duration, truth: info.truth, pitch: info.pitch, human: info.human || [], kind: info.kind});
   setupScreen(segment, null);
 }
 function connectLive() {
@@ -304,9 +307,14 @@ function setupScreen(segment, runId) {
       </div>
     </div>`).join("") || `<div class="text-[11px] text-slate-500 p-2">No goal cameras.</div>`;
   $("reportText").textContent = M.report || "No report for this run yet.";
+  // MUVS: the human director's pick every 3 s, as a thin row under our timeline
+  $("humanBar").classList.toggle("hidden", !M.human.length);
+  $("humanBar").innerHTML = M.human.map(h => `<div class="absolute top-0 bottom-0" title="human: ${camName(h.cam)} ${fmt(h.start)}"
+      style="left:${100 * h.start / M.duration}%;width:${100 * (h.end - h.start) / M.duration}%;background:${CAM_COLORS[h.cam]}"></div>`).join("");
   $("legend").innerHTML = cams.map(c =>
     `<span><span class="inline-block w-2 h-2 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.name}</span>`).join("")
-    + `<span class="text-amber-300">— map intensity</span><span class="text-sky-300">— story intensity</span>`;
+    + (M.human.length ? `<span class="text-slate-300">thin row = human's pick</span>` : `<span class="text-amber-300">— map intensity</span>`)
+    + `<span class="text-sky-300">— story intensity</span>`;
   lastKey = ""; drawTruth();
 }
 
@@ -343,6 +351,7 @@ function drawTimeline(t) {
     tl.dataset.count = String(segs.length);
   }
   $("playhead").style.left = `${100 * t / D}%`;
+  if (M.human.length) $("humanBar").style.setProperty("--t", t);
   $("clock").textContent = `${fmt(t)} / ${fmt(D)}`;
   // intensity curve under the timeline: map (amber) + story (blue), whole run in replay, so far in live
   const c = $("intensityLine"), g = c.getContext("2d"), W = c.width, H = c.height;
@@ -382,7 +391,35 @@ function drawTruth() {
 const P = {w: 840, h: 544, m: 16};
 const px = (x) => P.m + (x + 52.5) / 105 * (P.w - 2 * P.m);
 const py = (y) => P.m + (y + 34) / 68 * (P.h - 2 * P.m);
+function drawHumanPanel(t, liveCam) {
+  // Phone footage has no pitch calibration: instead, compare our pick with the human director's.
+  const g = $("pitch").getContext("2d");
+  g.fillStyle = "#0f172a"; g.fillRect(0, 0, P.w, P.h);
+  const h = M.human.find(x => x.start <= t && t < x.end);
+  g.fillStyle = "#94a3b8"; g.font = "28px ui-sans-serif, system-ui"; g.fillText("No pitch map for phone footage (no calibration).", 30, 60);
+  g.font = "bold 40px ui-sans-serif, system-ui";
+  g.fillStyle = CAM_COLORS[liveCam]; g.fillText(`AI shows:     ${camName(liveCam)}`, 30, 200);
+  if (h) { g.fillStyle = CAM_COLORS[h.cam]; g.fillText(`Human picked: ${camName(h.cam)}`, 30, 280); }
+  // agreement so far: per 3 s fragment, the camera we showed most vs the human's pick
+  let n = 0, same = 0;
+  M.human.filter(x => x.end <= t).forEach(x => {
+    const segs = M.timeline;
+    const count = {};
+    for (let k = 0; k < segs.length; k++) {
+      const a = Math.max(segs[k].t, x.start), b = Math.min(k + 1 < segs.length ? segs[k + 1].t : t, x.end);
+      if (b > a) count[segs[k].cam] = (count[segs[k].cam] || 0) + (b - a);
+    }
+    const ours = +Object.keys(count).sort((p, q) => count[q] - count[p])[0];
+    n++; if (ours === x.cam) same++;
+  });
+  g.fillStyle = "#e2e8f0"; g.font = "30px ui-sans-serif, system-ui";
+  g.fillText(n ? `Agreement so far: ${Math.round(100 * same / n)}% of ${n} fragments` : "Agreement so far: –", 30, 400);
+  g.fillStyle = "#64748b"; g.font = "22px ui-sans-serif, system-ui";
+  g.fillText("MUVS dataset (fans' phones, CC BY 4.0): the human picked one phone every 3 s.", 30, 480);
+  return null;
+}
 function drawPitch(t, liveCam) {
+  if (!M.pitch) return drawHumanPanel(t, liveCam);
   const g = $("pitch").getContext("2d");
   g.fillStyle = "#14532d"; g.fillRect(0, 0, P.w, P.h);
   const {row, k} = mapRowAt(t);

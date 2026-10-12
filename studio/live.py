@@ -2,6 +2,7 @@
 
   venv/bin/python -m studio.live --segment dev --seconds 60                      # director only, headless
   venv/bin/python -m studio.live --segment eval --story gemini_only --goalwatch  # + AI story + goal watcher
+  venv/bin/python -m studio.live --segment muvs-P19 --seconds 60                 # real phone cameras (MUVS)
 
 A wall clock decides which frame is "now" (like a real broadcast). Each loop:
   1. read the newest frame of every on-air camera (frames we are too slow for are skipped: that's live);
@@ -30,10 +31,8 @@ import numpy as np
 
 from src.common import ROOT, load_config
 from src.director import shot_lengths
-from studio.cameras import cam_video, cams_dir, load_cams
-from studio.detect import PanoramaDetections, detect_step
-from studio.pipeline import Pipeline
-from studio.prepare import load_segment, work_dir
+from studio.prepare import work_dir
+from studio.sources import get_source
 from studio.video import VideoWriter
 
 Publish = Callable[[dict], None]
@@ -99,23 +98,19 @@ class LiveFeed:
 
 
 class LiveStudio:
-    def __init__(self, segment: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
-                 goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True):
+    def __init__(self, source: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
+                 goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True,
+                 realtime: bool = True):
         self.cfg = load_config()["studio"]
-        self.segment, self.publish = segment, publish or (lambda m: None)
-        self.story_mode, self.specialist_url, self.use_goalwatch = story, specialist_url, goalwatch
-        self.speed, self.record = speed, record
-        self.meta = load_segment(segment)
-        self.cams = load_cams(segment)
-        self.fps = self.meta["fps"]
-        self.total = self.meta["frames"] if not seconds else min(self.meta["frames"], round(seconds * self.fps))
-        self.step = detect_step(self.fps)
-        self.on_air = self.cfg["director"]["on_air_cams"]
+        self.src = get_source(source)              # SoccerTrack segment ("eval") or MUVS period ("muvs-P19")
+        self.segment, self.publish = self.src.key, publish or (lambda m: None)
+        self.story_mode, self.specialist_url = story, specialist_url
+        self.use_goalwatch = goalwatch and self.src.goalwatch
+        self.speed, self.record, self.realtime = speed, record, realtime
+        self.cams, self.fps, self.step, self.on_air = self.src.cams, self.src.fps, self.src.step, self.src.on_air
+        self.total = self.src.frames if not seconds else min(self.src.frames, round(seconds * self.fps))
         self.feed = LiveFeed(self.cfg["goalwatch"])
-        close_rects = np.load(cams_dir(segment) / "cam5_detector_rects.npy")
-        self.pipe = Pipeline(self.cfg, self.cams, self.meta, close_rects,
-                             np.load(work_dir(segment) / "pitch_to_image.npy"), self.feed, "detector", self.step)
-        self.detections = PanoramaDetections(segment)
+        self.pipe = self.src.pipeline(self.feed)
         self.stop_flag = threading.Event()
         self.thread: threading.Thread | None = None
         self.jpegs: dict[str, tuple[int, bytes]] = {}      # stream name -> (sequence number, JPEG)
@@ -152,13 +147,9 @@ class LiveStudio:
     # ------------------------------------------------------------------ AI layers
     def _start_ai(self, clock: Callable[[], float]) -> None:
         if self.story_mode != "off":
-            from story.common import story_config
             from story.engine import StoryEngine
-            from studio.story_pass import deep_merge, story_clip, without_missing_sound
 
-            folder = story_clip(self.segment, "close_detector")
-            cfg = without_missing_sound(deep_merge(story_config(), self.cfg["story"]["feeds"]["close"]),
-                                        self.meta["has_audio"])
+            folder, cfg = self.src.story_clip()        # what the story layer watches (+ its settings)
 
             def on_story(message: dict) -> None:
                 kind = message.get("type")
@@ -171,7 +162,7 @@ class LiveStudio:
                 self.publish({"type": "story_msg", **{k: v for k, v in message.items() if k != "type"},
                               "kind": kind})
 
-            self.story_engine = StoryEngine(folder, cfg, self.story_mode, on_story, send_audio=self.meta["has_audio"],
+            self.story_engine = StoryEngine(folder, cfg, self.story_mode, on_story, send_audio=self.src.has_audio,
                                             specialist_url=self.specialist_url)
             self.story_engine.start()
         if self.use_goalwatch:
@@ -179,7 +170,7 @@ class LiveStudio:
 
             llm = self.story_engine.llm if self.story_engine and self.story_engine.llm else None
             self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, self.feed.add_look, self.publish,
-                                           shared_llm=llm, out_dir=work_dir(self.segment) / "goalwatch" / self.run_id,
+                                           shared_llm=llm, out_dir=work_dir(self.src.segment) / "goalwatch" / self.run_id,
                                            snapshot=self._goal_snapshot)
 
     def _goal_snapshot(self, side: str, video: Path, t: float) -> None:
@@ -211,15 +202,19 @@ class LiveStudio:
     def _loop(self) -> None:
         cams, fps, step = self.cams, self.fps, self.step
         cam_ids = [c["cam"] for c in cams["cams"]]
-        caps = {c: cv2.VideoCapture(str(cam_video(self.segment, c, "detector"))) for c in cam_ids if c in self.on_air}
+        caps = {c: cv2.VideoCapture(str(self.src.video(c))) for c in cam_ids if c in self.on_air}
         blank = np.zeros((36, 64, 3), np.uint8)      # cameras that are never aired are not decoded (CPU budget)
         out = ROOT / self.cfg["outputs_dir"] / self.segment / self.run_id
         files = self._open_files(out) if self.record else None
-        w, h = cams["size"]
+        w, h = 1280, 720                              # the recorded program (phones are 1080p: smaller = cheaper)
         program = VideoWriter(out / "program.mp4", w, h, fps) if self.record else None
         chosen, states, frames_shown, skipped, lags = [], [], 0, 0, []
         start = time.time()
         clock = lambda: min((time.time() - start) * self.speed, self.total / fps)   # noqa: E731
+        if not self.realtime:
+            # Offline (tuning / scoring): every frame, as fast as the machine goes; the "clock" is the frame.
+            frame_clock = {"t": 0.0}
+            clock = lambda: frame_clock["t"]                                             # noqa: E731
         self._start_ai(clock)
         self.status["state"] = "live"
         self.publish({"type": "live_started", "segment": self.segment, "run_id": self.run_id,
@@ -229,6 +224,8 @@ class LiveStudio:
         decision = None
         try:
             while not self.stop_flag.is_set():
+                if not self.realtime:
+                    frame_clock["t"] = min((i + 1) / fps, (self.total - 1) / fps)
                 now_t = clock()
                 target = min(int(now_t * fps), self.total - 1)
                 if target <= i:
@@ -259,10 +256,10 @@ class LiveStudio:
                 det_frame = i - i % step
                 if det_frame != last_det:
                     last_det = det_frame
-                    events = self.pipe.detections(det_frame, det_frame / fps, detector=self.detections.at(det_frame))
+                    events = self.pipe.detections(det_frame, det_frame / fps, detector=self.src.detection_at(det_frame))
                     if self.watcher:
                         self.watcher.consider(t, self.pipe.pitch_state)
-                    if files:
+                    if files and self.pipe.pitch_state is not None:
                         files["map"].write(json.dumps(self.pipe.pitch_state.to_dict()) + "\n")
                 frame_images = [images.get(c, blank) for c in cam_ids]
                 r = self.pipe.frame(i, t, frame_images, events)
@@ -336,10 +333,12 @@ class LiveStudio:
                 story = {"run_id": self.story_engine.run_id, "mode": self.story_mode}
             (out / "run.json").write_text(json.dumps({
                 "segment": self.segment, "run_id": self.run_id, "source": "detector", "live": True,
+                "source_kind": self.src.kind,
+                "story_clip": self.story_engine.clip if self.story_engine else None, "story_wall_start": start,
                 "story_run": story["run_id"] if story else None, "story_mode": story["mode"] if story else None,
                 "goal_looks": len(self.feed.looks), "goalwatch_run": self.run_id if self.watcher else None,
                 "config": self.cfg, "summary": summary}, indent=2))
-            if self.story_engine:
+            if self.story_engine and self.src.kind == "soccertrack":
                 from studio.story_pass import record_run
 
                 record_run(self.segment, self.story_engine.run_id, self.story_engine.clip, self.story_mode, 1.0,
@@ -357,50 +356,22 @@ class LiveStudio:
                               "usable": c.quality.usable} for c in r.cards if c.cam in self.on_air}
         i = round(t * self.fps)
         return {"type": "state", "t": round(t, 2), "cam": d.cam, "state": d.state, "reason": d.reason,
-                "overlays": self._overlays(i, r.rects),
+                "overlays": self.src.overlays(i, self.pipe, r.rects),
                 "cards": cards, "map": ps.to_dict() if ps else None, "story_line": r.story_line,
                 "lag_s": self.status["lag_s"], "shown_fps": self.status["shown_fps"],
                 "skipped": self.status["skipped"], "confirmed": [v["goal_time"] for v in self.pipe.confirmed.values()],
                 "asking": self.watcher.asking if self.watcher else None, "frame": i}
 
-    def _overlays(self, i: int, rects: list) -> dict:
-        """What the detector saw, per on-air camera, in 0..1 of the camera picture (boxes, dots, ball)."""
-        from studio.cameras import CLOSE_CAM
-        from studio.detect import DETECT_CAMS
-        from studio.video import to_camera
-
-        w, h = self.cams["size"]
-        frame = i - i % self.step
-        here = self.detections.at(frame)
-        ball = self.pipe.world.state.ball                     # the map's ball (seen or remembered)
-        out = {}
-        for k, cam in enumerate(self.cams["cams"]):
-            c = cam["cam"]
-            if c not in self.on_air:
-                continue
-            item: dict = {}
-            if c in DETECT_CAMS:
-                det = self.detections.dets[c]["frames"].get(frame, {})
-                item["players"] = [[round(v / s, 3) for v, s in zip(p["box"], (w, h, w, h))] for p in det.get("players", [])]
-            elif c == CLOSE_CAM:
-                pts = [to_camera(rects[k], w, h, p) for p in here["players"]]
-                item["dots"] = [[round(x / w, 3), round(y / h, 3)] for x, y in pts if 0 <= x < w and 0 <= y < h]
-            if ball is not None:
-                bx, by = to_camera(rects[k], w, h, ball)
-                if 0 <= bx < w and 0 <= by < h:
-                    item["ball"] = [round(bx / w, 3), round(by / h, 3)]
-            out[str(c)] = item
-        return out
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--segment", required=True)
+    parser.add_argument("--segment", required=True, help="a SoccerTrack segment (dev, eval, test) or muvs-P19 / muvs-P15")
     parser.add_argument("--seconds", type=float, default=None)
     parser.add_argument("--story", default="off", choices=["off", "fast_only", "gemini_only", "hybrid"])
     parser.add_argument("--specialist-url", default="")
     parser.add_argument("--goalwatch", action="store_true")
     parser.add_argument("--no-record", action="store_true")
+    parser.add_argument("--offline", action="store_true", help="every frame, as fast as possible (no AI): for scoring")
     args = parser.parse_args()
     counts = {"decision": 0, "state": 0}
 
@@ -413,7 +384,7 @@ def main() -> int:
             print(f"[live] {kind}: {m}")
 
     live = LiveStudio(args.segment, publish, args.story, args.specialist_url, args.goalwatch, args.seconds,
-                      record=not args.no_record)
+                      record=not args.no_record, realtime=not args.offline)
     live.start()
     try:
         while live.thread.is_alive():

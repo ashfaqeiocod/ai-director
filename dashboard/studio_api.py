@@ -60,6 +60,8 @@ def runs() -> list[dict]:
 def run_data(segment: str, run_id: str) -> dict:
     folder = _run_dir(segment, run_id)
     info = json.loads((folder / "run.json").read_text())
+    if segment.startswith("muvs-"):
+        return muvs_run_data(segment, folder, info)
     from studio.cameras import load_cams
     from studio.evaluate import truth_events
     from studio.prepare import load_segment
@@ -107,6 +109,57 @@ def run_data(segment: str, run_id: str) -> dict:
             "pitch": pitch_data(folder, segment, info["source"], cams),
             "intensity": story_intensity(info, segment),
             "goal_cams": cams.get("goal_cams", []), "goal_looks": goal_looks(segment, info)}
+
+
+def _timeline_cards_events(folder: Path) -> tuple[list, dict, list]:
+    timeline = []
+    with open(folder / "director_log.csv") as f:
+        for row in csv.DictReader(f):
+            if not timeline or (timeline[-1]["cam"], timeline[-1]["state"]) != (int(row["chosen_cam"]), row["state"]):
+                timeline.append({"t": float(row["time"]), "cam": int(row["chosen_cam"]), "state": row["state"],
+                                 "reason": row["reason"]})
+    cards: dict[str, list] = {}
+    for line in (folder / "cards.jsonl").read_text().splitlines():
+        c = json.loads(line)
+        cards.setdefault(str(int(c["time"])), []).append(c)
+    events = [json.loads(x) for x in (folder / "director_events.jsonl").read_text().splitlines() if x.strip()]
+    return timeline, cards, events
+
+
+def muvs_run_data(key: str, folder: Path, info: dict) -> dict:
+    """A run on MUVS (fans' phones): no pitch map or goal cameras; answer key = the human's camera picks."""
+    from story.run_log import run_folder
+    from studio.cards import StoryFeed
+    from studio.sources import get_source
+
+    src = get_source(key)
+    timeline, cards, events = _timeline_cards_events(folder)
+    story, intensity = {"updates": [], "events": []}, []
+    if info.get("story_run") and info.get("story_clip"):
+        sf = run_folder(info["story_clip"], info["story_run"])
+        feed = StoryFeed(sf, info.get("story_wall_start", 0.0), 1.0)
+        story["updates"] = [{k: u.get(k) for k in ("logged_at", "window_start", "window_end", "phase", "sentiment",
+                                                   "narration", "intensity", "source")} for u in feed.updates]
+        latest: dict[str, dict] = {}
+        for e in feed.events:
+            latest.setdefault(e["id"], e)
+        story["events"] = [{k: e[k] for k in ("id", "type", "event_time", "known_at", "confidence", "sources")}
+                           for e in latest.values() if e["type"] != "none"]
+        if (sf / "intensity.csv").exists():
+            intensity = [[float(r["t"]), float(r["intensity"])] for r in csv.DictReader(open(sf / "intensity.csv"))]
+    w, h = src.cams["size"]
+    frames = {}
+    for f in sorted({int(k) for k in src.dets[1]["frames"]}):
+        frames[str(f)] = {str(c): {"players": [[round(v / q, 3) for v, q in zip(p["box"], (w, h, w, h))]
+                                               for p in src.dets[c]["frames"].get(str(f), {}).get("players", [])]}
+                          for c in (1, 2, 3)}
+    report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
+    return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary")},
+            "kind": "muvs", "cams": src.cams, "fps": src.fps, "duration": info["summary"]["seconds"],
+            "timeline": timeline, "cards": cards, "director_events": events, "story": story, "truth": [],
+            "human": src.human_picks(), "report": report, "on_air_cams": src.on_air,
+            "overlays": {"step": src.step, "frames": frames}, "pitch": None, "intensity": intensity,
+            "goal_cams": [], "goal_looks": [], "credit": src.meta.get("credit", "")}
 
 
 def goal_looks(segment: str, info: dict) -> list[dict]:
@@ -200,8 +253,12 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     from studio.cameras import cam_video as path_of
 
     info = json.loads((_run_dir(segment, run_id) / "run.json").read_text())
-    aim = "oracle" if info["source"] == "oracle" else "detector"
-    path = path_of(segment, cam, aim)          # cams 1-5, and 6/7 = the goal cameras
+    if segment.startswith("muvs-"):
+        from studio.sources import get_source
+        path = get_source(segment).video(cam)
+    else:
+        aim = "oracle" if info["source"] == "oracle" else "detector"
+        path = path_of(segment, cam, aim)      # cams 1-5, and 6/7 = the goal cameras
     if not path.exists():
         raise HTTPException(404, "camera video not found")
     return FileResponse(path, media_type="video/mp4")
@@ -257,11 +314,9 @@ live_ctl = LiveController()
 
 
 def _ready_segments() -> list[str]:
-    from studio.prepare import work_dir
+    from studio.sources import ready_sources
 
-    segs = load_config()["studio"]["segments"]
-    return [s for s in segs if (work_dir(s) / "cams" / "cam5_detector_rects.npy").exists()
-            and (work_dir(s) / "detections" / "cam1.json").exists()]
+    return ready_sources()
 
 
 @router.get("/live/sources")
@@ -273,26 +328,12 @@ def live_sources() -> dict:
 
 @router.get("/live/info/{segment}")
 def live_info(segment: str) -> dict:
-    """Everything static the page needs before going live: cameras, camera views on the pitch, real goals."""
+    """Everything static the page needs before going live: cameras, camera views on the pitch, answer key."""
     if segment not in _ready_segments():
-        raise HTTPException(404, "segment not ready")
-    import numpy as np
-    from studio.cameras import CLOSE_CAM, cams_dir, load_cams
-    from studio.evaluate import truth_events
-    from studio.pitchmap import Projection
-    from studio.prepare import load_segment, work_dir
+        raise HTTPException(404, "not ready")
+    from studio.sources import get_source
 
-    cams = load_cams(segment)
-    meta = load_segment(segment)
-    proj = Projection(np.load(work_dir(segment) / "pitch_to_image.npy"))
-    rects = np.load(cams_dir(segment) / "cam5_detector_rects.npy")
-    return {"segment": segment, "cams": cams, "fps": meta["fps"], "duration": meta["frames"] / meta["fps"],
-            "on_air_cams": load_config()["studio"]["director"]["on_air_cams"], "goal_cams": cams.get("goal_cams", []),
-            "pitch": {"coverage": {str(c["cam"]): proj.coverage(c["rect"]) for c in cams["cams"] if c["rect"]},
-                      "close_coverage": {str(i): proj.coverage(tuple(rects[i]), n=4) for i in range(0, len(rects), 25)},
-                      "close_cam": CLOSE_CAM},
-            "truth": [{"t": round(e["t"], 2), "label": e["label"], "team": e["team"]} for e in truth_events(meta)
-                      if e["label"] in ("GOAL", "SHOT")]}
+    return get_source(segment).info()
 
 
 @router.post("/live/start")

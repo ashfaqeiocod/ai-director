@@ -60,6 +60,10 @@ class DirectorV2:
             if not card.quality.usable or card.cam not in c["on_air_cams"]:
                 out.append(-1.0)             # never chosen
                 continue
+            if card.cam != self.current and card.quality.shake >= c.get("avoid_shake", 1.01):
+                out.append(-1.0)             # already shaking hard: don't cut TO it (staying on it is allowed)
+                continue
+            bonus = c.get("cam_bonus", {}).get(card.cam, 0)   # a preferred viewing angle (set per venue)
             if card.cam in FOLLOW_CAMS:
                 # MVP 1 scoring, on this camera's own ball status and players.
                 if card.ball:
@@ -71,7 +75,7 @@ class DirectorV2:
                     ball = BallState("predicted", (card.action[0] * 1000, card.action[1] * 1000))
                 else:
                     ball = BallState("lost", None)
-                out.append(score_camera(ball, card.players, 1000, c["mvp1"]))
+                out.append(score_camera(ball, card.players, 1000, c["mvp1"]) + bonus)
             elif card.cam == WIDE:
                 score = c["wide_base"] + (c["wide_fast_bonus"] if card.play_speed >= c["fast_play"] else 0)
                 out.append(float(score))
@@ -155,7 +159,8 @@ class DirectorV2:
             events.append({"type": "REACTION_END", "message": "back to play" if play_again else "reaction time over"})
             return self._follow(i, scores, can_cut, events)
         # The close-up; if it is unusable, the best on-air camera instead.
-        target = CLOSE if usable[CLOSE - 1] else max(range(self.num_cams), key=lambda k: scores[k]) + 1
+        has_close = self.num_cams >= CLOSE and usable[CLOSE - 1]   # footage without a close-up: best camera
+        target = CLOSE if has_close else max(range(self.num_cams), key=lambda k: scores[k]) + 1
         if self.current == target:
             return Decision(self.current, self.state, scores, f"reaction: holding cam{target} ({self.reaction_reason})", events)
         if not can_cut:
