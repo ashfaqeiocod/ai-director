@@ -146,7 +146,8 @@ def story_scores(truth: list[dict], run_info: dict, window: float) -> dict | Non
         from studio.goalwatch import load_looks
 
         feed = StoryFeed(None)
-        feed.add_goal_looks(load_looks(run_info["segment"]), load_config()["studio"]["goalwatch"])
+        feed.add_goal_looks(load_looks(run_info["segment"], run_info.get("goalwatch_run")),
+                            load_config()["studio"]["goalwatch"])
         merged: dict[str, dict] = {}
         for e in feed.events:
             merged.setdefault(e["id"], e)

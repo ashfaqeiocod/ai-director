@@ -23,6 +23,7 @@ import argparse
 import json
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -148,7 +149,87 @@ def ask(llm, video: Path, start: float, end: float, system: str, schema, text: s
         clip.unlink(missing_ok=True)
 
 
+class GoalPlanner:
+    """WHEN to look at which goal camera, and what an answer means. Shared by the offline run and live mode.
+
+    plan(t, state) -> a job (or None): an aftermath look if one is due, else a look at the goal play is near.
+    answer(job, result, logged_at) -> the look record (and it schedules aftermath looks after a shot)."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.last_look = {"left": -999.0, "right": -999.0}
+        self.aftermath: list[dict] = []            # looks to do after a shot: [{due, side, shot_time}]
+
+    def plan(self, t: float, state) -> dict | None:
+        cfg = self.cfg
+        # 1. Aftermath of a shot first: what happens in the seconds after it tells a goal from a save.
+        due = [a for a in self.aftermath if a["due"] <= t]
+        if due:
+            a = due[0]
+            self.aftermath.remove(a)
+            start = max(0.0, t - cfg["window_s"])
+            return {"kind": "after", "side": a["side"], "start": start, "end": t, "shot_time": a["shot_time"],
+                    "zone": state.zone, "system": AFTER, "schema": AfterLook,
+                    "text": f"The shot was about {max(0.0, start - a['shot_time']):.0f} s before this clip starts. "
+                            "What happens now?"}
+        # 2. Normal look when play is near a goal.
+        side = near_goal_side(state, cfg)
+        triggered = any(e["type"] in ("GOAL_LINE", "BOX_ENTRY") for e in state.events)
+        if side is None or t < cfg["window_s"]:
+            return None
+        if not triggered and t - self.last_look[side] < cfg["interval_s"]:
+            return None
+        if any(a["due"] - t < cfg["aftermath_priority_s"] for a in self.aftermath):
+            return None                    # a follow-up of a shot is due soon: keep the line free for it
+        return {"kind": "look", "side": side, "start": t - cfg["window_s"], "end": t, "zone": state.zone,
+                "trigger": "map event" if triggered else "near goal", "system": SYSTEM, "schema": GoalLook,
+                "text": f"Goal camera: the {side} goal. Clip = the last {cfg['window_s']:.0f} s."}
+
+    def answer(self, job: dict, result, logged_at: float) -> dict:
+        cfg, t, side = self.cfg, job["end"], job["side"]
+        if job["kind"] == "after":
+            return {"t": round(t, 2), "logged_at": logged_at, "side": side, "zone": job["zone"], "kind": "after",
+                    "trigger": f"after the shot at {job['shot_time']:.1f}s", "goal": result.goal_scored,
+                    "goal_confidence": result.confidence, "goal_time": job["shot_time"], "shot": False,
+                    "shot_time": 0, "save": False, "celebration": result.attackers_celebrate,
+                    "ball_visible": False, "note": result.note}
+        self.last_look[side] = t
+        start = job["start"]
+        item = {"t": round(t, 2), "logged_at": logged_at, "side": side, "zone": job["zone"], "kind": "look",
+                "trigger": job["trigger"], **result.model_dump()}
+        item["goal_time"] = round(start + min(max(result.goal_at_s, 0), cfg["window_s"]), 2)
+        item["shot_time"] = round(start + min(max(result.shot_at_s, 0), cfg["window_s"]), 2)
+        item["goal"] = result.goal and result.goal_confidence >= cfg["min_goal_confidence"]
+        if result.shot or result.save or result.goal:
+            # Look again at the aftermath (twice), unless this shot is already being followed up.
+            st = item["shot_time"]
+            if not any(abs(a["shot_time"] - st) < 3 for a in self.aftermath):
+                for delay in cfg["aftermath_s"]:
+                    self.aftermath.append({"due": st + delay, "side": side, "shot_time": st})
+        return item
+
+
+def describe(item: dict) -> str | None:
+    """One line for the console when a look found something."""
+    if item["kind"] == "after" and (item["goal"] or item["celebration"]):
+        return f"{item['side']:5s} AFTER: {'GOAL' if item['goal'] else 'celebration'} (conf {item['goal_confidence']:.2f}, " \
+               f"known {item['logged_at']:.1f}s) {item['note'][:70]}"
+    if item["kind"] == "look" and (item["goal"] or item["celebration"] or item["shot"]):
+        what = "GOAL" if item["goal"] else "celebration" if item["celebration"] else "shot"
+        return f"{item['side']:5s} {what} (conf {item['goal_confidence']:.2f}, known {item['logged_at']:.1f}s) {item['note'][:70]}"
+    return None
+
+
+def save_run(segment: str, run_id: str, model: str, looks: list[dict], errs: int, played_to: float) -> None:
+    path = work_dir(segment) / "goalwatch.json"
+    runs = json.loads(path.read_text()) if path.exists() else []
+    runs.append({"run_id": run_id, "model": model, "looks": len(looks), "goals": sum(1 for x in looks if x["goal"]),
+                 "errors": errs, "played_to": round(played_to, 1)})
+    path.write_text(json.dumps(runs, indent=2))
+
+
 def run(segment: str, max_seconds: float | None = None) -> str:
+    """Offline (as-if-live): each answer is stamped with its real API latency; one look at a time."""
     from story.llm.gemini import GeminiStoryLLM
 
     cfg = load_config()["studio"]["goalwatch"]
@@ -170,108 +251,135 @@ def run(segment: str, max_seconds: float | None = None) -> str:
     looks_file, calls_file = open(out / "looks.jsonl", "w"), open(out / "calls.jsonl", "w")
     llm = GeminiStoryLLM(story_config())
     print(f"[goalwatch] {segment}: model {llm.model}, run {run_id}", flush=True)
-
+    planner = GoalPlanner(cfg)
     busy_until = -1.0                      # one look at a time: the next starts after the last answer arrives
-    last_look = {"left": -999.0, "right": -999.0}
-    aftermath: list[dict] = []             # looks to do after a shot: [{due, side, shot_time}]
-    looks = goals = errs = 0
+    looks, errs = [], 0
     log = lambda item: calls_file.write(json.dumps(item, default=str) + "\n")   # noqa: E731
-
-    def record(item: dict) -> None:
-        looks_file.write(json.dumps(item) + "\n")
-        looks_file.flush()
-
     for i in range(0, total, pano.step):
         t = i / fps
         d = pano.at(i)
         state = pitch.update(t, d["ball"][:2] if d["ball"] else None, d["feet"])
         if t < busy_until:
             continue
-        # 1. Aftermath of a shot first: what happens in the seconds after it tells a goal from a save.
-        due = [a for a in aftermath if a["due"] <= t]
-        if due:
-            a = due[0]
-            aftermath.remove(a)
-            start = max(0.0, t - cfg["window_s"])
-            try:
-                after, latency = ask(llm, cam_video(segment, goal_cams[a["side"]]), start, t, AFTER, AfterLook,
-                                     f"The shot was about {max(0.0, start - a['shot_time']):.0f} s before this clip "
-                                     "starts. What happens now?", cfg, log)
-            except Exception as error:     # noqa: BLE001
-                errs += 1
-                print(f"  {t:7.1f}s  ERROR {type(error).__name__}: {str(error)[:120]}", flush=True)
-                busy_until = t + cfg["error_pause_s"]
-                continue
-            logged_at = round(t + latency, 2)
-            busy_until = logged_at
-            looks += 1
-            goal = after.goal_scored and after.confidence >= cfg["min_goal_confidence"]
-            goals += goal
-            record({"t": round(t, 2), "logged_at": logged_at, "side": a["side"], "zone": state.zone, "kind": "after",
-                    "trigger": f"after the shot at {a['shot_time']:.1f}s", "goal": after.goal_scored,
-                    "goal_confidence": after.confidence, "goal_time": a["shot_time"], "shot": False, "shot_time": 0,
-                    "save": False, "celebration": after.attackers_celebrate, "ball_visible": False, "note": after.note})
-            if after.goal_scored or after.attackers_celebrate:
-                print(f"  {t:7.1f}s  {a['side']:5s} AFTER: {'GOAL' if after.goal_scored else 'celebration'} "
-                      f"(conf {after.confidence:.2f}, known {logged_at:.1f}s) {after.note[:70]}", flush=True)
+        job = planner.plan(t, state)
+        if job is None:
             continue
-        # 2. Normal look when play is near a goal.
-        side = near_goal_side(state, cfg)
-        triggered = any(e["type"] in ("GOAL_LINE", "BOX_ENTRY") for e in state.events)
-        if side is None or t < cfg["window_s"]:
-            continue
-        if not triggered and t - last_look[side] < cfg["interval_s"]:
-            continue
-        if any(a["due"] - t < cfg["aftermath_priority_s"] for a in aftermath):
-            continue                       # a follow-up of a shot is due soon: keep the line free for it
-        start = t - cfg["window_s"]
         try:
-            look, latency = ask(llm, cam_video(segment, goal_cams[side]), start, t, SYSTEM, GoalLook,
-                                f"Goal camera: the {side} goal. Clip = the last {cfg['window_s']:.0f} s.", cfg, log)
+            result, latency = ask(llm, cam_video(segment, goal_cams[job["side"]]), job["start"], job["end"],
+                                  job["system"], job["schema"], job["text"], cfg, log)
         except Exception as error:         # noqa: BLE001 — a failed look is logged, not fatal
             errs += 1
             print(f"  {t:7.1f}s  ERROR {type(error).__name__}: {str(error)[:120]}", flush=True)
             busy_until = t + cfg["error_pause_s"]
             continue
         logged_at = round(t + latency, 2)               # where a live video would be when the answer arrives
-        busy_until, last_look[side] = logged_at, t
-        looks += 1
-        item = {"t": round(t, 2), "logged_at": logged_at, "side": side, "zone": state.zone, "kind": "look",
-                "trigger": "map event" if triggered else "near goal", **look.model_dump()}
-        item["goal_time"] = round(start + min(max(look.goal_at_s, 0), cfg["window_s"]), 2)
-        item["shot_time"] = round(start + min(max(look.shot_at_s, 0), cfg["window_s"]), 2)
-        item["goal"] = look.goal and look.goal_confidence >= cfg["min_goal_confidence"]
-        record(item)
-        if look.shot or look.save or look.goal:
-            # Look again at the aftermath (twice), unless this shot is already being followed up.
-            st = item["shot_time"]
-            if not any(abs(a["shot_time"] - st) < 3 for a in aftermath):
-                for delay in cfg["aftermath_s"]:
-                    aftermath.append({"due": st + delay, "side": side, "shot_time": st})
-        if look.goal or look.celebration or look.shot:
-            goals += item["goal"]
-            what = "GOAL" if item["goal"] else "celebration" if look.celebration else "shot"
-            print(f"  {t:7.1f}s  {side:5s} {what} (conf {look.goal_confidence:.2f}, known {logged_at:.1f}s) {look.note[:70]}",
-                  flush=True)
+        busy_until = logged_at
+        item = planner.answer(job, result, logged_at)
+        looks.append(item)
+        looks_file.write(json.dumps(item) + "\n")
+        looks_file.flush()
+        line = describe(item)
+        if line:
+            print(f"  {t:7.1f}s  {line}", flush=True)
     looks_file.close()
     calls_file.close()
-    path = work_dir(segment) / "goalwatch.json"
-    runs = json.loads(path.read_text()) if path.exists() else []
-    runs.append({"run_id": run_id, "model": llm.model, "looks": looks, "goals": goals, "errors": errs,
-                 "played_to": round(total / fps, 1)})
-    path.write_text(json.dumps(runs, indent=2))
-    print(f"[goalwatch] done: {looks} looks, {goals} saying goal, {errs} errors -> {out}")
+    save_run(segment, run_id, llm.model, looks, errs, total / fps)
+    print(f"[goalwatch] done: {len(looks)} looks, {sum(1 for x in looks if x['goal'])} saying goal, {errs} errors -> {out}")
     return run_id
 
 
+class LiveGoalWatcher:
+    """Live mode: the same GoalPlanner, but the looks really run in the background while the match plays.
+
+    consider(t, state) is called 5x per second by the live loop; when no look is running and the planner wants
+    one, it starts in a worker thread. The answer is stamped with the live clock at the moment it ARRIVES.
+    It can share MVP 2's Gemini client (and so its requests-per-minute limiter) with the live story layer."""
+
+    def __init__(self, segment: str, cams: dict, clock, on_look, publish, shared_llm=None, out_dir: Path | None = None):
+        from story.llm.gemini import GeminiStoryLLM
+
+        self.cfg = load_config()["studio"]["goalwatch"]
+        self.segment, self.clock, self.on_look, self.publish = segment, clock, on_look, publish
+        self.goal_cams = {g["side"]: g["cam"] for g in cams.get("goal_cams", [])}
+        self.llm = shared_llm or GeminiStoryLLM(story_config())
+        self.planner = GoalPlanner(self.cfg)
+        self.lock = threading.Lock()
+        self.busy_until = -1.0
+        self.asking: dict | None = None             # the look in progress (for the dashboard)
+        self.looks: list[dict] = []
+        self.errs = 0
+        self.stopped = False
+        self.out_dir = out_dir
+        if out_dir:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        self.run_id = out_dir.name if out_dir else datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.calls = open(out_dir / "calls.jsonl", "w") if out_dir else None
+
+    def consider(self, t: float, state) -> None:
+        if self.stopped or len(self.goal_cams) < 2:
+            return
+        with self.lock:
+            if self.asking is not None or t < self.busy_until:
+                return
+            if not self.llm.available():           # shared requests-per-minute budget (story + goal watch)
+                return
+            job = self.planner.plan(t, state)
+            if job is None:
+                return
+            self.asking = {"side": job["side"], "kind": job["kind"], "since": round(t, 2)}
+        self.publish({"type": "goal_asking", **self.asking})
+        threading.Thread(target=self._look, args=(job,), daemon=True, name="goalwatch-look").start()
+
+    def _look(self, job: dict) -> None:
+        log = (lambda item: self.calls.write(json.dumps(item, default=str) + "\n")) if self.calls else (lambda item: None)
+        try:
+            self.llm.limiter.record()
+            result, _ = ask(self.llm, cam_video(self.segment, self.goal_cams[job["side"]]), job["start"], job["end"],
+                            job["system"], job["schema"], job["text"], self.cfg, log)
+        except Exception as error:                 # noqa: BLE001 — a failed look is logged, not fatal
+            with self.lock:
+                self.errs += 1
+                self.busy_until = self.clock() + self.cfg["error_pause_s"]
+                self.asking = None
+            self.publish({"type": "goal_look_error", "message": f"{type(error).__name__}: {str(error)[:120]}"})
+            return
+        logged_at = round(self.clock(), 2)          # the moment the answer arrived (honest delay)
+        with self.lock:
+            item = self.planner.answer(job, result, logged_at)
+            self.looks.append(item)
+            self.asking = None
+        self.on_look(item)
+        self.publish({"type": "goal_look", **item})
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self.calls:
+            self.calls.close()
+
+    def save_run(self) -> None:
+        if not self.out_dir:
+            return
+        (self.out_dir / "looks.jsonl").write_text("".join(json.dumps(x) + "\n" for x in self.looks))
+        save_run(self.segment, self.run_id, self.llm.model, self.looks, self.errs,
+                 max((x["t"] for x in self.looks), default=0.0))
+
+
+def newest_offline_run(segment: str) -> str | None:
+    path = work_dir(segment) / "goalwatch.json"
+    runs = [r for r in json.loads(path.read_text()) if not r["run_id"].endswith("-live")] if path.exists() else []
+    return runs[-1]["run_id"] if runs else None
+
+
 def load_looks(segment: str, run_id: str | None = None) -> list[dict]:
-    """The looks of a goal-watch run (the newest if run_id is None); [] if there is none."""
+    """The looks of a goal-watch run (the newest OFFLINE one if run_id is None); [] if there is none."""
     path = work_dir(segment) / "goalwatch.json"
     if not path.exists():
         return []
     runs = json.loads(path.read_text())
     if run_id:
         runs = [r for r in runs if r["run_id"] == run_id]
+    else:
+        runs = [r for r in runs if not r["run_id"].endswith("-live")]   # a live session's answers belong to it
     if not runs:
         return []
     f = work_dir(segment) / "goalwatch" / runs[-1]["run_id"] / "looks.jsonl"

@@ -237,6 +237,10 @@ studio:
       group_radius_m: 15 # oracle aim: players within this many metres count as one group
       group_radius_px: 350 # detector aim (no ball seen): players within this many panorama pixels = one group
   detect_fps: 5 # MVP 1 detector on cams 1-3 this many times per second (M1: ~0.3 s per cam per frame)
+  live: # studio.live: live mode (real speed)
+    tile_fps: 8 # camera tiles are refreshed this many times a second (CPU budget on the M1)
+    state_hz: 10 # state messages to the dashboard per second
+    max_lag_s: 2.0 # a live run that falls further behind than this is marked invalid
   goalwatch: # studio.goalwatch: Gemini looks at a goal camera when play is near that goal
     near_goal_m: 27 # ball (or the main group) within this many metres of a goal line -> watch that goal
     group_radius_m: 15 # main group of players = biggest group within this radius (when the ball is not known)

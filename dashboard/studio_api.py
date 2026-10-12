@@ -87,7 +87,7 @@ def run_data(segment: str, run_id: str) -> dict:
         feed = StoryFeed(s["folder"], s.get("wall_start", 0.0), s["speed"])
         if info.get("goal_looks"):                 # the goal watcher's answers, exactly as the director had them
             from studio.goalwatch import load_looks
-            feed.add_goal_looks(load_looks(segment), load_config()["studio"]["goalwatch"])
+            feed.add_goal_looks(load_looks(segment, info.get("goalwatch_run")), load_config()["studio"]["goalwatch"])
         story["updates"] = [{k: u[k] for k in ("logged_at", "window_start", "window_end", "phase", "sentiment",
                                                "narration", "intensity", "source")} for u in feed.updates]
         latest: dict[str, dict] = {}
@@ -116,7 +116,7 @@ def goal_looks(segment: str, info: dict) -> list[dict]:
     from studio.goalwatch import load_looks
 
     keep = ("t", "logged_at", "side", "goal", "goal_confidence", "goal_time", "shot", "celebration", "save", "note")
-    return [{k: x[k] for k in keep} for x in load_looks(segment)]
+    return [{k: x[k] for k in keep} for x in load_looks(segment, info.get("goalwatch_run"))]
 
 
 def pitch_data(folder: Path, segment: str, source: str, cams: dict) -> dict:
