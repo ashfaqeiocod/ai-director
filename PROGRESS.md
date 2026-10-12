@@ -200,13 +200,13 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 | 0. Plan + data access | done | HF token OK; 128057 2nd half (3.45 GB, 4096x1080, 25 fps, 70,350 frames, audio); SoccerNet NDA requested |
 | 1. Intake + calibration check | done | dev segment cut; annotation offset measured (-23 frames); overlays checked by eye |
 | 2. Virtual cameras | done | 5 cams x 9000 frames, ~15 fps render (libx264) |
-| 3. Detection + cards | done | dev detection re-running with the real football model (first run silently used YOLO) |
-| 4. Story layer | in progress | wide feed: goal missed; close-up feed being measured |
+| 3. Detection + cards | done | football model on CoreML (sandbox off), ~0.6-1 frames/s; ball ~16% of frames; parked spare ball ignored |
+| 4. Story layer | done | close-up feed (delay ~4 s); goals 0/4 on the panorama, 3/4 camera-only on broadcast |
 | 5. Director v2 | done (tuning) | 7 unit tests; oracle smoke test: cuts at exactly 3.0 s |
 | 6. Run + render | done (tuning) | program.mp4 + debug.mp4 + logs, ~9 fps |
 | 7. Studio tab | built, untested in browser | /studio |
 | 8. Evaluation | done (first version) | ball on air (all / not WIDE), WIDE share, shots, reactions + false reactions, story R/P, bad feed, baselines |
-| 9. Docs | not started | |
+| 9. Docs | in progress | TESTING_MVP3.md draft; plan doc to update with the findings |
 
 ## Key results (MVP 3)
 - Baseline on dev (never cut): always CENTRE = 52% ground-truth ball on air; always WIDE = 100% but 100% WIDE time.
