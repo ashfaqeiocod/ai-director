@@ -331,7 +331,30 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   near the camera. Pressure still flips 0<->100 second to second (keeper label). Verdict holds: helper only;
   STOP trigger is the most useful part.
 
+
+### 2026-10-12 evening: live mode, MUVS, held-out test
+- Studio cleaned (old runs deleted, newest per match kept). Shared per-frame brain `studio/pipeline.py`
+  (run.py refactored onto it: identical director_log over 3000 dev frames).
+- LIVE MODE `studio/live.py` + Studio "Live" switch: wall clock decides the current frame, late frames are skipped
+  (like live TV), same pipeline, story (StoryEngine on the close-up, playhead = live clock), Colab specialist
+  (hybrid), live goal watcher (`GoalPlanner` shared with offline; one Gemini limiter for story + goal watch),
+  MJPEG pictures + WebSocket state; a live run is recorded and appears in Replay. Measured on the M1:
+  SoccerTrack dev ~20-23 frames/s shown, lag 0.0 s; MUVS 3x1080p ~19 fps, lag 0.0 s. `--offline` = every frame.
+- MUVS in live + replay (`studio/sources.py`: SoccerTrackSource / MuvsSource; `IndependentPipeline`: each phone
+  its own ball tracker; no pitch map / goal cams). Hand-held bad-picture check: shake = jitter around the recent
+  smooth pan, in 1280-px units, only between back-to-back frames (P19 offline: phone 2 bad 2%, phone 1 19%,
+  phone 3 15%; before: 63-72% "unusable" for all). Don't cut TO a phone shaking >= 0.7.
+- MUVS score = agreement with the human's pick per 3 s. P19 (tuning): side-view bonus 0/15/30/50 -> 72/85/85/82%
+  (always phone 2: 82%) -> bonus 15 locked. P15 (UNSEEN): 49% vs always phone 2 54% (phone 1 20%, phone 3 26%),
+  49 cuts, shortest 3.0 s. HONEST RESULT: on real phone footage our rules don't beat "always the best seat";
+  the human uses judgement (framing, following the ball across views) the ball/player rules don't capture.
+  Neither MUVS period contains the match's goal (60'): MUVS tests camera choice, not goal detection.
+- Held-out SoccerTrack `test` (2400-2814 s, goal at 2711.6 s), settings frozen, director without AI:
+  ball on air 57% (target 60%: MISSED; dev 76%, eval 75%), always-CENTRE baseline 35%, 21 cuts (3/min), shortest
+  3.0 s, degraded cam1 0% on air. So the camera choice generalises less well than dev/eval suggested. Gemini daily quota
+  used up today (464/~500 on gemini-3.5-flash-lite): its goal test + the hybrid live test run after the reset
+  (12:30 IST) on the same model, so the results stay comparable.
+
 ## Next action (MVP 3)
-PLUG THE MAC IN. Then eval: story pass close_oracle (14 min, alone) -> detection (~2.5 h, sandbox off)
--> close-up aimed by the detector -> story pass close_detector -> 2 runs + reports + compare.md.
-dev is done (eval cameras are rendered, eval segment cut).
+After 12:30 IST (Gemini quota reset): held-out `test` goal test (goalwatch -> run -> evaluate, frozen settings),
+then the hybrid live test in the Studio (Colab link from the user). Then update TESTING_MVP3.md + plan doc.

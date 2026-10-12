@@ -227,7 +227,8 @@ class LiveStudio:
                 if not self.realtime:
                     frame_clock["t"] = min((i + 1) / fps, (self.total - 1) / fps)
                 now_t = clock()
-                target = min(int(now_t * fps), self.total - 1)
+                # Offline: simply the next frame (computing it from the time can round back to the same frame).
+                target = min(i + 1, self.total - 1) if not self.realtime else min(int(now_t * fps), self.total - 1)
                 if target <= i:
                     if i >= self.total - 1:
                         break

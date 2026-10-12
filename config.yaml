@@ -243,7 +243,10 @@ studio:
       cam1: { name: "PHONE 1 · high corner", shot_type: "wide" }
       cam2: { name: "PHONE 2 · side", shot_type: "medium" }
       cam3: { name: "PHONE 3 · low", shot_type: "medium" }
-    director: { on_air_cams: [1, 2, 3], start_cam: 2, avoid_shake: 0.7 } # avoid_shake: don't cut TO a phone this shaky
+    # avoid_shake: don't cut TO a phone this shaky. cam_bonus: a preferred viewing angle (the side view), like a
+    # director choosing the main camera at a venue. Tuned on P19 (0: 72%, 15: 85%, 30: 85%, 50: 82% agreement;
+    # always phone 2: 82%); 15 = smallest that works. P15 is the unseen check.
+    director: { on_air_cams: [1, 2, 3], start_cam: 2, avoid_shake: 0.7, cam_bonus: { 2: 15 } }
     quality: # hand-held: smooth panning is filming, only jerky moves are shake
       shake_mode: jitter
       pan_window: 12 # frames that define "the recent smooth move"
