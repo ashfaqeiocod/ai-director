@@ -40,6 +40,19 @@ def deep_merge(base: dict, extra: dict) -> dict:
 FEEDS = ("close_detector", "close_oracle", "wide")
 
 
+def without_missing_sound(cfg: dict, has_sound: bool) -> dict:
+    """A video with NO sound track: leave sound out of the intensity mix.
+
+    Intensity is a weighted mix (story.fusion.intensity_weights: audio 0.4, motion, specialist, llm).
+    With no sound track the audio part is stuck at 0 but still counted, so intensity could never pass 60
+    and quiet looked the same as silent. Weight 0 makes the fusion share it among the other layers, the same
+    way it already does for a layer that isn't running. Videos WITH sound (even quiet ones) are unchanged.
+    """
+    if has_sound:
+        return cfg
+    return deep_merge(cfg, {"fusion": {"intensity_weights": {"audio": 0.0}}})
+
+
 def story_clip(segment: str, feed: str) -> Path:
     """The video the story layer watches, as an MVP 2 clip folder (data/clips/studio-<segment>-<feed>/), made once.
 
@@ -86,6 +99,8 @@ def play(folder: Path, cfg: dict, mode: str, send_audio: bool, speed: float = 1.
         elif kind == "log" and message.get("kind") in ("ERROR", "LAG", "SCORE"):
             print(f"  {message['t']:7.1f}s  {message['kind']}: {message['message']}")
 
+    has_sound = json.loads((folder / "meta.json").read_text()).get("has_audio", True)
+    cfg = without_missing_sound(cfg, has_sound)
     engine = StoryEngine(folder, cfg, mode, publish, send_audio=send_audio, specialist_url=specialist_url)
     engine.start()
     duration = engine.reader.duration
@@ -132,6 +147,7 @@ def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "", f
         elif kind == "log" and message.get("kind") in ("ERROR", "LAG", "SCORE"):
             print(f"  {message['t']:7.1f}s  {message['kind']}: {message['message']}")
 
+    cfg = without_missing_sound(cfg, meta["has_audio"])
     engine = StoryEngine(folder, cfg, mode, publish, send_audio=meta["has_audio"], specialist_url=specialist_url)
     engine.start()
     duration = engine.reader.duration

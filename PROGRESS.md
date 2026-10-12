@@ -289,6 +289,20 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   cam2 side, cam3 low behind a fan's head (natural "bad feed"). Human picks: mostly cam2 (29 of the last 30).
   Next MUVS stretch: P15 (5.6 min, 3 cams, 7.6 GB). Other searches (PolyU/Zhejiang 5-7 cam set: author emailed
   2026-10-12; Alfheim; MVFouls NDA) are in the "MVP 3 Footage Recommendation" doc.
+- No-sound intensity fix (2026-10-12, studio/story_pass.py `without_missing_sound`): story intensity is 0.4 audio +
+  0.2 motion + 0.2 specialist + 0.2 llm; on a video with NO sound track audio was stuck at 0 but still counted
+  (max 60; same strong motion scored 30). Now audio weight -> 0 for such videos only (same motion: 90). Videos
+  with a sound track (MVP 2 clips, SoccerTrack) are unchanged; MVP 2 defaults untouched.
+- Vision-only intensity (studio/intensity.py, settings studio.vision_intensity): detector at 5 fps on each cam,
+  phone movement removed (phase correlation, sign checked), pressure near goal, player speed, STOP trigger.
+  P19 (12.8 min detection, football model): v1 mean 49 inside the corner/scramble window (75-110 s) vs 47
+  outside; v2 (only players standing on pitch-green grass, per-second max pressure) 67 vs 57, peak at 111 s
+  (just after). Real hit: STOP triggers cluster at 86-93 s = play stopped for the corner. Weak part: the model's
+  "goalkeeper" label is unreliable on fan footage (linesman in yellow, stewards = "goalkeeper"), so pressure
+  saturates. Player bunching per cam rises on cam2 toward the corner (7.5 -> 12.4) but a high cam (cam1) looks
+  bunched all the time. Verdict: a helper signal, not enough alone; meaning must come from specialist + Gemini.
+  Tuned on P19 only: check on P15 before trusting any setting. The whole clip is late attacking play, so its
+  "calm" baseline is not calm.
 
 ## Next action (MVP 3)
 PLUG THE MAC IN. Then eval: story pass close_oracle (14 min, alone) -> detection (~2.5 h, sandbox off)
