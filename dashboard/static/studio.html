@@ -1,24 +1,26 @@
 <!doctype html>
 <!--
-  studio.html — MVP 3 "Studio": ONE screen that shows the whole AI director at work (no build step).
-    MVP 1  which camera is live (program + the 4 on-air cameras, with the detector's boxes and the ball)
-    MVP 2  the story: commentary lines, events, goals, intensity
-    MVP 3  the pitch map (ball, trail, players, what each camera sees) + the 2 goal cameras the AI checks
-  program.mp4's currentTime is the clock for everything. Data is fetched once from /studio/run/<seg>/<id>.
-  Story items and AI answers appear only after the moment the system knew them.
+  studio.html — MVP 3 "Studio": the whole AI director on one screen, in two modes (no build step).
+    REPLAY  a finished run: program.mp4's currentTime is the clock; data comes from /studio/run/<seg>/<id>.
+    LIVE    a match played at real speed by studio.live: pictures come as MJPEG (<img>), and everything else
+            arrives over the WebSocket /studio/live/ws (state ~10/s + every decision, story line, goal look).
+  Both fill the same model `M`; every drawing function reads only M and the current time.
+    MVP 1  which camera is live: program + on-air cameras with the detector's boxes and the ball
+    MVP 2  the story: commentary, events, goals, intensity (Gemini, + the Colab specialist in hybrid mode)
+    MVP 3  pitch map (ball, trail, players, live camera's view), goal cameras the AI checks, confirmed goals
 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Studio Replay</title>
+  <title>AI Director Studio</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
     .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
     .tile { border: 2px solid #1e293b; }
     .tile.live { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
-    .tile.bad video { filter: grayscale(.7); opacity: .5; }
+    .tile.bad img, .tile.bad video { filter: grayscale(.7); opacity: .5; }
     .tile.looking { border-color: #facc15; box-shadow: 0 0 0 1px #facc15; }
     .mark { position: absolute; transform: translateX(-50%); font-size: 12px; line-height: 1; cursor: default; }
     .mark .tip { display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%);
@@ -26,39 +28,63 @@
       font-size: 11px; z-index: 10; }
     .mark:hover .tip { display: block; }
     .tab.on { color: #fff; border-color: #38bdf8; }
+    .seg-btn.on { background: #0ea5e9; color: #fff; }
     .flash { animation: flash 1.2s ease-out; }
     @keyframes flash { from { background: rgba(250, 204, 21, .35); } to { background: transparent; } }
     .chip { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #1e293b; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 9999px; background: #475569; }
+    .dot.ok { background: #22c55e; } .dot.warn { background: #f59e0b; } .dot.bad { background: #ef4444; }
+    button:disabled, select:disabled, input:disabled { opacity: .4; cursor: not-allowed; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-200 h-screen overflow-hidden">
 <div class="h-full flex flex-col p-2 gap-2 max-w-[1800px] mx-auto">
 
-  <!-- top bar -->
-  <header class="flex items-center gap-3 justify-between shrink-0">
+  <!-- top bar: mode + controls -->
+  <header class="flex flex-wrap items-center gap-2 justify-between shrink-0">
     <div class="flex items-center gap-2">
       <h1 class="font-semibold">AI Director <span class="text-slate-500 font-normal text-sm">· MVP 3 studio</span></h1>
-      <a href="/" class="text-[11px] text-slate-400 hover:text-white border border-slate-700 rounded px-2">MVP 1</a>
-      <a href="/story" class="text-[11px] text-slate-400 hover:text-white border border-slate-700 rounded px-2">MVP 2</a>
+      <div class="flex rounded border border-slate-700 overflow-hidden text-xs">
+        <button class="seg-btn px-3 py-0.5 on" data-mode="replay">Replay</button>
+        <button class="seg-btn px-3 py-0.5" data-mode="live">Live</button>
+      </div>
+      <a href="/" class="text-[11px] text-slate-500 hover:text-white">MVP 1</a>
+      <a href="/story" class="text-[11px] text-slate-500 hover:text-white">MVP 2</a>
     </div>
-    <div class="flex items-center gap-2 text-sm">
-      <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono text-xs max-w-[460px]"></select>
+    <!-- replay controls -->
+    <div id="replayBar" class="flex items-center gap-2 text-sm">
+      <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono text-xs max-w-[440px]"></select>
       <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-0.5 text-sm">Load</button>
-      <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> real goals</label>
       <button id="reportBtn" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-300">Report</button>
     </div>
+    <!-- live controls -->
+    <div id="liveBar" class="hidden flex items-center gap-2 text-xs">
+      <select id="liveSeg" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono"></select>
+      <select id="liveStory" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5" title="the story layer (MVP 2)">
+        <option value="off">story: off</option>
+        <option value="gemini_only" selected>story: Gemini</option>
+        <option value="hybrid">story: hybrid (Gemini + Colab)</option>
+      </select>
+      <input id="liveColab" placeholder="Colab URL (hybrid)" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 w-56 mono">
+      <label class="flex items-center gap-1 text-slate-300"><input id="liveGoal" type="checkbox" checked> goal watcher</label>
+      <button id="goLive" class="bg-red-600 hover:bg-red-500 rounded px-3 py-0.5 font-semibold">● Go live</button>
+      <button id="stopLive" class="border border-slate-600 rounded px-3 py-0.5" disabled>Stop</button>
+    </div>
+    <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> real goals</label>
   </header>
-  <p id="empty" class="text-slate-400 text-sm hidden">No finished runs yet: <code class="mono">venv/bin/python -m studio.main --segment dev</code></p>
+  <p id="empty" class="text-slate-400 text-sm hidden"></p>
 
   <main id="main" class="flex-1 min-h-0 grid grid-cols-12 gap-2 hidden">
     <!-- LEFT: program + on-air cameras -->
     <section class="col-span-7 flex flex-col gap-2 min-h-0">
       <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video shrink-0">
         <video id="program" class="w-full h-full" controls playsinline></video>
+        <img id="programImg" class="w-full h-full object-contain hidden" alt="">
         <div class="absolute top-2 right-2 flex gap-1 pointer-events-none">
-          <span class="bg-red-600 text-white text-[11px] font-bold px-2 py-0.5 rounded">ON AIR</span>
+          <span id="onAir" class="bg-red-600 text-white text-[11px] font-bold px-2 py-0.5 rounded">ON AIR</span>
           <span id="stateBadge" class="bg-black/70 mono text-[11px] px-2 py-0.5 rounded">–</span>
         </div>
+        <div id="liveStats" class="absolute bottom-2 right-2 mono text-[11px] bg-black/70 px-2 py-0.5 rounded hidden"></div>
       </div>
       <div id="tiles" class="grid gap-2 shrink-0"></div>
     </section>
@@ -73,7 +99,7 @@
             <div id="storyNow" class="text-xs text-sky-200 italic mt-1 truncate"></div>
           </div>
           <div class="text-right shrink-0">
-            <div class="text-[11px] text-slate-400" title="counted when the goal camera saw it AND the kick-off line-up followed">GOALS (AI, confirmed)</div>
+            <div class="text-[11px] text-slate-400" title="counted when the goal camera saw it AND a kick-off line-up followed">GOALS (confirmed)</div>
             <div class="mono text-3xl font-bold leading-none" id="aiGoals">0</div>
             <div class="text-[11px] text-slate-500" id="truthGoals"></div>
           </div>
@@ -85,7 +111,7 @@
             <div class="flex items-center gap-2 mt-1"><span class="text-[11px] w-10 text-sky-300">story</span>
               <div class="flex-1 h-2 bg-slate-800 rounded"><div id="barStory" class="h-2 rounded bg-sky-400" style="width:0"></div></div></div>
           </div>
-          <canvas id="spark" width="300" height="36" class="w-full" title="intensity, last 60 s"></canvas>
+          <div class="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-400" id="aiLights"></div>
         </div>
         <div class="flex flex-wrap gap-1 mt-2" id="chips"></div>
       </div>
@@ -109,18 +135,18 @@
     </section>
   </main>
 
-  <!-- timeline -->
+  <!-- timeline: live camera, intensity curve, story events, real goals -->
   <footer id="foot" class="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1.5 hidden">
     <div class="relative h-4" id="storyMarks"></div>
     <div class="relative h-4 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
       <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
     </div>
+    <canvas id="intensityLine" width="1600" height="40" class="w-full h-8 mt-0.5"></canvas>
     <div class="relative h-4" id="truthMarks"></div>
     <div class="flex justify-between text-[11px] text-slate-400"><span id="legend" class="flex gap-3"></span><span class="mono" id="clock"></span></div>
   </footer>
 </div>
 
-<!-- report overlay -->
 <div id="reportBox" class="hidden fixed inset-0 bg-black/70 z-50 p-8" onclick="this.classList.add('hidden')">
   <pre id="reportText" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-4 max-w-4xl mx-auto max-h-full overflow-auto whitespace-pre-wrap"></pre>
 </div>
@@ -130,78 +156,223 @@ const CAM_COLORS = {1: "#38bdf8", 2: "#a78bfa", 3: "#f472b6", 4: "#4ade80", 5: "
 const ICONS = {goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
                corner: "🚩", free_kick: "🦶", celebration: "🎉", penalty: "⚠️", kickoff: "▶️"};
 const MAP_EVENTS = {BOX_ENTRY: "ball into the box", BOX_EXIT: "ball out of the box", BALL_OUT: "ball out of play",
-                    GOAL_LINE: "ball over the goal line between the posts",
-                    KICKOFF_LINEUP: "players lined up for a kick-off"};
-let data = null, runs = [], shown = [], tab = "story";
+                    GOAL_LINE: "ball over the goal line between the posts", KICKOFF_LINEUP: "players lined up for a kick-off"};
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
-const camName = (c) => data.cams.cams[c - 1].name;
 const zoneText = (z) => ({left_box: "left penalty box", right_box: "right penalty box", left_third: "left third",
                           right_third: "right third", middle: "middle", out: "out of play"}[z] || "unknown");
 
+// ---------------------------------------------------------------- the model (same shape in both modes)
+let mode = "replay", runs = [], tab = "story", lastKey = "", ws = null;
+let M = null;
+function emptyModel() {
+  return {cams: null, onAir: [], goalCams: [], fps: 25, duration: 1, truth: [], pitch: {coverage: {}, close_coverage: {}},
+          timeline: [], mapRows: [], decisions: [], updates: [], events: [], looks: [], intensity: [],
+          overlays: null, cards: {}, cur: null, info: null, lights: {}, liveStatus: null, asking: null, report: null};
+}
+const camName = (c) => (M.cams.cams.find(x => x.cam === c) || {name: "cam" + c}).name;
+const shown = () => M.cams.cams.filter(c => M.onAir.includes(c.cam));
+
+// ---------------------------------------------------------------- REPLAY: load a finished run
 async function loadRuns() {
   runs = await (await fetch("/studio/runs")).json();
-  $("empty").classList.toggle("hidden", runs.length > 0);
   $("runSelect").innerHTML = runs.map((r, i) =>
-    `<option value="${i}">${r.segment} · ${r.run_id}${r.has_map ? "" : " · old (no map)"}</option>`).join("");
-  const first = Math.max(0, runs.findIndex(r => r.has_map));
-  $("runSelect").value = first;
-  if (runs.length) loadRun(first);
+    `<option value="${i}">${r.segment} · ${r.run_id}${r.has_map ? "" : " · old"}</option>`).join("");
+  if (mode === "replay") {
+    $("empty").classList.toggle("hidden", runs.length > 0);
+    $("empty").textContent = "No finished runs yet: switch to Live, or run venv/bin/python -m studio.main --segment dev";
+    if (runs.length) loadRun(0);
+  }
 }
-
 async function loadRun(index) {
   const r = runs[index];
-  data = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
-  $("main").classList.remove("hidden"); $("foot").classList.remove("hidden");
+  const d = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
+  M = emptyModel();
+  Object.assign(M, {cams: d.cams, onAir: d.on_air_cams, goalCams: d.goal_cams || [], fps: d.fps, duration: d.duration,
+                    truth: d.truth, pitch: d.pitch, timeline: d.timeline, mapRows: d.pitch.rows,
+                    decisions: d.director_events.map(e => ({...e, kind: e.type})), updates: d.story.updates,
+                    events: d.story.events, looks: d.goal_looks || [], intensity: d.intensity,
+                    overlays: d.overlays, cardsBySecond: d.cards, info: d.info, report: d.report});
+  setupScreen(r.segment, r.run_id);
   $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
-  shown = data.cams.cams.filter(c => data.on_air_cams.includes(c.cam));
-  $("tiles").className = `grid gap-2 shrink-0 grid-cols-${shown.length}`;
-  $("tiles").innerHTML = shown.map(c => `
+}
+
+// ---------------------------------------------------------------- LIVE: start / follow a live run
+async function loadLiveSources() {
+  const s = await (await fetch("/studio/live/sources")).json();
+  $("liveSeg").innerHTML = s.segments.map(x => `<option>${x}</option>`).join("");
+  if (s.specialist_url && !$("liveColab").value) $("liveColab").value = s.specialist_url;
+  const st = await (await fetch("/studio/live/status")).json();
+  if (st.running) { await prepareLive(st.segment); connectLive(); }
+}
+async function prepareLive(segment) {
+  const info = await (await fetch(`/studio/live/info/${segment}`)).json();
+  M = emptyModel();
+  Object.assign(M, {cams: info.cams, onAir: info.on_air_cams, goalCams: info.goal_cams, fps: info.fps,
+                    duration: info.duration, truth: info.truth, pitch: info.pitch});
+  setupScreen(segment, null);
+}
+function connectLive() {
+  if (ws) ws.close();
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/studio/live/ws`);
+  ws.onmessage = (ev) => onLive(JSON.parse(ev.data));
+  ws.onclose = () => { ws = null; };
+}
+function onLive(m) {
+  if (!M) return;
+  const now = M.cur ? M.cur.t : 0;
+  if (m.type === "state") {
+    M.cur = m; M.overlays = m.overlays; M.cards = m.cards; M.asking = m.asking;
+    if (m.map) { const last = M.mapRows[M.mapRows.length - 1]; if (!last || last.t !== m.map.t) M.mapRows.push(m.map); }
+    const tl = M.timeline[M.timeline.length - 1];
+    if (!tl || tl.cam !== m.cam || tl.state !== m.state) M.timeline.push({t: m.t, cam: m.cam, state: m.state, reason: m.reason});
+    $("liveStats").textContent = `live · lag ${m.lag_s}s · ${m.shown_fps} fps shown · ${m.skipped} frames skipped`;
+  } else if (m.type === "decision") {
+    M.decisions.push(m);
+  } else if (m.type === "story_msg") {
+    if (m.kind === "story") M.updates.push(m);
+    else if (m.kind === "event" && m.event_type !== "none") {
+      const old = M.events.find(e => e.id === m.id);
+      const e = {id: m.id, type: m.event_type, event_time: m.event_time, known_at: old ? old.known_at : Math.max(now, m.logged_at),
+                 confidence: m.confidence, sources: m.sources};
+      if (old) Object.assign(old, e); else M.events.push(e);
+    } else if (m.kind === "fast") M.intensity.push([m.t, m.intensity]);
+    else if (m.kind === "gemini") M.lights.gemini = m;
+    else if (m.kind === "specialist") M.lights.colab = m;
+  } else if (m.type === "goal_look") {
+    M.looks.push(m);
+    if (m.goal) M.events.push({id: "gl" + M.looks.length, type: "goal", event_time: m.goal_time, known_at: m.logged_at,
+                                confidence: m.goal_confidence, sources: ["goalcam"]});
+    else if (m.shot) M.events.push({id: "gs" + M.looks.length, type: "shot", event_time: m.shot_time, known_at: m.logged_at,
+                                     confidence: 0.7, sources: ["goalcam"]});
+  } else if (m.type === "goal_look_error") {
+    M.lights.goal = {state: "error", message: m.message};
+  } else if (m.type === "live_started") {
+    setLiveButtons(true);
+  } else if (m.type === "live_ended" || m.type === "live_error") {
+    setLiveButtons(false);
+    $("liveStats").textContent = m.type === "live_error" ? `error: ${m.message}` :
+      `ended · ${m.summary.cuts} cuts · lag avg ${m.summary.avg_lag_s}s${m.summary.valid ? "" : " (INVALID: fell behind)"} · now in Replay`;
+    loadRuns();
+  } else if (m.type === "live_status") {
+    setLiveButtons(m.running);
+  }
+}
+function setLiveButtons(running) {
+  $("goLive").disabled = running; $("stopLive").disabled = !running;
+  ["liveSeg", "liveStory", "liveColab", "liveGoal"].forEach(id => $(id).disabled = running);
+}
+$("goLive").onclick = async () => {
+  const segment = $("liveSeg").value;
+  await prepareLive(segment);
+  connectLive();
+  const r = await fetch("/studio/live/start", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({segment, story: $("liveStory").value, specialist_url: $("liveColab").value, goalwatch: $("liveGoal").checked})});
+  if (!r.ok) { alert((await r.json()).detail || "could not start"); return; }
+  setLiveButtons(true);
+};
+$("stopLive").onclick = () => fetch("/studio/live/stop", {method: "POST"});
+
+// ---------------------------------------------------------------- screen setup (both modes)
+function setupScreen(segment, runId) {
+  $("main").classList.remove("hidden"); $("foot").classList.remove("hidden"); $("empty").classList.add("hidden");
+  const live = mode === "live";
+  $("program").classList.toggle("hidden", live); $("programImg").classList.toggle("hidden", !live);
+  $("liveStats").classList.toggle("hidden", !live);
+  $("onAir").textContent = live ? "● LIVE" : "ON AIR";
+  if (live) $("programImg").src = `/studio/live/stream/program?${Date.now()}`;
+  else $("program").removeAttribute("src");
+  const cams = shown();
+  $("tiles").className = `grid gap-2 shrink-0 grid-cols-${cams.length}`;
+  $("tiles").innerHTML = cams.map(c => `
     <div class="tile rounded overflow-hidden bg-black" id="tile${c.cam}">
       <div class="relative aspect-video">
-        <video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${r.segment}/${r.run_id}/${c.cam}"></video>
+        ${live ? `<img src="/studio/live/stream/cam${c.cam}?${Date.now()}" class="w-full h-full object-contain" alt="">`
+               : `<video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${segment}/${runId}/${c.cam}"></video>`}
         <canvas id="ov${c.cam}" width="640" height="360" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
         <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" style="color:${CAM_COLORS[c.cam]}">${c.name}</span>
         <span class="absolute bottom-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" id="card${c.cam}"></span>
       </div>
     </div>`).join("");
-  $("goalTiles").innerHTML = (data.goal_cams || []).map(g => `
+  $("goalTiles").innerHTML = M.goalCams.map(g => `
     <div class="tile rounded overflow-hidden bg-black" id="gtile${g.side}">
       <div class="relative aspect-video">
-        <video id="gcam${g.side}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${r.segment}/${r.run_id}/${g.cam}"></video>
+        ${live ? `<img id="gimg${g.side}" src="/studio/live/stream/goal_${g.side}?${Date.now()}" class="w-full h-full object-contain" alt="">`
+               : `<video id="gcam${g.side}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${segment}/${runId}/${g.cam}"></video>`}
         <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded">${g.name}</span>
         <span class="absolute bottom-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" id="gnote${g.side}">AI eyes</span>
       </div>
-    </div>`).join("") || `<div class="text-[11px] text-slate-500 p-2">No goal cameras in this run.</div>`;
-  $("reportText").textContent = data.report || "No report yet: venv/bin/python -m studio.evaluate --segment " + r.segment;
-  lastKey = "";
-  drawTimeline();
+    </div>`).join("") || `<div class="text-[11px] text-slate-500 p-2">No goal cameras.</div>`;
+  $("reportText").textContent = M.report || "No report for this run yet.";
+  $("legend").innerHTML = cams.map(c =>
+    `<span><span class="inline-block w-2 h-2 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.name}</span>`).join("")
+    + `<span class="text-amber-300">— map intensity</span><span class="text-sky-300">— story intensity</span>`;
+  lastKey = ""; drawTruth();
 }
 
-// ---------------------------------------------------------------- timeline
-function drawTimeline() {
-  const tl = $("timeline"), D = data.duration;
-  tl.querySelectorAll(".seg").forEach(e => e.remove());
-  data.timeline.forEach((s, i) => {
-    const end = i + 1 < data.timeline.length ? data.timeline[i + 1].t : D;
-    const div = document.createElement("div");
-    div.className = "seg absolute top-0 bottom-0";
-    Object.assign(div.style, {left: `${100 * s.t / D}%`, width: `${100 * (end - s.t) / D}%`,
-      background: CAM_COLORS[s.cam], opacity: s.state === "REACTION" ? "1" : ".55"});
-    div.title = `${camName(s.cam)} ${s.state} @ ${fmt(s.t)}`;
-    tl.appendChild(div);
-  });
-  $("legend").innerHTML = shown.map(c =>
-    `<span><span class="inline-block w-2 h-2 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.name}</span>`).join("")
-    + `<span class="text-slate-500">bright = reaction · click to jump</span>`;
-  drawTruth();
+// ---------------------------------------------------------------- current state at time t (replay builds it)
+function currentAt(t) {
+  if (mode === "live") return M.cur || {t: 0, cam: M.onAir[0], state: "IN_PLAY", reason: "starting"};
+  let seg = M.timeline[0];
+  for (const s of M.timeline) { if (s.t <= t) seg = s; else break; }
+  return {t, cam: seg.cam, state: seg.state, reason: seg.reason};
+}
+function mapRowAt(t) {
+  const rows = M.mapRows;
+  if (!rows.length || rows[0].t > t) return {row: null, k: -1};
+  let lo = 0, hi = rows.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (rows[mid].t <= t) lo = mid; else hi = mid - 1; }
+  return {row: rows[lo], k: lo};
+}
+
+// ---------------------------------------------------------------- timeline + intensity curve + marks
+function drawTimeline(t) {
+  const tl = $("timeline"), D = M.duration;
+  const segs = M.timeline;
+  if (tl.dataset.count !== String(segs.length) || mode === "live") {
+    tl.querySelectorAll(".seg").forEach(e => e.remove());
+    segs.forEach((s, i) => {
+      const end = i + 1 < segs.length ? segs[i + 1].t : (mode === "live" ? t : D);
+      const div = document.createElement("div");
+      div.className = "seg absolute top-0 bottom-0";
+      Object.assign(div.style, {left: `${100 * s.t / D}%`, width: `${100 * Math.max(0, end - s.t) / D}%`,
+        background: CAM_COLORS[s.cam], opacity: s.state === "REACTION" ? "1" : ".55"});
+      div.title = `${camName(s.cam)} ${s.state} @ ${fmt(s.t)}`;
+      tl.appendChild(div);
+    });
+    tl.dataset.count = String(segs.length);
+  }
+  $("playhead").style.left = `${100 * t / D}%`;
+  $("clock").textContent = `${fmt(t)} / ${fmt(D)}`;
+  // intensity curve under the timeline: map (amber) + story (blue), whole run in replay, so far in live
+  const c = $("intensityLine"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const line = (pts, color) => { g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
+    pts.forEach(([x, v], i) => { const X = W * x / D, Y = H - 2 - (H - 4) * Math.min(1, v); i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
+    g.stroke(); };
+  const smooth = (arr, n) => arr.map((p, i) => [p[0], arr.slice(Math.max(0, i - n), i + 1).reduce((s, q) => s + q[1], 0) / Math.min(i + 1, n + 1)]);
+  line(smooth(M.mapRows.map(r => [r.t, r.intensity]), 10), "#fbbf24");
+  line(smooth(M.intensity.map(([x, v]) => [x, v / 100]), 3), "#38bdf8");
+  g.fillStyle = "rgba(255,255,255,.7)"; g.fillRect(W * t / D, 0, 1.5, H);
+  // story event marks (only once known)
+  const known = M.events.filter(e => e.known_at <= t && ICONS[e.type]);
+  if ($("storyMarks").dataset.count !== String(known.length)) {
+    $("storyMarks").innerHTML = "";
+    known.forEach(e => {
+      const m = document.createElement("span");
+      m.className = "mark"; m.style.left = `${100 * e.event_time / D}%`;
+      m.innerHTML = `${ICONS[e.type]}<span class="tip">${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)} · ${e.sources.join("+")}</span>`;
+      $("storyMarks").appendChild(m);
+    });
+    $("storyMarks").dataset.count = String(known.length);
+  }
 }
 function drawTruth() {
   const box = $("truthMarks"); box.innerHTML = "";
-  if (!$("truthToggle").checked) return;
-  data.truth.filter(e => e.label === "GOAL").forEach(e => {
+  if (!M || !$("truthToggle").checked) return;
+  M.truth.filter(e => e.label === "GOAL").forEach(e => {
     const m = document.createElement("span");
-    m.className = "mark"; m.style.left = `${100 * e.t / data.duration}%`;
+    m.className = "mark"; m.style.left = `${100 * e.t / M.duration}%`;
     m.innerHTML = `⚽<span class="tip">real goal ${fmt(e.t)}</span>`;
     box.appendChild(m);
   });
@@ -211,24 +382,16 @@ function drawTruth() {
 const P = {w: 840, h: 544, m: 16};
 const px = (x) => P.m + (x + 52.5) / 105 * (P.w - 2 * P.m);
 const py = (y) => P.m + (y + 34) / 68 * (P.h - 2 * P.m);
-function mapIndex(t) {
-  const rows = data.pitch.rows;
-  if (!rows.length || rows[0].t > t) return null;
-  let lo = 0, hi = rows.length - 1;
-  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (rows[mid].t <= t) lo = mid; else hi = mid - 1; }
-  return lo;
-}
 function drawPitch(t, liveCam) {
   const g = $("pitch").getContext("2d");
   g.fillStyle = "#14532d"; g.fillRect(0, 0, P.w, P.h);
-  const k = mapIndex(t), row = k === null ? null : data.pitch.rows[k];
+  const {row, k} = mapRowAt(t);
   if (row && row.ball && /box/.test(row.zone)) {
     const left = row.zone === "left_box";
     g.fillStyle = "rgba(239,68,68,.3)";
     g.fillRect(left ? px(-52.5) : px(36), py(-20.16), px(-36) - px(-52.5), py(20.16) - py(-20.16));
   }
-  const poly = liveCam === data.pitch.close_cam ? data.pitch.close_coverage[String(Math.floor(t) * 25)]
-                                                : data.pitch.coverage[String(liveCam)];
+  const poly = liveCam === M.pitch.close_cam ? M.pitch.close_coverage[String(Math.floor(t) * 25)] : M.pitch.coverage[String(liveCam)];
   if (poly && poly.length > 2) {
     g.beginPath(); poly.forEach(([x, y], i) => i ? g.lineTo(px(x), py(y)) : g.moveTo(px(x), py(y))); g.closePath();
     g.fillStyle = CAM_COLORS[liveCam] + "40"; g.fill(); g.strokeStyle = CAM_COLORS[liveCam]; g.lineWidth = 2; g.stroke();
@@ -247,7 +410,7 @@ function drawPitch(t, liveCam) {
   g.fillStyle = "rgba(226,232,240,.9)";
   row.players.forEach(p => { if (p) { g.beginPath(); g.arc(px(p[0]), py(p[1]), 4.5, 0, 7); g.fill(); } });
   const trail = [];
-  for (let j = k; j >= 0 && data.pitch.rows[j].t >= t - 6; j--) if (data.pitch.rows[j].ball) trail.push(data.pitch.rows[j]);
+  for (let j = k; j >= 0 && M.mapRows[j].t >= t - 6; j--) if (M.mapRows[j].ball) trail.push(M.mapRows[j]);
   trail.reverse().forEach((r, i) => {
     g.fillStyle = `rgba(250,204,21,${0.15 + 0.6 * i / Math.max(1, trail.length)})`;
     g.beginPath(); g.arc(px(r.ball[0]), py(r.ball[1]), 3, 0, 7); g.fill();
@@ -261,24 +424,18 @@ function drawPitch(t, liveCam) {
   return row;
 }
 
-// ---------------------------------------------------------------- small helpers drawn every frame
-function drawSpark(t) {
-  const g = $("spark").getContext("2d"), W = 300, H = 36;
-  g.clearRect(0, 0, W, H);
-  const line = (pts, color) => { g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
-    pts.forEach(([x, v], i) => { const X = W * (x - (t - 60)) / 60, Y = H - 2 - (H - 4) * v; i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
-    g.stroke(); };
-  line(data.pitch.rows.filter(r => r.t > t - 60 && r.t <= t).map(r => [r.t, r.intensity]), "#fbbf24");
-  const story = data.intensity.filter(([x]) => x > t - 60 && x <= t);
-  line(story.map(([x, v]) => [x, v / 100]), "#38bdf8");
-  if (story.length) $("barStory").style.width = `${story[story.length - 1][1]}%`;
+// ---------------------------------------------------------------- tracking boxes on the camera tiles
+function overlaysAt(t) {
+  if (mode === "live") return M.overlays || {};
+  const o = M.overlays;
+  if (!o || !o.step) return {};
+  return o.frames[String(Math.floor(t * M.fps / o.step) * o.step)] || {};
 }
 function drawOverlays(t) {
-  const o = data.overlays;
-  if (!o || !o.step) return;
-  const frame = o.frames[String(Math.floor(t * data.fps / o.step) * o.step)] || {};
-  shown.forEach(c => {
-    const cv = $("ov" + c.cam), g = cv.getContext("2d"), item = frame[String(c.cam)] || {};
+  const frame = overlaysAt(t);
+  shown().forEach(c => {
+    const cv = $("ov" + c.cam); if (!cv) return;
+    const g = cv.getContext("2d"), item = frame[String(c.cam)] || {};
     g.clearRect(0, 0, cv.width, cv.height);
     g.lineWidth = 1.5; g.strokeStyle = "rgba(56,189,248,.9)"; g.fillStyle = "rgba(56,189,248,.9)";
     (item.players || []).forEach(([x1, y1, x2, y2]) => g.strokeRect(x1 * cv.width, y1 * cv.height, (x2 - x1) * cv.width, (y2 - y1) * cv.height));
@@ -286,140 +443,153 @@ function drawOverlays(t) {
     if (item.ball) { g.strokeStyle = "#4ade80"; g.lineWidth = 3; g.beginPath(); g.arc(item.ball[0] * cv.width, item.ball[1] * cv.height, 9, 0, 7); g.stroke(); }
   });
 }
-function goalAiAt(t) {
-  // the goal watcher's latest look that had ARRIVED by t, and whether a look is in progress at t
-  const looks = data.goal_looks || [];
-  let done = null, asking = null;
-  looks.forEach(l => { if (l.logged_at <= t) done = l; else if (l.t <= t) asking = l; });
-  return {done, asking};
+function drawCards(t) {
+  let cards = {};
+  if (mode === "live") cards = M.cards || {};
+  else (M.cardsBySecond[String(Math.floor(t))] || []).forEach(c =>
+    cards[String(c.cam)] = {players: c.players, ball: c.ball ? c.ball.status : null, usable: c.quality.usable});
+  shown().forEach(c => {
+    const k = cards[String(c.cam)]; if (!k) return;
+    $("tile" + c.cam).classList.toggle("bad", !k.usable);
+    $("card" + c.cam).innerHTML = !k.usable ? `<span class="text-red-400 font-bold">BAD PICTURE</span>`
+      : `${k.players} pl${k.ball ? ` · <span class="${k.ball === "detected" ? "text-green-400" : "text-orange-300"}">ball</span>` : ""}`;
+  });
+}
+
+// ---------------------------------------------------------------- goals, NOW, AI lights, goal tiles
+function drawStatus(t, cur, row) {
+  const confirmed = M.decisions.filter(e => e.kind === "GOAL_CONFIRMED" && e.time <= t);
+  const possible = M.events.filter(e => e.type === "goal" && e.known_at <= t && t - e.event_time <= 60 &&
+    !confirmed.some(c => Math.abs(c.goal_time - e.event_time) < 30));
+  $("aiGoals").textContent = confirmed.length;
+  const real = M.truth.filter(e => e.label === "GOAL");
+  $("truthGoals").textContent = $("truthToggle").checked ? `real: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
+  let now;
+  if (cur.state === "REACTION") now = `Reaction: showing the close-up (${cur.reason.replace(/^CUT: /, "").replace(/^reaction: /, "")}).`;
+  else if (/unusable/.test(cur.reason)) now = `A camera's picture went bad, so the director left it. Live: ${camName(cur.cam)}.`;
+  else now = `Following play on ${camName(cur.cam)}` + (row && row.ball ? ` · the ball is ${row.status === "seen" ? "" : "probably "}in the ${zoneText(row.zone)}.` : ".");
+  $("nowText").textContent = now;
+  const ups = M.updates.filter(u => u.logged_at <= t);
+  $("storyNow").textContent = ups.length ? `“${ups[ups.length - 1].narration}”` : "";
+  const st = M.intensity.filter(([x]) => x <= t);
+  if (st.length) $("barStory").style.width = `${st[st.length - 1][1]}%`;
+  // goal AI: which goal camera it is checking now, and its last answer
+  let asking = null;
+  if (mode === "live") asking = M.asking;
+  else M.looks.forEach(l => { if (l.t <= t && l.logged_at > t) asking = l; });
+  M.goalCams.forEach(g => {
+    const on = asking && asking.side === g.side;
+    $("gtile" + g.side).classList.toggle("looking", !!on);
+    const last = M.looks.filter(l => l.side === g.side && l.logged_at <= t).pop();
+    $("gnote" + g.side).innerHTML = on ? `<span class="text-yellow-300">AI checking…</span>`
+      : last ? (last.goal ? `<span class="text-yellow-300">⚽ goal!</span>` : `last check: ${last.shot ? "shot" : last.celebration ? "celebration" : "no goal"}`) : "AI eyes";
+  });
+  $("chips").innerHTML = [
+    row ? `<span class="chip">ball: ${row.ball ? (row.status === "seen" ? "seen" : `remembered ${row.age}s`) : "not known"}</span>` : "",
+    row ? `<span class="chip">${row.players.length} players on the map</span>` : "",
+    row && row.in_box ? `<span class="chip">${row.in_box} in a box</span>` : "",
+    asking ? `<span class="chip text-yellow-300">AI checking the ${asking.side} goal</span>` : "",
+    possible.length ? `<span class="chip text-amber-300">possible goal at ${fmt(possible[possible.length - 1].event_time)}: waiting for the kick-off</span>` : "",
+    confirmed.length && t - confirmed[confirmed.length - 1].time < 15 ? `<span class="chip text-green-300">⚽ GOAL confirmed (kick-off seen)</span>` : "",
+    M.info ? `<span class="chip text-slate-400">${M.info.summary.cuts} cuts · avg shot ${M.info.summary.average_shot_s}s</span>` : "",
+  ].join("");
+  // AI lights (live): Gemini, Colab, goal watcher
+  if (mode === "live") {
+    const gm = M.lights.gemini, cb = M.lights.colab;
+    const light = (cls, label, text) => `<span><span class="dot ${cls}"></span> ${label} <span class="text-slate-500">${text || ""}</span></span>`;
+    $("aiLights").innerHTML = [
+      gm ? light(gm.state === "ok" || gm.state === "busy" ? "ok" : gm.state === "off" ? "" : "warn", "Gemini", `${gm.state} · ${gm.rpm}/${gm.max_rpm} req/min`) : light("", "Gemini", "off"),
+      cb ? light(cb.state === "connected" || cb.state === "ok" ? "ok" : cb.state === "off" ? "" : "warn", "Colab", cb.state + (cb.rtf ? ` · RTF ${cb.rtf}` : "")) : light("", "Colab", "off"),
+      light(M.lights.goal ? "bad" : M.looks.length || asking ? "ok" : "", "goal AI", `${M.looks.length} looks`),
+    ].join("");
+  } else {
+    $("aiLights").innerHTML = `<span class="text-slate-500">story: ${M.info ? (M.info.story_mode || "none") : ""} · goal looks: ${M.looks.length}</span>`;
+  }
 }
 
 // ---------------------------------------------------------------- the log (tabs)
 function logItems(t) {
   if (tab === "story") {
     return [
-      ...data.story.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
+      ...M.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
         `<span class="text-slate-500 mono">${fmt(u.window_end)} +${(u.logged_at - u.window_end).toFixed(1)}s</span> ` +
         `<span class="text-sky-300">${u.phase}</span> ${u.narration}`})),
-      ...data.story.events.filter(e => e.known_at <= t && ICONS[e.type]).map(e => ({at: e.known_at, html:
+      ...M.events.filter(e => e.known_at <= t && ICONS[e.type]).map(e => ({at: e.known_at, html:
         `<span class="text-slate-500 mono">${fmt(e.event_time)} +${(e.known_at - e.event_time).toFixed(1)}s</span> ` +
         `<b>${ICONS[e.type]} ${e.type}</b> <span class="text-slate-500">${(e.confidence * 100).toFixed(0)}% ${e.sources.join("+")}</span>`})),
     ];
   }
   if (tab === "goalai") {
-    return (data.goal_looks || []).filter(l => l.logged_at <= t).map(l => ({at: l.logged_at, html:
+    return M.looks.filter(l => l.logged_at <= t).map(l => ({at: l.logged_at, html:
       `<span class="text-slate-500 mono">${fmt(l.t)} +${(l.logged_at - l.t).toFixed(1)}s</span> ` +
       `<b class="${l.goal ? "text-yellow-300" : l.celebration || l.shot ? "text-amber-200" : "text-slate-400"}">` +
       `${l.goal ? "⚽ GOAL" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal"}</b> ${l.side} goal · ${l.note || ""}`}));
   }
-  return data.director_events.filter(e => e.time <= t).map(e => {
-    const isMap = e.type in MAP_EVENTS;
-    const color = e.type === "GOAL_CONFIRMED" ? "text-green-300" : e.type === "GOAL_LINE" ? "text-yellow-300" : isMap ? "text-amber-200" : e.type.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
-    return {at: e.time, html: `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b class="${color}">${isMap ? "MAP" : e.type}</b> ` +
-      (isMap ? MAP_EVENTS[e.type] : e.message.replace(/cam(\d)/g, (_, c) => camName(+c)))};
+  return M.decisions.filter(e => e.time <= t).map(e => {
+    const isMap = e.kind in MAP_EVENTS;
+    const color = e.kind === "GOAL_CONFIRMED" ? "text-green-300" : e.kind === "GOAL_LINE" ? "text-yellow-300" : isMap ? "text-amber-200" : e.kind.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
+    return {at: e.time, html: `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b class="${color}">${isMap ? "MAP" : e.kind}</b> ` +
+      (isMap ? MAP_EVENTS[e.kind] : (e.message || "").replace(/cam(\d)/g, (_, c) => camName(+c)))};
   });
 }
-let lastKey = "";
 function drawLog(t) {
   const items = logItems(t).sort((a, b) => b.at - a.at);
   const key = tab + items.length;
   if (key === lastKey) return;
   const fresh = lastKey.startsWith(tab) && items.length > +lastKey.slice(tab.length);
   lastKey = key;
-  $("logList").innerHTML = items.map((i, n) => `<li class="px-3 py-1 ${n === 0 && fresh ? "flash" : ""}">${i.html}</li>`).join("")
+  $("logList").innerHTML = items.slice(0, 300).map((i, n) => `<li class="px-3 py-1 ${n === 0 && fresh ? "flash" : ""}">${i.html}</li>`).join("")
     || `<li class="px-3 py-2 text-slate-500">nothing yet</li>`;
 }
 
 // ---------------------------------------------------------------- main loop
 function render() {
   requestAnimationFrame(render);
-  if (!data) return;
-  const p = $("program"), t = p.currentTime;
-  const videos = [...shown.map(c => $("cam" + c.cam)), ...(data.goal_cams || []).map(g => $("gcam" + g.side))];
-  videos.forEach(v => {
-    if (!v) return;
-    if (Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
-    if (p.paused && !v.paused) v.pause();
-    if (!p.paused && v.paused) v.play().catch(() => {});
-  });
-  $("playhead").style.left = `${100 * t / data.duration}%`;
-  $("clock").textContent = `${fmt(t)} / ${fmt(data.duration)}`;
-
-  let seg = data.timeline[0];
-  for (const s of data.timeline) { if (s.t <= t) seg = s; else break; }
-  $("stateBadge").textContent = `${camName(seg.cam)} · ${seg.state === "REACTION" ? "REACTION" : "following play"}`;
-  $("stateBadge").className = `mono text-[11px] px-2 py-0.5 rounded ${seg.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
-  shown.forEach(c => $("tile" + c.cam).classList.toggle("live", c.cam === seg.cam));
-  drawOverlays(t);
-  const row = drawPitch(t, seg.cam);
-  drawSpark(t);
-
-  const cards = data.cards[String(Math.floor(t))] || [];
-  cards.filter(c => data.on_air_cams.includes(c.cam)).forEach(c => {
-    $("tile" + c.cam).classList.toggle("bad", !c.quality.usable);
-    $("card" + c.cam).innerHTML = !c.quality.usable ? `<span class="text-red-400 font-bold">BAD PICTURE</span>`
-      : `${c.players} pl${c.ball ? ` · <span class="${c.ball.status === "detected" ? "text-green-400" : "text-orange-300"}">ball</span>` : ""}`;
-  });
-
-  // goal AI: which goal camera it is checking, and its last answer
-  const ai = goalAiAt(t);
-  (data.goal_cams || []).forEach(g => {
-    const asking = ai.asking && ai.asking.side === g.side;
-    $("gtile" + g.side).classList.toggle("looking", !!asking);
-    const last = (data.goal_looks || []).filter(l => l.side === g.side && l.logged_at <= t).pop();
-    $("gnote" + g.side).innerHTML = asking ? `<span class="text-yellow-300">AI checking…</span>`
-      : last ? (last.goal ? `<span class="text-yellow-300">⚽ goal!</span>` : `last check: ${last.shot ? "shot" : "no goal"}`) : "AI eyes";
-  });
-
-  // goals: COUNTED only once confirmed (goal camera saw it + the kick-off line-up followed); else "possible"
-  const confirmed = data.director_events.filter(e => e.type === "GOAL_CONFIRMED" && e.time <= t);
-  const possible = data.story.events.filter(e => e.type === "goal" && e.known_at <= t && t - e.event_time <= 60 &&
-    !confirmed.some(c => Math.abs(c.goal_time - e.event_time) < 30));
-  $("aiGoals").textContent = confirmed.length;
-  $("aiGoals").title = confirmed.map(c => `goal at ${fmt(c.goal_time)}, confirmed ${fmt(c.time)}`).join("\n");
-  const real = data.truth.filter(e => e.label === "GOAL");
-  $("truthGoals").textContent = $("truthToggle").checked ? `real: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
-  let now;
-  if (seg.state === "REACTION") now = `Reaction: showing the close-up (${seg.reason.replace(/^CUT: /, "").replace(/^reaction: /, "")}).`;
-  else if (/unusable/.test(seg.reason)) now = `A camera's picture went bad, so the director left it. Live: ${camName(seg.cam)}.`;
-  else now = `Following play on ${camName(seg.cam)}` + (row && row.ball ? ` · the ball is ${row.status === "seen" ? "" : "probably "}in the ${zoneText(row.zone)}.` : ".");
-  $("nowText").textContent = now;
-  const ups = data.story.updates.filter(u => u.logged_at <= t);
-  $("storyNow").textContent = ups.length ? `“${ups[ups.length - 1].narration}”` : "";
-  $("chips").innerHTML = [
-    row ? `<span class="chip">ball: ${row.ball ? (row.status === "seen" ? "seen" : `remembered ${row.age}s`) : "not known"}</span>` : "",
-    row ? `<span class="chip">${row.players.length} players on the map</span>` : "",
-    row && row.in_box ? `<span class="chip">${row.in_box} in a box</span>` : "",
-    ai.asking ? `<span class="chip text-yellow-300">AI checking the ${ai.asking.side} goal</span>` : "",
-    possible.length ? `<span class="chip text-amber-300">possible goal at ${fmt(possible[possible.length - 1].event_time)}: waiting for the kick-off</span>` : "",
-    confirmed.length && t - confirmed[confirmed.length - 1].time < 15 ? `<span class="chip text-green-300">⚽ GOAL confirmed (kick-off seen)</span>` : "",
-    `<span class="chip text-slate-400">${data.info.summary.cuts} cuts · avg shot ${data.info.summary.average_shot_s}s</span>`,
-  ].join("");
-  drawLog(t);
-
-  // story markers on the timeline (only once known)
-  const known = data.story.events.filter(e => e.known_at <= t && ICONS[e.type]);
-  if ($("storyMarks").childElementCount !== known.length) {
-    $("storyMarks").innerHTML = "";
-    known.forEach(e => {
-      const m = document.createElement("span");
-      m.className = "mark"; m.style.left = `${100 * e.event_time / data.duration}%`;
-      m.innerHTML = `${ICONS[e.type]}<span class="tip">${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)}</span>`;
-      $("storyMarks").appendChild(m);
+  if (!M || !M.cams) return;
+  let t;
+  if (mode === "replay") {
+    const p = $("program"); t = p.currentTime;
+    const vids = [...shown().map(c => $("cam" + c.cam)), ...M.goalCams.map(g => $("gcam" + g.side))];
+    vids.forEach(v => {
+      if (!v) return;
+      if (Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
+      if (p.paused && !v.paused) v.pause();
+      if (!p.paused && v.paused) v.play().catch(() => {});
     });
-  }
+  } else t = M.cur ? M.cur.t : 0;
+  const cur = currentAt(t);
+  $("stateBadge").textContent = `${camName(cur.cam)} · ${cur.state === "REACTION" ? "REACTION" : "following play"}`;
+  $("stateBadge").className = `mono text-[11px] px-2 py-0.5 rounded ${cur.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
+  shown().forEach(c => { const el = $("tile" + c.cam); if (el) el.classList.toggle("live", c.cam === cur.cam); });
+  drawOverlays(t);
+  drawCards(t);
+  const row = drawPitch(t, cur.cam);
+  drawTimeline(t);
+  drawStatus(t, cur, row);
+  drawLog(t);
 }
 
+// ---------------------------------------------------------------- controls
+document.querySelectorAll(".seg-btn").forEach(b => b.onclick = async () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll(".seg-btn").forEach(x => x.classList.toggle("on", x === b));
+  $("replayBar").classList.toggle("hidden", mode !== "replay");
+  $("liveBar").classList.toggle("hidden", mode !== "live");
+  M = null; $("main").classList.add("hidden"); $("foot").classList.add("hidden");
+  if (mode === "replay") { if (ws) ws.close(); $("program").pause && $("program").pause(); loadRuns(); }
+  else { $("empty").classList.remove("hidden"); $("empty").textContent = "Choose a match and press ● Go live."; loadLiveSources(); }
+});
 $("loadBtn").onclick = () => loadRun(+$("runSelect").value);
-$("truthToggle").onchange = () => data && drawTruth();
+$("truthToggle").onchange = () => drawTruth();
 $("reportBtn").onclick = () => $("reportBox").classList.remove("hidden");
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
   tab = b.dataset.tab; lastKey = "";
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
 });
 $("timeline").onclick = (ev) => {
+  if (mode !== "replay" || !M) return;
   const box = $("timeline").getBoundingClientRect();
-  $("program").currentTime = data.duration * (ev.clientX - box.left) / box.width;
+  $("program").currentTime = M.duration * (ev.clientX - box.left) / box.width;
   lastKey = "";
 };
 loadRuns();

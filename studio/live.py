@@ -179,7 +179,17 @@ class LiveStudio:
 
             llm = self.story_engine.llm if self.story_engine and self.story_engine.llm else None
             self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, self.feed.add_look, self.publish,
-                                           shared_llm=llm, out_dir=work_dir(self.segment) / "goalwatch" / self.run_id)
+                                           shared_llm=llm, out_dir=work_dir(self.segment) / "goalwatch" / self.run_id,
+                                           snapshot=self._goal_snapshot)
+
+    def _goal_snapshot(self, side: str, video: Path, t: float) -> None:
+        """The goal camera picture at the moment the AI starts checking it (one frame, read in the AI thread)."""
+        cap = cv2.VideoCapture(str(video))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, round(t * self.fps) - 1))
+        ok, img = cap.read()
+        cap.release()
+        if ok:
+            self._put_jpeg(f"goal_{side}", img, 480, 70)
 
     def _stop_ai(self) -> None:
         if self.watcher:

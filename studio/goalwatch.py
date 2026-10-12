@@ -295,11 +295,13 @@ class LiveGoalWatcher:
     one, it starts in a worker thread. The answer is stamped with the live clock at the moment it ARRIVES.
     It can share MVP 2's Gemini client (and so its requests-per-minute limiter) with the live story layer."""
 
-    def __init__(self, segment: str, cams: dict, clock, on_look, publish, shared_llm=None, out_dir: Path | None = None):
+    def __init__(self, segment: str, cams: dict, clock, on_look, publish, shared_llm=None, out_dir: Path | None = None,
+                 snapshot=None):
         from story.llm.gemini import GeminiStoryLLM
 
         self.cfg = load_config()["studio"]["goalwatch"]
         self.segment, self.clock, self.on_look, self.publish = segment, clock, on_look, publish
+        self.snapshot = snapshot                    # snapshot(side, video, t): show the picture the AI is checking
         self.goal_cams = {g["side"]: g["cam"] for g in cams.get("goal_cams", [])}
         self.llm = shared_llm or GeminiStoryLLM(story_config())
         self.planner = GoalPlanner(self.cfg)
@@ -332,6 +334,8 @@ class LiveGoalWatcher:
 
     def _look(self, job: dict) -> None:
         log = (lambda item: self.calls.write(json.dumps(item, default=str) + "\n")) if self.calls else (lambda item: None)
+        if self.snapshot:
+            self.snapshot(job["side"], cam_video(self.segment, self.goal_cams[job["side"]]), job["end"])
         try:
             self.llm.limiter.record()
             result, _ = ask(self.llm, cam_video(self.segment, self.goal_cams[job["side"]]), job["start"], job["end"],

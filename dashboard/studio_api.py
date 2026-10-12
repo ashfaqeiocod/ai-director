@@ -205,3 +205,166 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, "camera video not found")
     return FileResponse(path, media_type="video/mp4")
+
+
+# ============================================================================= LIVE MODE (studio.live)
+# The page starts a live run; studio.live plays the match at real speed and pushes its state here.
+# Browsers get: a WebSocket with state (~10/s) + every decision / story line / goal look, and MJPEG pictures.
+import asyncio
+import threading
+import time
+
+from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+
+
+class LiveController:
+    def __init__(self):
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.clients: set[asyncio.Queue] = set()
+        self.live = None                      # the running studio.live.LiveStudio
+        self.history: list[dict] = []         # every message except "state", for a browser that joins late
+        self.last_state: dict | None = None
+        self.lock = threading.Lock()
+
+    def publish(self, message: dict) -> None:
+        """Called from the live threads: keep it, and pass it to every browser."""
+        if message.get("type") == "state":
+            self.last_state = message
+        else:
+            self.history.append(message)
+        if self.loop is None:
+            return
+        for queue in list(self.clients):
+            self.loop.call_soon_threadsafe(_offer_live, queue, message)
+
+    def status(self) -> dict:
+        lv = self.live
+        return {"type": "live_status", "running": bool(lv and lv.status["state"] == "live"),
+                "segment": lv.segment if lv else None, "run_id": lv.run_id if lv else None,
+                "status": dict(lv.status) if lv else None}
+
+
+def _offer_live(queue: asyncio.Queue, message: dict) -> None:
+    """Queue a message for one browser. State messages are dropped first when a browser falls behind."""
+    if message.get("type") == "state" and queue.qsize() > 20:
+        return
+    if queue.qsize() < 2000:
+        queue.put_nowait(message)
+
+
+live_ctl = LiveController()
+
+
+def _ready_segments() -> list[str]:
+    from studio.prepare import work_dir
+
+    segs = load_config()["studio"]["segments"]
+    return [s for s in segs if (work_dir(s) / "cams" / "cam5_detector_rects.npy").exists()
+            and (work_dir(s) / "detections" / "cam1.json").exists()]
+
+
+@router.get("/live/sources")
+def live_sources() -> dict:
+    """Matches that can be played live (cameras + detections ready), and the defaults."""
+    cfg = load_config()["story"]
+    return {"segments": _ready_segments(), "specialist_url": cfg["specialist"]["server_url"] or ""}
+
+
+@router.get("/live/info/{segment}")
+def live_info(segment: str) -> dict:
+    """Everything static the page needs before going live: cameras, camera views on the pitch, real goals."""
+    if segment not in _ready_segments():
+        raise HTTPException(404, "segment not ready")
+    import numpy as np
+    from studio.cameras import CLOSE_CAM, cams_dir, load_cams
+    from studio.evaluate import truth_events
+    from studio.pitchmap import Projection
+    from studio.prepare import load_segment, work_dir
+
+    cams = load_cams(segment)
+    meta = load_segment(segment)
+    proj = Projection(np.load(work_dir(segment) / "pitch_to_image.npy"))
+    rects = np.load(cams_dir(segment) / "cam5_detector_rects.npy")
+    return {"segment": segment, "cams": cams, "fps": meta["fps"], "duration": meta["frames"] / meta["fps"],
+            "on_air_cams": load_config()["studio"]["director"]["on_air_cams"], "goal_cams": cams.get("goal_cams", []),
+            "pitch": {"coverage": {str(c["cam"]): proj.coverage(c["rect"]) for c in cams["cams"] if c["rect"]},
+                      "close_coverage": {str(i): proj.coverage(tuple(rects[i]), n=4) for i in range(0, len(rects), 25)},
+                      "close_cam": CLOSE_CAM},
+            "truth": [{"t": round(e["t"], 2), "label": e["label"], "team": e["team"]} for e in truth_events(meta)
+                      if e["label"] in ("GOAL", "SHOT")]}
+
+
+@router.post("/live/start")
+def live_start(body: dict) -> dict:
+    from studio.live import LiveStudio
+
+    with live_ctl.lock:
+        if live_ctl.live and live_ctl.live.status["state"] == "live":
+            raise HTTPException(409, "a live run is already going: stop it first")
+        segment = body.get("segment")
+        if segment not in _ready_segments():
+            raise HTTPException(400, f"segment '{segment}' is not ready")
+        live_ctl.history, live_ctl.last_state = [], None
+        live_ctl.live = LiveStudio(segment, live_ctl.publish, story=body.get("story", "off"),
+                                   specialist_url=body.get("specialist_url", "").strip(),
+                                   goalwatch=bool(body.get("goalwatch", False)), record=True)
+        live_ctl.live.start()
+    return live_ctl.status()
+
+
+@router.post("/live/stop")
+def live_stop() -> dict:
+    lv = live_ctl.live
+    if lv:
+        threading.Thread(target=lv.stop, daemon=True).start()   # stopping waits for the AI threads: don't block
+    return live_ctl.status()
+
+
+@router.get("/live/status")
+def live_status() -> dict:
+    return live_ctl.status()
+
+
+@router.websocket("/live/ws")
+async def live_ws(ws: WebSocket) -> None:
+    await ws.accept()
+    live_ctl.loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    live_ctl.clients.add(queue)
+
+    async def sender() -> None:
+        while True:
+            await ws.send_json(await queue.get())
+
+    task = asyncio.create_task(sender())
+    try:
+        await ws.send_json(live_ctl.status())
+        for message in list(live_ctl.history):       # catch up: everything that already happened in this run
+            await ws.send_json(message)
+        while True:
+            await ws.receive_text()                  # the page doesn't need to send anything; this keeps it open
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        task.cancel()
+        live_ctl.clients.discard(queue)
+
+
+@router.get("/live/stream/{name}")
+def live_stream(name: str) -> StreamingResponse:
+    """MJPEG: program, cam1 ... cam5, goal_left, goal_right (shown with a plain <img>)."""
+    def frames():
+        seq = -1
+        idle = 0
+        while idle < 600:                            # ~60 s with no new picture: end the stream
+            lv = live_ctl.live
+            item = lv.jpeg(name) if lv else None
+            if item and item[0] != seq:
+                seq, data = item
+                idle = 0
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+            else:
+                idle += 1
+                time.sleep(0.1 if not item else 0.02)
+    return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
