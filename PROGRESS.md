@@ -284,7 +284,11 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   60 s. dev: goal found + confirmed, 1/1, 0 false counted (1 false alarm -> extra close-up, not counted).
   eval: close-up within 20 s after 2/3 real goals (target met); counted goals: 494 s correct, 775 s found but
   stamped 10.3 s early (shot at 765 s was the first attempt, the goal came from the second) -> strict 10 s check
-  calls it false; goal at 118 s missed; 3 false alarms -> extra close-ups, none counted. Rules not tuned on eval.
+  calls it false; goal at 118 s missed; 3 false alarms -> extra close-ups, none counted.
+  CORRECTION (2026-10-13): the 60 s confirmation window was chosen AFTER looking at eval's kick-off periods and
+  false alarms (100 s would have confirmed the false alarm at 418 s), so eval is no longer a held-out test of the
+  confirmation rule. Settings are now frozen and a new held-out segment `test` (128057 2nd half, 2400-2814 s,
+  1 goal at 2711.6 s) decides.
 - CAMERA-ONLY TEST on real broadcast (SoccerNet, Arsenal 3-4 Liverpool 2016, 2nd half 0-20 min, 4 goals;
   NO sound to the AI, score graphic blacked out, Flash Lite, real time, 114 looks):
   goals 3/4 within +-10 s (608.5, 1051.3, 1123.3 s vs truth 608.4, 1051, 1123; the 4th at 226 s vs 209 s, with
