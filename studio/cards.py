@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.ball_tracker import DETECTED, LOST, PREDICTED, BallTracker
+from src.ball_tracker import DETECTED, LOST, PREDICTED, BallState, BallTracker
 from studio.cameras import group_center
 
 
@@ -53,6 +53,8 @@ class CamCard:
     source: str = "detector"       # detector | oracle
     action_in_view: bool = False   # is the action point inside this camera's view?
     action: tuple[float, float] | None = None   # where the action point is in this camera (0..1), if in view
+    zone: str = "unknown"          # where the ball is on the pitch map (left_box, middle, ...), shared by all cams
+    map_intensity: float = 0.0     # 0..1 from the pitch map (ball near goal, fast ball, crowded box)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,10 +84,16 @@ class World:
         self.state = WorldState()
 
     def update(self, t: float, ball: tuple[float, float] | None, players: list[tuple[float, float]],
-               group: tuple[float, float] | None = None) -> WorldState:
-        """New detections for time t (ball center or None, player centers). `group` overrides the players' group."""
-        box = None if ball is None else [ball[0] - 1, ball[1] - 1, ball[0] + 1, ball[1] + 1]
-        b = self.tracker.update(box)
+               group: tuple[float, float] | None = None, ball_status: str | None = None) -> WorldState:
+        """New detections for time t (ball center or None, player centers). `group` overrides the players' group.
+
+        ball_status: if given, the ball already comes tracked (from the pitch map: "detected" or "predicted")
+        and MVP 1's pixel tracker is skipped."""
+        if ball_status is not None:
+            b = BallState(ball_status if ball is not None else LOST, ball)
+        else:
+            box = None if ball is None else [ball[0] - 1, ball[1] - 1, ball[0] + 1, ball[1] + 1]
+            b = self.tracker.update(box)
         if group is None and players:
             pts = np.asarray(players, dtype=float)
             group = group_center(pts, pts, self.radius_px)

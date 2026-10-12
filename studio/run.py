@@ -29,7 +29,8 @@ from studio.cameras import CLOSE_CAM, OracleAim, cam_rect, cam_video, cams_dir, 
 from studio.cards import BallInfo, CamCard, QualityMeter, StoryFeed, World
 from studio.detect import PanoramaDetections, detect_step
 from studio.director import DirectorV2
-from studio.prepare import annotation_frame, load_segment
+from studio.pitchmap import PitchMap, Projection
+from studio.prepare import annotation_frame, load_segment, work_dir
 from studio.story_pass import story_run
 from studio.video import VideoWriter, to_camera
 
@@ -47,14 +48,17 @@ class OraclePlayers:
     def __init__(self, meta: dict, radius_m: float):
         self.aim = OracleAim(meta, radius_m)
 
-    def at(self, i: int) -> tuple[list[tuple[float, float]], tuple[float, float] | None]:
+    def at(self, i: int):
+        """(player centres, group centre, player feet) in panorama pixels for frame i."""
         p, frame_no = self.aim.p, annotation_frame(self.aim.meta, i)
         lo, hi = np.searchsorted(p["frame"], [frame_no, frame_no + 1])
         players = [((p["x1"][k] + p["x2"][k]) / 2, (p["y1"][k] + p["y2"][k]) / 2) for k in range(lo, hi)]
-        return players, self.aim.point(i)
+        feet = [((p["x1"][k] + p["x2"][k]) / 2, p["y2"][k]) for k in range(lo, hi)]
+        return players, self.aim.point(i), feet
 
 
-def build_cards(t: float, cams: dict, rects: list, world, quality: list, phase, event, source: str) -> list[CamCard]:
+def build_cards(t: float, cams: dict, rects: list, world, quality: list, phase, event, source: str,
+                pitch=None) -> list[CamCard]:
     w, h = cams["size"]
     cards = []
     for k, cam in enumerate(cams["cams"]):
@@ -71,7 +75,9 @@ def build_cards(t: float, cams: dict, rects: list, world, quality: list, phase, 
         cards.append(CamCard(cam=cam["cam"], name=cam["name"], time=round(t, 2), logged_at=round(t, 2),
                              shot_type=cam["shot_type"], ball=ball, players=players,
                              play_speed=round(world.play_speed, 2), quality=quality[k], event=event, phase=phase,
-                             source=source, action_in_view=action is not None, action=action))
+                             source=source, action_in_view=action is not None, action=action,
+                             zone=pitch.zone if pitch else "unknown",
+                             map_intensity=pitch.intensity if pitch else 0.0))
     return cards
 
 
@@ -99,6 +105,10 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     print(f"[run] {segment} -> {out.relative_to(ROOT)}  (story: {story['run_id'] if story else 'none'})", flush=True)
 
     world = World(cfg, (meta["width"], meta["height"]), fps, step)
+    # The pitch map: ball + players on the pitch, ball remembered for a moment, zone triggers (studio.pitchmap).
+    projection = Projection(np.load(work_dir(segment) / "pitch_to_image.npy"))
+    pitch = PitchMap(cfg["map"], projection)
+    pitch_state = None
     meters = [QualityMeter(cfg["quality"]) for _ in cams["cams"]]
     director = DirectorV2(cfg["director"], fps, len(cams["cams"]))
     caps = [cv2.VideoCapture(str(cam_video(segment, c["cam"], aim))) for c in cams["cams"]]
@@ -109,6 +119,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     log = csv.writer(log_file)
     log.writerow(["frame", "time", "state", "chosen_cam", *[f"score_cam{c['cam']}" for c in cams["cams"]], "reason"])
     cards_file = open(out / "cards.jsonl", "w")
+    map_file = open(out / "map.jsonl", "w")
     events_file = open(out / "director_events.jsonl", "w")
     chosen, states = [], []
     cards, phase, story_line, latest_event = [], None, "", None
@@ -127,11 +138,24 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
             # New detections (5x per second).
             if i % step == 0:
                 if oracle:
-                    players, group = oracle_players.at(i)
+                    players, group, feet = oracle_players.at(i)
+                    pitch_state = pitch.update(t, None, feet)
                     world.update(t, None, players, group)
                 else:
                     d = detections.at(i)
-                    world.update(t, d["ball"][:2] if d["ball"] else None, d["players"])
+                    pitch_state = pitch.update(t, d["ball"][:2] if d["ball"] else None, d["feet"])
+                    if cfg["map"]["drive_ball"]:
+                        # The map's ball (seen, or remembered for a moment) is THE ball for every camera.
+                        ball_px = projection.image(*pitch_state.ball) if pitch_state.ball else None
+                        status = {"seen": "detected", "remembered": "predicted"}.get(pitch_state.ball_status, "lost")
+                        world.update(t, ball_px, d["players"], ball_status=status)
+                    else:
+                        world.update(t, d["ball"][:2] if d["ball"] else None, d["players"])
+                map_file.write(json.dumps(pitch_state.to_dict()) + "\n")
+                for e in pitch_state.events:
+                    events_file.write(json.dumps({"frame": i, "time": round(t, 2), "type": e["type"],
+                                                  "message": f"{e['type'].lower().replace('_', ' ')} "
+                                                             f"({e.get('zone') or e.get('side') or e.get('line')})"}) + "\n")
             # Picture quality: shake every frame, blur on detection steps.
             quality = []
             for k, image in enumerate(images):
@@ -151,7 +175,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                 headline = [e for e in known_events if e["type"] not in ("none", "whistle")]
                 latest_event = max(headline, key=lambda e: e["known_at"]) if headline else None
                 cards = build_cards(t, cams, rects, world.state, quality, phase,
-                                    _event_summary(latest_event), source)
+                                    _event_summary(latest_event), source, pitch_state)
                 if i % round(fps) == 0:
                     for card in cards:
                         cards_file.write(json.dumps(card.to_dict()) + "\n")
@@ -175,6 +199,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     finally:
         log_file.close()
         cards_file.close()
+        map_file.close()
         events_file.close()
         for cap in caps:
             cap.release()

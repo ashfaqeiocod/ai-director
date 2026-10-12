@@ -97,7 +97,40 @@ def run_data(segment: str, run_id: str) -> dict:
     return {"info": {k: info[k] for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary")},
             "cams": cams, "fps": meta["fps"], "duration": info["summary"]["seconds"], "timeline": timeline,
             "cards": cards, "director_events": events, "story": story, "truth": truth, "report": report,
-            "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams)}
+            "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams),
+            "pitch": pitch_data(folder, segment, info["source"], cams),
+            "intensity": story_intensity(info, segment)}
+
+
+def pitch_data(folder: Path, segment: str, source: str, cams: dict) -> dict:
+    """The pitch map of the run (map.jsonl, one row per detection step) + what each camera sees on the pitch."""
+    import numpy as np
+    from studio.cameras import CLOSE_CAM, cams_dir
+    from studio.pitchmap import Projection
+    from studio.prepare import work_dir
+
+    path = folder / "map.jsonl"
+    rows = [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+    proj = Projection(np.load(work_dir(segment) / "pitch_to_image.npy"))
+    fixed = {str(c["cam"]): proj.coverage(c["rect"]) for c in cams["cams"] if c["rect"] is not None}
+    aim = "oracle" if source == "oracle" else "detector"
+    close_rects = np.load(cams_dir(segment) / f"cam5_{aim}_rects.npy")
+    step = round(25 / load_config()["studio"]["detect_fps"])
+    # The close-up moves: its outline once per second is enough for the picture.
+    close = {str(i): proj.coverage(tuple(close_rects[i]), n=4) for i in range(0, len(close_rects), 25)}
+    return {"rows": rows, "step": step, "coverage": fixed, "close_coverage": close, "close_cam": CLOSE_CAM}
+
+
+def story_intensity(info: dict, segment: str) -> list[list[float]]:
+    """The story layer's fused intensity per second ([t, 0..100]), from its intensity.csv."""
+    if not info.get("story_run"):
+        return []
+    from studio.story_pass import story_run
+
+    path = story_run(segment, info["story_run"])["folder"] / "intensity.csv"
+    if not path.exists():
+        return []
+    return [[float(r["t"]), float(r["intensity"])] for r in csv.DictReader(open(path))]
 
 
 def overlays(segment: str, source: str, cams: dict) -> dict:

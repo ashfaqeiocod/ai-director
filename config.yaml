@@ -230,6 +230,16 @@ studio:
       group_radius_m: 15 # oracle aim: players within this many metres count as one group
       group_radius_px: 350 # detector aim (no ball seen): players within this many panorama pixels = one group
   detect_fps: 5 # MVP 1 detector on cams 1-3 this many times per second (M1: ~0.3 s per cam per frame)
+  map: # the pitch map (studio.pitchmap): ball + players on the pitch, zone triggers, map intensity
+    drive_ball: true # the map's ball (seen, or remembered for a moment) is the ball for every camera
+    remember_s: 3.0 # keep a lost ball this long (dev: half the "no ball on air" moments were < 2 s after a sighting)
+    remember_damping: 0.5 # a remembered ball slows to this share of its speed per second
+    velocity_smoothing: 0.5 # new speed = this share of the latest measurement + the rest of the old one
+    max_ball_speed_ms: 35 # a jump faster than this is a false detection (hard shots ~30 m/s)
+    goal_line_margin_m: 0.5 # GOAL_LINE trigger: ball over the goal line within the posts +- this
+    fast_ball_ms: 15 # ball this fast = full "speed" intensity
+    box_crowd: 6 # players in a penalty box for full "crowd" intensity
+    intensity_weights: { near_goal: 0.5, speed: 0.3, box_crowd: 0.2 }
   parked_ball: # a spare ball lying off the pitch is a real ball, but not THE ball (eval: cam3, 2455 frames)
     window_seconds: 4 # look back this far (past only, so it stays causal)
     radius_px: 20 # "same spot" = within this many panorama pixels (~0.5 m)
@@ -263,6 +273,8 @@ studio:
     action_smoothing: 0.3 # smoothing of the action point (past only)
     slow_play: 0.15 # play_speed at or below this = slow play (CLOSE may be used)
     close_slow_score: 0 # CLOSE score during slow play (0 = only used for reactions)
+    close_box_score: 150 # CLOSE score when the pitch map has the ball in a penalty box and the close-up shows it
+    box_min_intensity: 0.5 # ...and the map intensity is at least this
     reaction_events: [card_red, card_yellow, penalty, injury] # these story events also trigger a REACTION
     reaction_min_confidence: 0.6
     reaction_phases: [celebration] # story phases that trigger a REACTION

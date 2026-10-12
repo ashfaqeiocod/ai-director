@@ -180,10 +180,12 @@ class PanoramaDetections:
         return near >= self.parked_share * len(past)
 
     def at(self, i: int) -> dict:
-        """{ball: (x, y, conf) | None, players: [(x, y), ...]} in panorama pixels, from frame <= i."""
+        """{ball: (x, y, conf) | None, players: [(x, y), ...], feet: [(x, y), ...]} in panorama pixels,
+        from frame <= i. feet = bottom-middle of each player box (where he stands: used for the pitch map),
+        without the duplicates from the overlap between neighbouring cameras."""
         frame = i - i % self.step
         balls = [b for b in self._balls(frame) if not self._parked(b[0], b[1], frame)]
-        players = []
+        players, feet = [], []
         for c in DETECT_CAMS:
             det = self.dets[c]["frames"].get(frame)
             if det is None:
@@ -192,7 +194,10 @@ class PanoramaDetections:
             for p in det["players"]:
                 x1, y1, x2, y2 = p["box"]
                 players.append(to_source(rect, *self.size, ((x1 + x2) / 2, (y1 + y2) / 2)))
-        return {"ball": max(balls, key=lambda b: b[2]) if balls else None, "players": players}
+                foot = to_source(rect, *self.size, ((x1 + x2) / 2, y2))
+                if all(abs(foot[0] - f[0]) > 15 or abs(foot[1] - f[1]) > 15 for f in feet):
+                    feet.append(foot)
+        return {"ball": max(balls, key=lambda b: b[2]) if balls else None, "players": players, "feet": feet}
 
 
 class DetectorAim:

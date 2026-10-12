@@ -75,9 +75,12 @@ class DirectorV2:
             elif card.cam == WIDE:
                 score = c["wide_base"] + (c["wide_fast_bonus"] if card.play_speed >= c["fast_play"] else 0)
                 out.append(float(score))
-            else:                                   # CLOSE: only for slow play with the action in view
+            else:                                   # CLOSE
                 slow = card.play_speed <= c["slow_play"] and card.action_in_view
-                out.append(float(c["close_slow_score"] if slow else 0))
+                # The ball is in a penalty box (pitch map) and the close-up shows it: the danger moment.
+                box = card.zone in ("left_box", "right_box") and card.ball is not None \
+                    and card.map_intensity >= c["box_min_intensity"]
+                out.append(float(c["close_box_score"] if box else c["close_slow_score"] if slow else 0))
         return out
 
     # ------------------------------------------------------------------ decide
