@@ -181,6 +181,30 @@ class StoryFeed:
         self.events.sort(key=lambda e: e["known_at"])
         self.updates = sorted(_lines(run_folder / "story.jsonl"), key=lambda u: u["logged_at"])
 
+    def add_goal_looks(self, looks: list[dict], cfg: dict) -> None:
+        """Add the goal watcher's answers (studio.goalwatch): goal / shot events and "looks" for corroboration.
+        Each is known from its logged_at (when the answer would have arrived live)."""
+        last_goal: dict | None = None
+        for n, lk in enumerate(sorted(looks, key=lambda x: x["logged_at"])):
+            src = {"sources": ["goalcam"], "logged_at": lk["logged_at"], "known_at": lk["logged_at"]}
+            if lk["goal"] and lk["goal_confidence"] >= cfg["min_goal_confidence"]:
+                same = last_goal and lk["goal_time"] - last_goal["event_time"] <= cfg["merge_s"]
+                event = {"id": last_goal["id"] if same else f"gw{n}", "type": "goal",
+                         "event_time": last_goal["event_time"] if same else lk["goal_time"],
+                         "confidence": max(lk["goal_confidence"], last_goal["confidence"] if same else 0), **src}
+                last_goal = event
+                self.events.append(event)
+            if lk["shot"]:
+                self.events.append({"id": f"gs{n}", "type": "shot", "event_time": lk["shot_time"], "confidence": 0.7, **src})
+            if lk["goal"] or lk["celebration"]:
+                self.updates.append({"window_end": lk["t"], "logged_at": lk["logged_at"], "window_start": lk["t"] - 6,
+                                     "phase": "goal" if lk["goal"] else "celebration", "sentiment": "excited",
+                                     "intensity": 90, "source": "goalcam",
+                                     "events": [{"type": "goal"}] if lk["goal"] else [],
+                                     "narration": f"Goal camera ({lk['side']}): {lk['note']}"})
+        self.events.sort(key=lambda e: e["known_at"])
+        self.updates.sort(key=lambda u: u["logged_at"])
+
     def known_events(self, t: float) -> list[dict]:
         """Every event as it was known at time t (the newest version of each id)."""
         out: dict[str, dict] = {}

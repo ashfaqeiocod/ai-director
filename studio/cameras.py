@@ -2,9 +2,11 @@
 
   venv/bin/python -m studio.cameras --segment dev              # cams 1-4 + close-up aimed by the oracle
   venv/bin/python -m studio.cameras --segment dev --only 5 --aim detector   # close-up only (after Step 3)
+  venv/bin/python -m studio.cameras --segment dev --only 6 7               # the two goal cameras
 
   cam1 LEFT, cam2 CENTRE, cam3 RIGHT   fixed crops of the panorama ("medium" shots), like MVP 1's 3 cams
   cam4 WIDE                            the whole pitch
+  cam6 GOAL LEFT, cam7 GOAL RIGHT      fixed sharp views on each goal, only for the AI goal watcher (not aired)
   cam5 CLOSE                           a virtual camera operator: a zoomed crop of the 4K picture that follows
                                        the action. It only knows the current frame (aim) and the past (smoothing),
                                        never the future, exactly like a real operator.
@@ -36,6 +38,7 @@ from studio.video import VideoWriter, crop_to
 
 FIXED_CAMS = (1, 2, 3, 4)
 CLOSE_CAM = 5
+GOAL_CAMS = (6, 7)      # one fixed view on each goal: the AI's "eyes" for goals (studio.goalwatch), never on air
 
 
 def cams_cfg() -> dict:
@@ -148,6 +151,7 @@ def render(segment: str, only: list[int] | None = None, aim: str = "oracle") -> 
     out = cams_dir(segment)
     writers = {c: VideoWriter(cam_video(segment, c, aim), width, height, fps) for c in todo}
     rects = {c: tuple(cfg["fixed"][f"cam{c}"]["rect"]) for c in todo if c in FIXED_CAMS}
+    rects |= {c: tuple(cfg["goal"][f"cam{c}"]["rect"]) for c in todo if c in GOAL_CAMS}
     operator = aimer = None
     close_rects = []
     if CLOSE_CAM in todo:
@@ -199,8 +203,11 @@ def write_cams_json(segment: str, meta: dict) -> None:
         cams.append({"cam": c, "name": f["name"], "shot_type": f["shot_type"], "rect": f["rect"]})
     cams.append({"cam": CLOSE_CAM, "name": cfg["close"]["name"], "shot_type": cfg["close"]["shot_type"],
                  "rect": None, "rects_file": "cam5_<aim>_rects.npy"})
+    # Goal cameras are listed apart: the director never airs them, only the goal watcher looks at them.
+    goal = [{"cam": c, "name": cfg["goal"][f"cam{c}"]["name"], "side": cfg["goal"][f"cam{c}"]["side"],
+             "rect": cfg["goal"][f"cam{c}"]["rect"]} for c in GOAL_CAMS if cam_video(segment, c).exists()]
     info = {"segment": segment, "size": cfg["size"], "fps": meta["fps"], "frames": meta["frames"],
-            "source_size": [meta["width"], meta["height"]], "cams": cams}
+            "source_size": [meta["width"], meta["height"]], "cams": cams, "goal_cams": goal}
     (cams_dir(segment) / "cams.json").write_text(json.dumps(info, indent=2))
 
 

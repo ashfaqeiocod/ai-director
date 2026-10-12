@@ -1,13 +1,11 @@
 <!doctype html>
 <!--
-  studio.html — MVP 3 "Studio": the combined view of a directed run (one static page, no build step).
-  MVP 1 (which camera is live) + MVP 2 (story, intensity, goals) + the pitch map, on ONE clock:
-  - program.mp4 plays in the big <video>; its currentTime drives everything on the page.
-  - The on-air camera videos play muted below it, re-synced to the program, with the detector's boxes drawn on.
-  - The pitch map (bottom) shows players, the ball and its trail, the live camera's view on the pitch, and
-    zone triggers (ball in the box, out, over the goal line).
-  - Everything is fetched once from /studio/run/<segment>/<run_id> and drawn for the current time.
-    Story items appear only after the moment the system knew them (what the director knew, not more).
+  studio.html — MVP 3 "Studio": ONE screen that shows the whole AI director at work (no build step).
+    MVP 1  which camera is live (program + the 4 on-air cameras, with the detector's boxes and the ball)
+    MVP 2  the story: commentary lines, events, goals, intensity
+    MVP 3  the pitch map (ball, trail, players, what each camera sees) + the 2 goal cameras the AI checks
+  program.mp4's currentTime is the clock for everything. Data is fetched once from /studio/run/<seg>/<id>.
+  Story items and AI answers appear only after the moment the system knew them.
 -->
 <html lang="en">
 <head>
@@ -20,168 +18,162 @@
     .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
     .tile { border: 2px solid #1e293b; }
     .tile.live { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
-    .tile.bad video { filter: grayscale(.6); opacity: .6; }
-    .mark { position: absolute; transform: translateX(-50%); font-size: 13px; line-height: 1; cursor: default; }
+    .tile.bad video { filter: grayscale(.7); opacity: .5; }
+    .tile.looking { border-color: #facc15; box-shadow: 0 0 0 1px #facc15; }
+    .mark { position: absolute; transform: translateX(-50%); font-size: 12px; line-height: 1; cursor: default; }
     .mark .tip { display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%);
       white-space: nowrap; background: #020617; border: 1px solid #334155; padding: 2px 6px; border-radius: 4px;
       font-size: 11px; z-index: 10; }
     .mark:hover .tip { display: block; }
-    #report pre { white-space: pre-wrap; }
+    .tab.on { color: #fff; border-color: #38bdf8; }
     .flash { animation: flash 1.2s ease-out; }
     @keyframes flash { from { background: rgba(250, 204, 21, .35); } to { background: transparent; } }
+    .chip { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #1e293b; }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-200 min-h-screen">
-<div class="max-w-[1700px] mx-auto p-4 space-y-3">
+<body class="bg-slate-950 text-slate-200 h-screen overflow-hidden">
+<div class="h-full flex flex-col p-2 gap-2 max-w-[1800px] mx-auto">
 
-  <header class="flex flex-wrap items-center gap-3 justify-between">
-    <div class="flex items-center gap-3">
-      <h1 class="text-lg font-semibold tracking-tight">Studio <span class="text-slate-500 font-normal text-sm">MVP 3 · AI director + story + pitch map</span></h1>
-      <a href="/" class="text-xs text-slate-400 hover:text-white border border-slate-700 rounded px-2 py-0.5">Camera director (MVP 1)</a>
-      <a href="/story" class="text-xs text-slate-400 hover:text-white border border-slate-700 rounded px-2 py-0.5">Story (MVP 2)</a>
+  <!-- top bar -->
+  <header class="flex items-center gap-3 justify-between shrink-0">
+    <div class="flex items-center gap-2">
+      <h1 class="font-semibold">AI Director <span class="text-slate-500 font-normal text-sm">· MVP 3 studio</span></h1>
+      <a href="/" class="text-[11px] text-slate-400 hover:text-white border border-slate-700 rounded px-2">MVP 1</a>
+      <a href="/story" class="text-[11px] text-slate-400 hover:text-white border border-slate-700 rounded px-2">MVP 2</a>
     </div>
     <div class="flex items-center gap-2 text-sm">
-      <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 mono text-xs max-w-[440px]"></select>
-      <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-sm">Load</button>
-      <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> show ground truth</label>
+      <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono text-xs max-w-[460px]"></select>
+      <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-0.5 text-sm">Load</button>
+      <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> real goals</label>
+      <button id="reportBtn" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-300">Report</button>
     </div>
   </header>
+  <p id="empty" class="text-slate-400 text-sm hidden">No finished runs yet: <code class="mono">venv/bin/python -m studio.main --segment dev</code></p>
 
-  <p id="empty" class="text-slate-400 text-sm hidden">No finished runs yet. Run <code class="mono">venv/bin/python -m studio.run --segment dev</code> first.</p>
+  <main id="main" class="flex-1 min-h-0 grid grid-cols-12 gap-2 hidden">
+    <!-- LEFT: program + on-air cameras -->
+    <section class="col-span-7 flex flex-col gap-2 min-h-0">
+      <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video shrink-0">
+        <video id="program" class="w-full h-full" controls playsinline></video>
+        <div class="absolute top-2 right-2 flex gap-1 pointer-events-none">
+          <span class="bg-red-600 text-white text-[11px] font-bold px-2 py-0.5 rounded">ON AIR</span>
+          <span id="stateBadge" class="bg-black/70 mono text-[11px] px-2 py-0.5 rounded">–</span>
+        </div>
+      </div>
+      <div id="tiles" class="grid gap-2 shrink-0"></div>
+    </section>
 
-  <main id="main" class="space-y-3 hidden">
-    <!-- Row 1: the program (what viewers see) + the director's status -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
-      <section class="lg:col-span-8 space-y-2">
-        <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video">
-          <video id="program" class="w-full h-full" controls playsinline></video>
-          <div class="absolute top-3 right-3 flex gap-2 pointer-events-none">
-            <span class="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded">PROGRAM</span>
-            <span id="stateBadge" class="bg-black/70 mono text-xs px-2 py-0.5 rounded">–</span>
+    <!-- RIGHT: now, goals + intensity, pitch map + goal cameras, logs -->
+    <section class="col-span-5 flex flex-col gap-2 min-h-0">
+      <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-2 shrink-0">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="text-[11px] text-slate-400">NOW</div>
+            <div id="nowText" class="text-sm text-slate-100">–</div>
+            <div id="storyNow" class="text-xs text-sky-200 italic mt-1 truncate"></div>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="text-[11px] text-slate-400">GOALS (AI)</div>
+            <div class="mono text-3xl font-bold leading-none" id="aiGoals">0</div>
+            <div class="text-[11px] text-slate-500" id="truthGoals"></div>
           </div>
         </div>
-        <div id="tiles" class="grid gap-2"></div>
-      </section>
-
-      <aside class="lg:col-span-4 space-y-3">
-        <!-- what is happening now, in words -->
-        <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50">
-          <div class="text-xs text-slate-400">NOW</div>
-          <div id="nowText" class="text-slate-100 mt-1">–</div>
-          <div id="storyNow" class="text-sm text-sky-200 mt-2 italic"></div>
-        </div>
-        <!-- goals + intensity -->
-        <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50 grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-2 gap-3 mt-2 items-center">
           <div>
-            <div class="text-xs text-slate-400">GOALS SEEN BY THE AI</div>
-            <div class="mono text-3xl font-bold" id="aiGoals">0</div>
-            <div class="text-xs text-slate-500" id="truthGoals"></div>
-          </div>
-          <div>
-            <div class="text-xs text-slate-400">INTENSITY</div>
-            <div class="flex items-center gap-2 mt-1"><span class="text-[11px] w-12 text-slate-400">map</span>
+            <div class="flex items-center gap-2"><span class="text-[11px] w-10 text-amber-300">map</span>
               <div class="flex-1 h-2 bg-slate-800 rounded"><div id="barMap" class="h-2 rounded bg-amber-400" style="width:0"></div></div></div>
-            <div class="flex items-center gap-2 mt-1"><span class="text-[11px] w-12 text-slate-400">story</span>
+            <div class="flex items-center gap-2 mt-1"><span class="text-[11px] w-10 text-sky-300">story</span>
               <div class="flex-1 h-2 bg-slate-800 rounded"><div id="barStory" class="h-2 rounded bg-sky-400" style="width:0"></div></div></div>
-            <canvas id="spark" width="300" height="44" class="w-full mt-2"></canvas>
           </div>
-          <ul id="goalList" class="col-span-2 text-xs mono text-slate-300 space-y-0.5"></ul>
+          <canvas id="spark" width="300" height="36" class="w-full" title="intensity, last 60 s"></canvas>
         </div>
-        <!-- story log -->
-        <div class="rounded-lg border border-slate-800 bg-slate-900/50">
-          <div class="px-3 py-2 text-xs text-slate-400 border-b border-slate-800">Story (as the director knew it), newest first</div>
-          <ul id="storyLog" class="max-h-[260px] overflow-y-auto text-sm divide-y divide-slate-800"></ul>
-        </div>
-      </aside>
-    </div>
-
-    <!-- Row 2: the pitch map + triggers and decisions -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
-      <section class="lg:col-span-7 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
-        <div class="flex justify-between text-xs text-slate-400 mb-2">
-          <span>PITCH MAP · players · <span class="text-yellow-300">ball</span> + trail (hollow = remembered, not seen) · coloured area = what the live camera shows</span>
-          <span class="mono" id="mapInfo"></span>
-        </div>
-        <canvas id="pitch" width="1050" height="680" class="w-full rounded"></canvas>
-      </section>
-      <section class="lg:col-span-5 space-y-3">
-        <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50 space-y-1 text-sm">
-          <div class="flex justify-between"><span class="text-slate-400">Director state</span><span id="nState" class="mono">–</span></div>
-          <div class="flex justify-between gap-3"><span class="text-slate-400 shrink-0">Reason</span><span id="nReason" class="mono text-xs text-right">–</span></div>
-          <div class="flex justify-between"><span class="text-slate-400">Ball on the map</span><span id="nBall" class="mono">–</span></div>
-          <div class="flex justify-between"><span class="text-slate-400">Zone</span><span id="nZone" class="mono">–</span></div>
-          <div class="text-xs text-slate-500 pt-1" id="runInfo"></div>
-        </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900/50">
-          <div class="px-3 py-2 text-xs text-slate-400 border-b border-slate-800">Triggers + director decisions</div>
-          <ul id="cutLog" class="max-h-[330px] overflow-y-auto text-xs mono divide-y divide-slate-800"></ul>
-        </div>
-      </section>
-    </div>
-
-    <!-- Row 3: timeline -->
-    <div class="rounded-lg border border-slate-800 p-3 bg-slate-900/50">
-      <div class="flex justify-between text-xs text-slate-400 mb-1">
-        <span>Timeline: live camera · story events (top) · ground truth (bottom) · click to jump</span>
-        <span class="mono" id="clock">00:00 / 00:00</span>
+        <div class="flex flex-wrap gap-1 mt-2" id="chips"></div>
       </div>
-      <div class="relative h-5" id="storyMarks"></div>
-      <div class="relative h-6 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
-        <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
-      </div>
-      <div class="relative h-5" id="truthMarks"></div>
-      <div id="legend" class="flex flex-wrap gap-3 text-xs text-slate-400 mt-1"></div>
-    </div>
 
-    <details id="report" class="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs">
-      <summary class="cursor-pointer text-slate-400">Evaluation report</summary>
-      <pre class="mono mt-2 text-slate-300" id="reportText"></pre>
-    </details>
+      <div class="grid grid-cols-3 gap-2 shrink-0">
+        <div class="col-span-2 rounded-lg border border-slate-800 bg-slate-900/60 p-1.5">
+          <canvas id="pitch" width="840" height="544" class="w-full rounded"></canvas>
+          <div class="text-[10px] text-slate-500 px-1">players · <span class="text-yellow-300">ball</span> + trail (hollow = remembered) · coloured = what the live camera sees · red box = ball in the box</div>
+        </div>
+        <div class="flex flex-col gap-2" id="goalTiles"></div>
+      </div>
+
+      <div class="rounded-lg border border-slate-800 bg-slate-900/60 flex-1 min-h-0 flex flex-col">
+        <div class="flex gap-3 px-3 text-xs border-b border-slate-800 shrink-0">
+          <button class="tab on py-1.5 border-b-2 border-transparent text-slate-400" data-tab="story">Story</button>
+          <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="decisions">Decisions + triggers</button>
+          <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="goalai">Goal AI</button>
+        </div>
+        <ul id="logList" class="flex-1 overflow-y-auto text-xs divide-y divide-slate-800"></ul>
+      </div>
+    </section>
   </main>
+
+  <!-- timeline -->
+  <footer id="foot" class="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1.5 hidden">
+    <div class="relative h-4" id="storyMarks"></div>
+    <div class="relative h-4 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
+      <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
+    </div>
+    <div class="relative h-4" id="truthMarks"></div>
+    <div class="flex justify-between text-[11px] text-slate-400"><span id="legend" class="flex gap-3"></span><span class="mono" id="clock"></span></div>
+  </footer>
+</div>
+
+<!-- report overlay -->
+<div id="reportBox" class="hidden fixed inset-0 bg-black/70 z-50 p-8" onclick="this.classList.add('hidden')">
+  <pre id="reportText" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-4 max-w-4xl mx-auto max-h-full overflow-auto whitespace-pre-wrap"></pre>
 </div>
 
 <script>
 const CAM_COLORS = {1: "#38bdf8", 2: "#a78bfa", 3: "#f472b6", 4: "#4ade80", 5: "#fbbf24"};
 const ICONS = {goal: "⚽", shot: "🎯", save: "🧤", chance: "💥", foul: "✋", card_yellow: "🟨", card_red: "🟥",
                corner: "🚩", free_kick: "🦶", celebration: "🎉", penalty: "⚠️", kickoff: "▶️"};
-const TRIGGER_TEXT = {BOX_ENTRY: "ball into the box", BOX_EXIT: "ball out of the box", BALL_OUT: "ball out of play",
-                      GOAL_LINE: "ball over the goal line between the posts", CUT: "cut", REACTION: "reaction",
-                      REACTION_END: "back to play"};
-let data = null, runs = [], shown = [];
+const MAP_EVENTS = {BOX_ENTRY: "ball into the box", BOX_EXIT: "ball out of the box", BALL_OUT: "ball out of play",
+                    GOAL_LINE: "ball over the goal line between the posts"};
+let data = null, runs = [], shown = [], tab = "story";
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 const camName = (c) => data.cams.cams[c - 1].name;
+const zoneText = (z) => ({left_box: "left penalty box", right_box: "right penalty box", left_third: "left third",
+                          right_third: "right third", middle: "middle", out: "out of play"}[z] || "unknown");
 
 async function loadRuns() {
   runs = await (await fetch("/studio/runs")).json();
   $("empty").classList.toggle("hidden", runs.length > 0);
   $("runSelect").innerHTML = runs.map((r, i) =>
-    `<option value="${i}">${r.segment} · ${r.run_id} · ${r.summary.cuts} cuts${r.has_report ? " · report" : ""}</option>`).join("");
-  if (runs.length) loadRun(0);
+    `<option value="${i}">${r.segment} · ${r.run_id}${r.has_map ? "" : " · old (no map)"}</option>`).join("");
+  const first = Math.max(0, runs.findIndex(r => r.has_map));
+  $("runSelect").value = first;
+  if (runs.length) loadRun(first);
 }
 
 async function loadRun(index) {
   const r = runs[index];
   data = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
-  $("main").classList.remove("hidden");
+  $("main").classList.remove("hidden"); $("foot").classList.remove("hidden");
   $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
   shown = data.cams.cams.filter(c => data.on_air_cams.includes(c.cam));
-  $("tiles").className = `grid gap-2 grid-cols-${shown.length}`;
+  $("tiles").className = `grid gap-2 shrink-0 grid-cols-${shown.length}`;
   $("tiles").innerHTML = shown.map(c => `
     <div class="tile rounded overflow-hidden bg-black" id="tile${c.cam}">
       <div class="relative aspect-video">
-        <video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full"
-               src="/studio/cam/${r.segment}/${r.run_id}/${c.cam}"></video>
+        <video id="cam${c.cam}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${r.segment}/${r.run_id}/${c.cam}"></video>
         <canvas id="ov${c.cam}" width="640" height="360" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
-        <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded"
-              style="color:${CAM_COLORS[c.cam]}">${c.cam} ${c.name}</span>
+        <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" style="color:${CAM_COLORS[c.cam]}">${c.name}</span>
+        <span class="absolute bottom-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" id="card${c.cam}"></span>
       </div>
-      <div class="p-1.5 text-[11px] mono space-y-0.5 bg-slate-900" id="card${c.cam}">–</div>
     </div>`).join("");
-  $("runInfo").textContent = `source: ${data.info.source} · story: ${data.info.story_mode || "none"} · ` +
-    `${data.info.summary.cuts} cuts · avg shot ${data.info.summary.average_shot_s}s`;
+  $("goalTiles").innerHTML = (data.goal_cams || []).map(g => `
+    <div class="tile rounded overflow-hidden bg-black" id="gtile${g.side}">
+      <div class="relative aspect-video">
+        <video id="gcam${g.side}" muted playsinline preload="auto" class="w-full h-full" src="/studio/cam/${r.segment}/${r.run_id}/${g.cam}"></video>
+        <span class="absolute top-1 left-1 text-[10px] mono bg-black/70 px-1 rounded">${g.name}</span>
+        <span class="absolute bottom-1 left-1 text-[10px] mono bg-black/70 px-1 rounded" id="gnote${g.side}">AI eyes</span>
+      </div>
+    </div>`).join("") || `<div class="text-[11px] text-slate-500 p-2">No goal cameras in this run.</div>`;
   $("reportText").textContent = data.report || "No report yet: venv/bin/python -m studio.evaluate --segment " + r.segment;
-  lastKnown = lastLog = -1;
+  lastKey = "";
   drawTimeline();
 }
 
@@ -193,117 +185,93 @@ function drawTimeline() {
     const end = i + 1 < data.timeline.length ? data.timeline[i + 1].t : D;
     const div = document.createElement("div");
     div.className = "seg absolute top-0 bottom-0";
-    div.style.left = `${100 * s.t / D}%`;
-    div.style.width = `${100 * (end - s.t) / D}%`;
-    div.style.background = CAM_COLORS[s.cam];
-    div.style.opacity = s.state === "REACTION" ? "1" : ".55";
-    div.title = `${camName(s.cam)} ${s.state} @ ${fmt(s.t)}: ${s.reason}`;
+    Object.assign(div.style, {left: `${100 * s.t / D}%`, width: `${100 * (end - s.t) / D}%`,
+      background: CAM_COLORS[s.cam], opacity: s.state === "REACTION" ? "1" : ".55"});
+    div.title = `${camName(s.cam)} ${s.state} @ ${fmt(s.t)}`;
     tl.appendChild(div);
   });
   $("legend").innerHTML = shown.map(c =>
-    `<span><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.cam} ${c.name}</span>`).join("")
-    + `<span class="text-slate-500">(bright = REACTION)</span>`;
+    `<span><span class="inline-block w-2 h-2 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${c.name}</span>`).join("")
+    + `<span class="text-slate-500">bright = reaction · click to jump</span>`;
   drawTruth();
 }
-
 function drawTruth() {
-  const box = $("truthMarks");
-  box.innerHTML = "";
+  const box = $("truthMarks"); box.innerHTML = "";
   if (!$("truthToggle").checked) return;
-  data.truth.forEach(e => {
+  data.truth.filter(e => e.label === "GOAL").forEach(e => {
     const m = document.createElement("span");
-    m.className = "mark";
-    m.style.left = `${100 * e.t / data.duration}%`;
-    m.innerHTML = `${e.label === "GOAL" ? "⚽" : "·"}<span class="tip">real ${e.label} ${fmt(e.t)} (${e.team})</span>`;
+    m.className = "mark"; m.style.left = `${100 * e.t / data.duration}%`;
+    m.innerHTML = `⚽<span class="tip">real goal ${fmt(e.t)}</span>`;
     box.appendChild(m);
   });
 }
 
 // ---------------------------------------------------------------- pitch map
-const P = {w: 1050, h: 680, m: 25};          // canvas size, margin (px); pitch 105 x 68 m
+const P = {w: 840, h: 544, m: 16};
 const px = (x) => P.m + (x + 52.5) / 105 * (P.w - 2 * P.m);
-const py = (y) => P.m + (y + 34) / 68 * (P.h - 2 * P.m);   // +y = near touchline = bottom, as the camera sees it
-
-function mapRow(t) {
+const py = (y) => P.m + (y + 34) / 68 * (P.h - 2 * P.m);
+function mapIndex(t) {
   const rows = data.pitch.rows;
-  if (!rows.length) return null;
+  if (!rows.length || rows[0].t > t) return null;
   let lo = 0, hi = rows.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (rows[mid].t <= t) lo = mid; else hi = mid - 1; }
-  return rows[lo].t <= t ? lo : null;
+  return lo;
 }
-
 function drawPitch(t, liveCam) {
   const g = $("pitch").getContext("2d");
   g.fillStyle = "#14532d"; g.fillRect(0, 0, P.w, P.h);
-  const k = mapRow(t), row = k === null ? null : data.pitch.rows[k];
-  // danger: ball in a box -> the box glows
+  const k = mapIndex(t), row = k === null ? null : data.pitch.rows[k];
   if (row && row.ball && /box/.test(row.zone)) {
-    g.fillStyle = "rgba(239,68,68,.25)";
     const left = row.zone === "left_box";
+    g.fillStyle = "rgba(239,68,68,.3)";
     g.fillRect(left ? px(-52.5) : px(36), py(-20.16), px(-36) - px(-52.5), py(20.16) - py(-20.16));
   }
-  // what the cameras see (the live one stronger)
-  const cov = (c) => c === data.pitch.close_cam
-    ? data.pitch.close_coverage[String(Math.floor(t) * 25)] : data.pitch.coverage[String(c)];   // close-up: once per second
-  shown.forEach(c => {
-    const poly = cov(c.cam);
-    if (!poly || poly.length < 3) return;
+  const poly = liveCam === data.pitch.close_cam ? data.pitch.close_coverage[String(Math.floor(t) * 25)]
+                                                : data.pitch.coverage[String(liveCam)];
+  if (poly && poly.length > 2) {
     g.beginPath(); poly.forEach(([x, y], i) => i ? g.lineTo(px(x), py(y)) : g.moveTo(px(x), py(y))); g.closePath();
-    g.fillStyle = CAM_COLORS[c.cam] + (c.cam === liveCam ? "55" : "10"); g.fill();
-    g.strokeStyle = CAM_COLORS[c.cam] + (c.cam === liveCam ? "ff" : "40"); g.lineWidth = c.cam === liveCam ? 3 : 1; g.stroke();
-  });
-  // pitch lines
-  g.strokeStyle = "rgba(255,255,255,.75)"; g.lineWidth = 2;
+    g.fillStyle = CAM_COLORS[liveCam] + "40"; g.fill(); g.strokeStyle = CAM_COLORS[liveCam]; g.lineWidth = 2; g.stroke();
+  }
+  g.strokeStyle = "rgba(255,255,255,.75)"; g.lineWidth = 1.5;
   g.strokeRect(px(-52.5), py(-34), px(52.5) - px(-52.5), py(34) - py(-34));
   g.beginPath(); g.moveTo(px(0), py(-34)); g.lineTo(px(0), py(34)); g.stroke();
   g.beginPath(); g.ellipse(px(0), py(0), px(9.15) - px(0), py(9.15) - py(0), 0, 0, 7); g.stroke();
-  [[-52.5, 16.5, 20.16], [-52.5, 5.5, 9.16]].forEach(([x0, d, hw]) => {
-    g.strokeRect(px(x0), py(-hw), px(x0 + d) - px(x0), py(hw) - py(-hw));
-    g.strokeRect(px(-x0 - d), py(-hw), px(-x0) - px(-x0 - d), py(hw) - py(-hw));
+  [[16.5, 20.16], [5.5, 9.16]].forEach(([d, hw]) => {
+    g.strokeRect(px(-52.5), py(-hw), px(-52.5 + d) - px(-52.5), py(hw) - py(-hw));
+    g.strokeRect(px(52.5 - d), py(-hw), px(52.5) - px(52.5 - d), py(hw) - py(-hw));
   });
-  g.lineWidth = 5; g.strokeStyle = "#fff";
-  g.beginPath(); g.moveTo(px(-52.5), py(-3.66)); g.lineTo(px(-52.5), py(3.66)); g.stroke();
-  g.beginPath(); g.moveTo(px(52.5), py(-3.66)); g.lineTo(px(52.5), py(3.66)); g.stroke();
-  if (!row) { $("mapInfo").textContent = "no map data for this run"; return; }
-  // players
+  g.lineWidth = 4; g.strokeStyle = "#fff";
+  [-52.5, 52.5].forEach(x => { g.beginPath(); g.moveTo(px(x), py(-3.66)); g.lineTo(px(x), py(3.66)); g.stroke(); });
+  if (!row) return null;
   g.fillStyle = "rgba(226,232,240,.9)";
-  row.players.forEach(p => { if (p) { g.beginPath(); g.arc(px(p[0]), py(p[1]), 6, 0, 7); g.fill(); } });
-  // ball trail (last 6 s) + ball
+  row.players.forEach(p => { if (p) { g.beginPath(); g.arc(px(p[0]), py(p[1]), 4.5, 0, 7); g.fill(); } });
   const trail = [];
   for (let j = k; j >= 0 && data.pitch.rows[j].t >= t - 6; j--) if (data.pitch.rows[j].ball) trail.push(data.pitch.rows[j]);
   trail.reverse().forEach((r, i) => {
     g.fillStyle = `rgba(250,204,21,${0.15 + 0.6 * i / Math.max(1, trail.length)})`;
-    g.beginPath(); g.arc(px(r.ball[0]), py(r.ball[1]), 4, 0, 7); g.fill();
+    g.beginPath(); g.arc(px(r.ball[0]), py(r.ball[1]), 3, 0, 7); g.fill();
   });
   if (row.ball) {
-    g.lineWidth = 3; g.strokeStyle = "#facc15"; g.fillStyle = "#facc15";
-    g.beginPath(); g.arc(px(row.ball[0]), py(row.ball[1]), 10, 0, 7);
+    g.lineWidth = 3; g.strokeStyle = g.fillStyle = "#facc15";
+    g.beginPath(); g.arc(px(row.ball[0]), py(row.ball[1]), 8, 0, 7);
     row.status === "seen" ? g.fill() : g.stroke();
   }
-  $("mapInfo").textContent = `${row.players.length} players · ball ${row.status}` + (row.ball ? ` · ${row.speed} m/s` : "");
-  $("nBall").textContent = row.ball ? `${row.status} (${row.ball[0].toFixed(0)} m, ${row.ball[1].toFixed(0)} m)` +
-    (row.status === "remembered" ? `, last seen ${row.age}s ago` : "") : "not known";
-  $("nZone").textContent = row.zone.replace("_", " ") + (row.in_box ? ` · ${row.in_box} players in a box` : "");
   $("barMap").style.width = `${Math.round(100 * row.intensity)}%`;
+  return row;
 }
 
-// ---------------------------------------------------------------- intensity sparkline (last 60 s)
+// ---------------------------------------------------------------- small helpers drawn every frame
 function drawSpark(t) {
-  const g = $("spark").getContext("2d"), W = 300, H = 44;
+  const g = $("spark").getContext("2d"), W = 300, H = 36;
   g.clearRect(0, 0, W, H);
-  const line = (pts, color) => {
-    g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
-    pts.forEach(([x, v], i) => { const X = W * (x - (t - 60)) / 60, Y = H - 2 - (H - 4) * v;
-      i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
-    g.stroke();
-  };
+  const line = (pts, color) => { g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
+    pts.forEach(([x, v], i) => { const X = W * (x - (t - 60)) / 60, Y = H - 2 - (H - 4) * v; i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
+    g.stroke(); };
   line(data.pitch.rows.filter(r => r.t > t - 60 && r.t <= t).map(r => [r.t, r.intensity]), "#fbbf24");
   const story = data.intensity.filter(([x]) => x > t - 60 && x <= t);
   line(story.map(([x, v]) => [x, v / 100]), "#38bdf8");
   if (story.length) $("barStory").style.width = `${story[story.length - 1][1]}%`;
 }
-
-// ---------------------------------------------------------------- tracking boxes on the camera tiles
 function drawOverlays(t) {
   const o = data.overlays;
   if (!o || !o.step) return;
@@ -311,44 +279,63 @@ function drawOverlays(t) {
   shown.forEach(c => {
     const cv = $("ov" + c.cam), g = cv.getContext("2d"), item = frame[String(c.cam)] || {};
     g.clearRect(0, 0, cv.width, cv.height);
-    g.lineWidth = 1.5; g.strokeStyle = "rgba(56,189,248,.9)";
+    g.lineWidth = 1.5; g.strokeStyle = "rgba(56,189,248,.9)"; g.fillStyle = "rgba(56,189,248,.9)";
     (item.players || []).forEach(([x1, y1, x2, y2]) => g.strokeRect(x1 * cv.width, y1 * cv.height, (x2 - x1) * cv.width, (y2 - y1) * cv.height));
-    g.fillStyle = "rgba(56,189,248,.9)";
     (item.dots || []).forEach(([x, y]) => { g.beginPath(); g.arc(x * cv.width, y * cv.height, 3, 0, 7); g.fill(); });
-    if (item.ball) {
-      g.strokeStyle = "#4ade80"; g.lineWidth = 3;
-      g.beginPath(); g.arc(item.ball[0] * cv.width, item.ball[1] * cv.height, 9, 0, 7); g.stroke();
-    }
+    if (item.ball) { g.strokeStyle = "#4ade80"; g.lineWidth = 3; g.beginPath(); g.arc(item.ball[0] * cv.width, item.ball[1] * cv.height, 9, 0, 7); g.stroke(); }
   });
 }
+function goalAiAt(t) {
+  // the goal watcher's latest look that had ARRIVED by t, and whether a look is in progress at t
+  const looks = data.goal_looks || [];
+  let done = null, asking = null;
+  looks.forEach(l => { if (l.logged_at <= t) done = l; else if (l.t <= t) asking = l; });
+  return {done, asking};
+}
 
-// ---------------------------------------------------------------- goals + "now"
-function drawScore(t, seg) {
-  const goals = data.story.events.filter(e => e.type === "goal" && e.known_at <= t);
-  $("aiGoals").textContent = goals.length;
-  $("goalList").innerHTML = goals.map(e =>
-    `<li>⚽ goal at ${fmt(e.event_time)} · noticed ${(e.known_at - e.event_time).toFixed(0)} s later · ${(e.confidence * 100).toFixed(0)}% sure</li>`).join("");
-  const real = data.truth.filter(e => e.label === "GOAL");
-  $("truthGoals").textContent = $("truthToggle").checked ? `real goals so far: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
-  const k = mapRow(t), row = k === null ? null : data.pitch.rows[k];
-  const where = row && row.ball ? ` The ball is ${row.status === "seen" ? "" : "probably "}in the ${row.zone.replace("_", " ")}.` : "";
-  let now;
-  if (seg.state === "REACTION") now = `Reaction: showing the CLOSE-up (${seg.reason.replace(/^CUT: /, "").replace(/^reaction: /, "")}).`;
-  else if (/unusable/.test(seg.reason)) now = `A camera's picture went bad, so the director left it. Live: ${camName(seg.cam)}.`;
-  else now = `Following play on ${camName(seg.cam)}.${where}`;
-  $("nowText").textContent = now;
-  const ups = data.story.updates.filter(u => u.logged_at <= t);
-  $("storyNow").textContent = ups.length ? `“${ups[ups.length - 1].narration}”` : "";
+// ---------------------------------------------------------------- the log (tabs)
+function logItems(t) {
+  if (tab === "story") {
+    return [
+      ...data.story.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
+        `<span class="text-slate-500 mono">${fmt(u.window_end)} +${(u.logged_at - u.window_end).toFixed(1)}s</span> ` +
+        `<span class="text-sky-300">${u.phase}</span> ${u.narration}`})),
+      ...data.story.events.filter(e => e.known_at <= t && ICONS[e.type]).map(e => ({at: e.known_at, html:
+        `<span class="text-slate-500 mono">${fmt(e.event_time)} +${(e.known_at - e.event_time).toFixed(1)}s</span> ` +
+        `<b>${ICONS[e.type]} ${e.type}</b> <span class="text-slate-500">${(e.confidence * 100).toFixed(0)}% ${e.sources.join("+")}</span>`})),
+    ];
+  }
+  if (tab === "goalai") {
+    return (data.goal_looks || []).filter(l => l.logged_at <= t).map(l => ({at: l.logged_at, html:
+      `<span class="text-slate-500 mono">${fmt(l.t)} +${(l.logged_at - l.t).toFixed(1)}s</span> ` +
+      `<b class="${l.goal ? "text-yellow-300" : l.celebration || l.shot ? "text-amber-200" : "text-slate-400"}">` +
+      `${l.goal ? "⚽ GOAL" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal"}</b> ${l.side} goal · ${l.note || ""}`}));
+  }
+  return data.director_events.filter(e => e.time <= t).map(e => {
+    const isMap = e.type in MAP_EVENTS;
+    const color = e.type === "GOAL_LINE" ? "text-yellow-300" : isMap ? "text-amber-200" : e.type.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
+    return {at: e.time, html: `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b class="${color}">${isMap ? "MAP" : e.type}</b> ` +
+      (isMap ? MAP_EVENTS[e.type] : e.message.replace(/cam(\d)/g, (_, c) => camName(+c)))};
+  });
+}
+let lastKey = "";
+function drawLog(t) {
+  const items = logItems(t).sort((a, b) => b.at - a.at);
+  const key = tab + items.length;
+  if (key === lastKey) return;
+  const fresh = lastKey.startsWith(tab) && items.length > +lastKey.slice(tab.length);
+  lastKey = key;
+  $("logList").innerHTML = items.map((i, n) => `<li class="px-3 py-1 ${n === 0 && fresh ? "flash" : ""}">${i.html}</li>`).join("")
+    || `<li class="px-3 py-2 text-slate-500">nothing yet</li>`;
 }
 
 // ---------------------------------------------------------------- main loop
-let lastKnown = -1, lastLog = -1;
 function render() {
   requestAnimationFrame(render);
   if (!data) return;
   const p = $("program"), t = p.currentTime;
-  shown.forEach(c => {
-    const v = $("cam" + c.cam);
+  const videos = [...shown.map(c => $("cam" + c.cam)), ...(data.goal_cams || []).map(g => $("gcam" + g.side))];
+  videos.forEach(v => {
     if (!v) return;
     if (Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
     if (p.paused && !v.paused) v.pause();
@@ -359,70 +346,77 @@ function render() {
 
   let seg = data.timeline[0];
   for (const s of data.timeline) { if (s.t <= t) seg = s; else break; }
-  $("stateBadge").textContent = `${camName(seg.cam)} · ${seg.state}`;
-  $("stateBadge").className = `mono text-xs px-2 py-0.5 rounded ${seg.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
-  $("nState").textContent = seg.state;
-  $("nReason").textContent = seg.reason;
+  $("stateBadge").textContent = `${camName(seg.cam)} · ${seg.state === "REACTION" ? "REACTION" : "following play"}`;
+  $("stateBadge").className = `mono text-[11px] px-2 py-0.5 rounded ${seg.state === "REACTION" ? "bg-amber-500 text-black" : "bg-black/70"}`;
   shown.forEach(c => $("tile" + c.cam).classList.toggle("live", c.cam === seg.cam));
   drawOverlays(t);
-  drawPitch(t, seg.cam);
+  const row = drawPitch(t, seg.cam);
   drawSpark(t);
-  drawScore(t, seg);
 
   const cards = data.cards[String(Math.floor(t))] || [];
   cards.filter(c => data.on_air_cams.includes(c.cam)).forEach(c => {
-    const q = c.quality;
-    $("tile" + c.cam).classList.toggle("bad", !q.usable);
-    $("card" + c.cam).innerHTML =
-      `<div>${c.shot_type.replace("_", "-")} · ${c.players} players</div>` +
-      `<div>ball ${c.ball ? `<span class="${c.ball.status === "detected" ? "text-green-400" : "text-orange-400"}">${c.ball.status === "detected" ? "seen" : "remembered"}</span>` : "–"}` +
-      ` · play ${c.action_in_view ? "✓" : "–"}</div>` +
-      `<div class="${q.usable ? "text-slate-400" : "text-red-400 font-bold"}">${q.usable ? "picture OK" : "BAD picture"}</div>`;
+    $("tile" + c.cam).classList.toggle("bad", !c.quality.usable);
+    $("card" + c.cam).innerHTML = !c.quality.usable ? `<span class="text-red-400 font-bold">BAD PICTURE</span>`
+      : `${c.players} pl${c.ball ? ` · <span class="${c.ball.status === "detected" ? "text-green-400" : "text-orange-300"}">ball</span>` : ""}`;
   });
 
-  // story items known by now
-  const known = data.story.updates.filter(u => u.logged_at <= t).length + 1000 * data.story.events.filter(e => e.known_at <= t).length;
-  if (known !== lastKnown) {
-    lastKnown = known;
-    const items = [
-      ...data.story.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
-        `<span class="text-slate-500 mono text-xs">${fmt(u.window_end)} +${(u.logged_at - u.window_end).toFixed(1)}s</span> ` +
-        `<span class="text-sky-300 text-xs">${u.phase}</span> ${u.narration}`})),
-      ...data.story.events.filter(e => e.known_at <= t && ICONS[e.type]).map(e => ({at: e.known_at, html:
-        `<span class="text-slate-500 mono text-xs">${fmt(e.event_time)} +${(e.known_at - e.event_time).toFixed(1)}s</span> ` +
-        `<b>${ICONS[e.type]} ${e.type}</b> <span class="text-slate-500 text-xs">${(e.confidence * 100).toFixed(0)}% ${e.sources.join("+")}</span>`})),
-    ].sort((a, b) => b.at - a.at);
-    $("storyLog").innerHTML = items.map(i => `<li class="px-3 py-1.5">${i.html}</li>`).join("");
-    const marks = $("storyMarks");
-    marks.innerHTML = "";
-    data.story.events.filter(e => e.known_at <= t && ICONS[e.type]).forEach(e => {
+  // goal AI: which goal camera it is checking, and its last answer
+  const ai = goalAiAt(t);
+  (data.goal_cams || []).forEach(g => {
+    const asking = ai.asking && ai.asking.side === g.side;
+    $("gtile" + g.side).classList.toggle("looking", !!asking);
+    const last = (data.goal_looks || []).filter(l => l.side === g.side && l.logged_at <= t).pop();
+    $("gnote" + g.side).innerHTML = asking ? `<span class="text-yellow-300">AI checking…</span>`
+      : last ? (last.goal ? `<span class="text-yellow-300">⚽ goal!</span>` : `last check: ${last.shot ? "shot" : "no goal"}`) : "AI eyes";
+  });
+
+  // goals + NOW
+  const goals = data.story.events.filter(e => e.type === "goal" && e.known_at <= t);
+  const goalTimes = []; goals.sort((a, b) => a.event_time - b.event_time).forEach(e => {
+    if (!goalTimes.length || e.event_time - goalTimes[goalTimes.length - 1] > 30) goalTimes.push(e.event_time); });
+  $("aiGoals").textContent = goalTimes.length;
+  const real = data.truth.filter(e => e.label === "GOAL");
+  $("truthGoals").textContent = $("truthToggle").checked ? `real: ${real.filter(e => e.t <= t).length} of ${real.length}` : "";
+  let now;
+  if (seg.state === "REACTION") now = `Reaction: showing the close-up (${seg.reason.replace(/^CUT: /, "").replace(/^reaction: /, "")}).`;
+  else if (/unusable/.test(seg.reason)) now = `A camera's picture went bad, so the director left it. Live: ${camName(seg.cam)}.`;
+  else now = `Following play on ${camName(seg.cam)}` + (row && row.ball ? ` · the ball is ${row.status === "seen" ? "" : "probably "}in the ${zoneText(row.zone)}.` : ".");
+  $("nowText").textContent = now;
+  const ups = data.story.updates.filter(u => u.logged_at <= t);
+  $("storyNow").textContent = ups.length ? `“${ups[ups.length - 1].narration}”` : "";
+  $("chips").innerHTML = [
+    row ? `<span class="chip">ball: ${row.ball ? (row.status === "seen" ? "seen" : `remembered ${row.age}s`) : "not known"}</span>` : "",
+    row ? `<span class="chip">${row.players.length} players on the map</span>` : "",
+    row && row.in_box ? `<span class="chip">${row.in_box} in a box</span>` : "",
+    ai.asking ? `<span class="chip text-yellow-300">AI checking the ${ai.asking.side} goal</span>` : "",
+    `<span class="chip text-slate-400">${data.info.summary.cuts} cuts · avg shot ${data.info.summary.average_shot_s}s</span>`,
+  ].join("");
+  drawLog(t);
+
+  // story markers on the timeline (only once known)
+  const known = data.story.events.filter(e => e.known_at <= t && ICONS[e.type]);
+  if ($("storyMarks").childElementCount !== known.length) {
+    $("storyMarks").innerHTML = "";
+    known.forEach(e => {
       const m = document.createElement("span");
-      m.className = "mark";
-      m.style.left = `${100 * e.event_time / data.duration}%`;
+      m.className = "mark"; m.style.left = `${100 * e.event_time / data.duration}%`;
       m.innerHTML = `${ICONS[e.type]}<span class="tip">${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)}</span>`;
-      marks.appendChild(m);
+      $("storyMarks").appendChild(m);
     });
-  }
-  // triggers (map) + decisions (director), newest first
-  const done = data.director_events.filter(e => e.time <= t);
-  if (done.length !== lastLog) {
-    const fresh = done.length > lastLog && lastLog >= 0;
-    lastLog = done.length;
-    $("cutLog").innerHTML = done.slice().reverse().map((e, i) => {
-      const map = ["BOX_ENTRY", "BOX_EXIT", "BALL_OUT", "GOAL_LINE"].includes(e.type);
-      const color = e.type === "GOAL_LINE" ? "text-yellow-300" : map ? "text-amber-200" : e.type.startsWith("REACTION") ? "text-amber-400" : "text-slate-200";
-      const text = map ? TRIGGER_TEXT[e.type] + (e.message.match(/\((.*)\)/) ? ` (${e.message.match(/\((.*)\)/)[1].replace("_", " ")})` : "") : e.message;
-      return `<li class="px-3 py-1 ${i === 0 && fresh ? "flash" : ""}"><span class="text-slate-500">${fmt(e.time)}</span> <b class="${color}">${map ? "MAP" : e.type}</b> ${text}</li>`;
-    }).join("");
   }
 }
 
 $("loadBtn").onclick = () => loadRun(+$("runSelect").value);
 $("truthToggle").onchange = () => data && drawTruth();
+$("reportBtn").onclick = () => $("reportBox").classList.remove("hidden");
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+  tab = b.dataset.tab; lastKey = "";
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
+});
 $("timeline").onclick = (ev) => {
   const box = $("timeline").getBoundingClientRect();
   $("program").currentTime = data.duration * (ev.clientX - box.left) / box.width;
-  lastKnown = lastLog = -1;
+  lastKey = "";
 };
 loadRuns();
 requestAnimationFrame(render);

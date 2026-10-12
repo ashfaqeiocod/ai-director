@@ -139,8 +139,10 @@ class DirectorV2:
         near = lambda x: abs(x - goal["event_time"]) <= c["goal_corroborate_s"]   # noqa: E731
         looks = sum(1 for u in updates if near(u["window_end"])
                     and (u["phase"] in ("goal", "celebration") or any(e["type"] == "goal" for e in u["events"])))
-        looks += sum(1 for e in events if "specialist" in e["sources"] and e["type"] in ("goal", "shot")
-                     and near(e["event_time"]))
+        # A shot seen just before (by the specialist, or by the goal camera AI) is independent evidence too.
+        looks += sum(1 for e in events if near(e["event_time"]) and (
+            ("specialist" in e["sources"] and e["type"] in ("goal", "shot"))
+            or ("goalcam" in e["sources"] and e["type"] == "shot")))
         return looks >= c["goal_min_looks"]
 
     def _react(self, i: int, t: float, scores: list[float], usable: list[bool], can_cut: bool,

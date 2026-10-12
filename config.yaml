@@ -220,6 +220,9 @@ studio:
       cam2: { name: "CENTRE", shot_type: "medium", rect: [1328, 60, 1440, 810] }
       cam3: { name: "RIGHT", shot_type: "medium", rect: [2656, 60, 1440, 810] }
       cam4: { name: "WIDE", shot_type: "wide", rect: [0, 0, 4096, 1080] }
+    goal: # cam6/cam7: fixed sharp views on each goal (measured on the picture once, like setting up a camera)
+      cam6: { name: "GOAL LEFT", side: "left", rect: [470, 190, 700, 394] }
+      cam7: { name: "GOAL RIGHT", side: "right", rect: [2950, 150, 700, 394] }
     close: # cam5: the virtual operator
       name: "CLOSE"
       shot_type: "close_up"
@@ -230,6 +233,20 @@ studio:
       group_radius_m: 15 # oracle aim: players within this many metres count as one group
       group_radius_px: 350 # detector aim (no ball seen): players within this many panorama pixels = one group
   detect_fps: 5 # MVP 1 detector on cams 1-3 this many times per second (M1: ~0.3 s per cam per frame)
+  goalwatch: # studio.goalwatch: Gemini looks at a goal camera when play is near that goal
+    near_goal_m: 27 # ball (or the main group) within this many metres of a goal line -> watch that goal
+    group_radius_m: 15 # main group of players = biggest group within this radius (when the ball is not known)
+    window_s: 6 # each look = the goal camera's last N seconds
+    interval_s: 4 # look again at the same goal at most every N s (a box entry / goal-line trigger looks at once)
+    video_height: 720 # sharp: the ball and net are small (360p + LOW detail missed a real goal on dev)
+    video_fps: 8 # frames per second Gemini samples from the clip
+    media_resolution: MEDIA_RESOLUTION_HIGH # LOW (MVP 2's setting) blurs the ball away
+    aftermath_priority_s: 5 # no routine look when a follow-up is due within this many seconds
+    aftermath_s: [7, 10] # after a shot or save, look again at [shot+1 .. shot+7] and [shot+4 .. shot+10]
+    error_pause_s: 5
+    min_goal_confidence: 0.6 # a look saying "goal" counts only above this
+    merge_s: 30 # goal looks within this many seconds are one goal
+    use_in_run: true # studio.run gives the newest goal-watch run to the director
   map: # the pitch map (studio.pitchmap): ball + players on the pitch, zone triggers, map intensity
     drive_ball: true # the map's ball (seen, or remembered for a moment) is the ball for every camera
     remember_s: 3.0 # keep a lost ball this long (dev: half the "no ball on air" moments were < 2 s after a sighting)

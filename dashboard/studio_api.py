@@ -44,13 +44,15 @@ def page() -> str:
 @router.get("/runs")
 def runs() -> list[dict]:
     out = []
-    for path in sorted(_outputs().glob("*/*/run.json"), reverse=True):
+    # Newest first (run ids start with the date and time), whatever the segment.
+    for path in sorted(_outputs().glob("*/*/run.json"), key=lambda p: p.parent.name, reverse=True):
         info = json.loads(path.read_text())
         if not (path.parent / "program.mp4").exists():
             continue
         out.append({"segment": info["segment"], "run_id": info["run_id"], "source": info["source"],
                     "story_mode": info.get("story_mode"), "summary": info["summary"],
-                    "has_report": (path.parent / "report.json").exists()})
+                    "has_report": (path.parent / "report.json").exists(),
+                    "has_map": (path.parent / "map.jsonl").exists()})
     return out
 
 
@@ -83,6 +85,9 @@ def run_data(segment: str, run_id: str) -> dict:
     if info.get("story_run"):
         s = story_run(segment, info["story_run"])
         feed = StoryFeed(s["folder"], s.get("wall_start", 0.0), s["speed"])
+        if info.get("goal_looks"):                 # the goal watcher's answers, exactly as the director had them
+            from studio.goalwatch import load_looks
+            feed.add_goal_looks(load_looks(segment), load_config()["studio"]["goalwatch"])
         story["updates"] = [{k: u[k] for k in ("logged_at", "window_start", "window_end", "phase", "sentiment",
                                                "narration", "intensity", "source")} for u in feed.updates]
         latest: dict[str, dict] = {}
@@ -94,12 +99,24 @@ def run_data(segment: str, run_id: str) -> dict:
              if e["label"] in ("GOAL", "SHOT")]
     report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
     on_air = load_config()["studio"]["director"].get("on_air_cams", [c["cam"] for c in cams["cams"]])
-    return {"info": {k: info[k] for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary")},
+    return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
+                                                "goal_looks")},
             "cams": cams, "fps": meta["fps"], "duration": info["summary"]["seconds"], "timeline": timeline,
             "cards": cards, "director_events": events, "story": story, "truth": truth, "report": report,
             "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams),
             "pitch": pitch_data(folder, segment, info["source"], cams),
-            "intensity": story_intensity(info, segment)}
+            "intensity": story_intensity(info, segment),
+            "goal_cams": cams.get("goal_cams", []), "goal_looks": goal_looks(segment, info)}
+
+
+def goal_looks(segment: str, info: dict) -> list[dict]:
+    """The goal watcher's looks used by this run (studio.goalwatch): when the AI checked which goal, and its answer."""
+    if not info.get("goal_looks"):
+        return []
+    from studio.goalwatch import load_looks
+
+    keep = ("t", "logged_at", "side", "goal", "goal_confidence", "goal_time", "shot", "celebration", "save", "note")
+    return [{k: x[k] for k in keep} for x in load_looks(segment)]
 
 
 def pitch_data(folder: Path, segment: str, source: str, cams: dict) -> dict:
@@ -184,7 +201,7 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
 
     info = json.loads((_run_dir(segment, run_id) / "run.json").read_text())
     aim = "oracle" if info["source"] == "oracle" else "detector"
-    path = path_of(segment, cam, aim)
+    path = path_of(segment, cam, aim)          # cams 1-5, and 6/7 = the goal cameras
     if not path.exists():
         raise HTTPException(404, "camera video not found")
     return FileResponse(path, media_type="video/mp4")

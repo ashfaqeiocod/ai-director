@@ -98,6 +98,11 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     story = None if no_story else story_run(segment, story_run_id, None if story_run_id else f"close_{aim}")
     feed = StoryFeed(story["folder"] if story else None, story.get("wall_start", 0.0) if story else 0.0,
                      story["speed"] if story else 1.0)
+    goal_looks = []
+    if cfg["goalwatch"]["use_in_run"] and not oracle:
+        from studio.goalwatch import load_looks
+        goal_looks = load_looks(segment)
+        feed.add_goal_looks(goal_looks, cfg["goalwatch"])
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{source}" + (f"-{story['mode']}" if story else "-nostory")
     out = ROOT / cfg["outputs_dir"] / segment / run_id
@@ -216,6 +221,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     (out / "run.json").write_text(json.dumps({"segment": segment, "run_id": run_id, "source": source,
                                               "story_run": story["run_id"] if story else None,
                                               "story_mode": story["mode"] if story else None,
+                                              "goal_looks": len(goal_looks),
                                               "config": cfg, "summary": summary}, indent=2))
     print(f"[run] done: {summary}")
     return out

@@ -71,7 +71,12 @@ class Projection:
         if len(pts) < 3:
             return []
         hull = cv2.convexHull(np.array(pts, np.float32)).reshape(-1, 2)
-        return [[round(float(a), 1), round(float(b), 1)] for a, b in hull]
+        # Only the part ON the pitch is interesting (and the lens makes the outer corners unreliable).
+        pitch = np.array([[-HALF_X, -HALF_Y], [HALF_X, -HALF_Y], [HALF_X, HALF_Y], [-HALF_X, HALF_Y]], np.float32)
+        area, clipped = cv2.intersectConvexConvex(hull.astype(np.float32), pitch)
+        if area <= 0 or clipped is None:
+            return []
+        return [[round(float(a), 1), round(float(b), 1)] for a, b in clipped.reshape(-1, 2)]
 
 
 @dataclass

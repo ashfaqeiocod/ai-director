@@ -140,6 +140,17 @@ def story_scores(truth: list[dict], run_info: dict, window: float) -> dict | Non
         e = json.loads(line)
         latest[e["id"]] = e
     found = [e for e in latest.values() if not e.get("rejected")]
+    # The goal watcher's goals (studio.goalwatch), merged like the director sees them.
+    if run_info.get("goal_looks"):
+        from studio.cards import StoryFeed
+        from studio.goalwatch import load_looks
+
+        feed = StoryFeed(None)
+        feed.add_goal_looks(load_looks(run_info["segment"]), load_config()["studio"]["goalwatch"])
+        merged: dict[str, dict] = {}
+        for e in feed.events:
+            merged.setdefault(e["id"], e)
+        found += list(merged.values())
     result = {}
     for ours, theirs in (("goal", "GOAL"), ("shot", "SHOT")):
         f = [e for e in found if e["type"] == ours]
