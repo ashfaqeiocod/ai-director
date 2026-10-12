@@ -259,6 +259,11 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   goal (87.6 s, true ~85 s) but not the goal. Colab specialist (hybrid): no GOAL; many headers/crosses that the
   truth doesn't have (dev truth: 76 passes, 62 dribbles, 1 free kick, 1 goal) -> it doesn't transfer to this camera.
 - Audio: no crowd at this amateur match (YAMNet crowd ~0); "cheer" triggers every 10-30 s, so audio can't flag goals.
+- eval, ORACLE run (annotated players aim + score; Gemini story on the oracle close-up, 109 looks, 0 errors,
+  avg delay 5.0 s): ball on air excl. WIDE 71% (target 80% missed), WIDE 11%, 71 cuts (5.1/min, avg 11.7 s),
+  shortest 3.0 s, degraded cam2 0% on air, goal reactions 0/3, story shots recall 40% / precision 67% (delay 10 s),
+  goals 0/3. Gemini called "shot" 6 s and 5 s before goals 2 and 3, and "kick-off" 26 s after goal 1: it sees
+  the attacks and restarts, never the goal itself.
 - 2026-10-12 ~07:00: the MacBook was on BATTERY (4%) and kept sleeping: renders slowed (eval cams 74 min), and an
   eval story pass "played" while asleep with 0 Gemini looks (marked invalid; story_pass now detects this).
 
