@@ -264,6 +264,15 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   shortest 3.0 s, degraded cam2 0% on air, goal reactions 0/3, story shots recall 40% / precision 67% (delay 10 s),
   goals 0/3. Gemini called "shot" 6 s and 5 s before goals 2 and 3, and "kick-off" 26 s after goal 1: it sees
   the attacks and restarts, never the goal itself.
+- CAMERA-ONLY TEST on real broadcast (SoccerNet, Arsenal 3-4 Liverpool 2016, 2nd half 0-20 min, 4 goals;
+  NO sound to the AI, score graphic blacked out, Flash Lite, real time, 114 looks):
+  goals 3/4 within +-10 s (608.5, 1051.3, 1123.3 s vs truth 608.4, 1051, 1123; the 4th at 226 s vs 209 s, with
+  celebrations reported at 212/218 s), 2 false goals = REPLAYS of goals called live (none in raw camera feeds),
+  shots 4/6. So the AI CAN see goals from the cameras alone when the camera shows them well. On SoccerTrack
+  (one far panoramic camera) it found 0/4. Conclusion: camera placement/framing (close-ups, a view near the
+  goal) matters more than commentary. Note: Gemini still read a score once (another banner), not used for goals.
+- Two Claude sessions worked on the project at once (2026-10-12): the other one also ran eval detection, added the
+  parked-ball filter (commit 8a8764a) and an eval story pass; they clashed on the Gemini quota. One session only.
 - 2026-10-12 ~07:00: the MacBook was on BATTERY (4%) and kept sleeping: renders slowed (eval cams 74 min), and an
   eval story pass "played" while asleep with 0 Gemini looks (marked invalid; story_pass now detects this).
 
