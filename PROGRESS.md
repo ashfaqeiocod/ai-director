@@ -200,7 +200,7 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 | 0. Plan + data access | done | HF token OK; 128057 2nd half (3.45 GB, 4096x1080, 25 fps, 70,350 frames, audio); SoccerNet NDA requested |
 | 1. Intake + calibration check | done | dev segment cut; annotation offset measured (-23 frames); overlays checked by eye |
 | 2. Virtual cameras | done | 5 cams x 9000 frames, ~15 fps render (libx264) |
-| 3. Detection + cards | in progress | dev detection re-running with the real football model (first run silently used YOLO) |
+| 3. Detection + cards | done | dev detection re-running with the real football model (first run silently used YOLO) |
 | 4. Story layer | in progress | wide feed: goal missed; close-up feed being measured |
 | 5. Director v2 | done (tuning) | 7 unit tests; oracle smoke test: cuts at exactly 3.0 s |
 | 6. Run + render | done (tuning) | program.mp4 + debug.mp4 + logs, ~9 fps |
@@ -264,6 +264,11 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   shortest 3.0 s, degraded cam2 0% on air, goal reactions 0/3, story shots recall 40% / precision 67% (delay 10 s),
   goals 0/3. Gemini called "shot" 6 s and 5 s before goals 2 and 3, and "kick-off" 26 s after goal 1: it sees
   the attacks and restarts, never the goal itself.
+- eval, DETECTOR run (final, honest; Gemini on the detector close-up, 117 looks, 0 errors, delay 4.2 s):
+  ball on air excl. WIDE 74% (target 60% met; always-CENTRE baseline 43%), WIDE 24%, shortest normal shot 3.0 s
+  (one 0.24 s shot = the allowed escape from the blurred camera), degraded cam2 0% on air, 135 cuts (9.6/min,
+  avg 6.2 s: busier than a human would cut), goals 0/3 found -> 0/3 reactions, 0 false reactions.
+  compare.md: outputs/studio/eval/compare.md.
 - CAMERA-ONLY TEST on real broadcast (SoccerNet, Arsenal 3-4 Liverpool 2016, 2nd half 0-20 min, 4 goals;
   NO sound to the AI, score graphic blacked out, Flash Lite, real time, 114 looks):
   goals 3/4 within +-10 s (608.5, 1051.3, 1123.3 s vs truth 608.4, 1051, 1123; the 4th at 226 s vs 209 s, with
