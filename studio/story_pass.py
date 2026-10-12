@@ -72,6 +72,45 @@ def story_clip(segment: str, feed: str) -> Path:
     return folder
 
 
+def play(folder: Path, cfg: dict, mode: str, send_audio: bool, speed: float = 1.0, specialist_url: str = ""):
+    """Play one MVP 2 clip folder through the StoryEngine at `speed`, headless. Returns (engine, summary, start)."""
+    from story.engine import StoryEngine          # imports the AI libraries
+
+    def publish(message: dict) -> None:
+        kind = message.get("type")
+        if kind == "story":
+            print(f"  {message['logged_at']:7.1f}s  [{message.get('source')}] {message['phase']}: {message['narration']}")
+        elif kind == "event" and message.get("new"):
+            print(f"  {message['logged_at']:7.1f}s  EVENT {message['event_type']} at {message['event_time']:.1f}s "
+                  f"({message['confidence']:.2f}, {'+'.join(message['sources'])})")
+        elif kind == "log" and message.get("kind") in ("ERROR", "LAG", "SCORE"):
+            print(f"  {message['t']:7.1f}s  {message['kind']}: {message['message']}")
+
+    engine = StoryEngine(folder, cfg, mode, publish, send_audio=send_audio, specialist_url=specialist_url)
+    engine.start()
+    duration = engine.reader.duration
+    print(f"[story] {folder.name}: {duration:.0f} s at {speed}x, mode {mode}, sound to AI: {send_audio}, "
+          f"run {engine.run_id}", flush=True)
+    start = time.time()
+    try:
+        while True:
+            t = min(duration, (time.time() - start) * speed)
+            engine.on_tick(t, paused=False, ended=t >= duration)
+            if t >= duration:
+                break
+            time.sleep(0.2)
+        deadline = time.time() + 40
+        while (engine.story_busy or engine.memory_busy) and time.time() < deadline:
+            time.sleep(0.2)
+    finally:
+        engine.stop("ended")
+    summary = engine.summary()
+    print(f"[story] done: {summary['events']} events, headline {summary['events_by_type']}, "
+          f"gemini looks {summary['story_gemini']}, template {summary['story_template']}, "
+          f"avg delay {summary['avg_llm_delay']} s, errors {summary['llm_errors']}")
+    return engine, summary, start
+
+
 def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "", feed: str = "close_detector") -> str:
     from story.engine import StoryEngine          # imports the AI libraries
 
@@ -160,13 +199,21 @@ def story_run(segment: str, run_id: str | None, feed: str | None = None) -> dict
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--segment", required=True)
+    parser.add_argument("--segment", help="a studio segment (dev / eval)")
+    parser.add_argument("--clip", help="instead of a segment: any MVP 2 clip in data/clips/ (e.g. a SoccerNet broadcast)")
+    parser.add_argument("--no-audio", action="store_true", help="--clip only: the AI gets no sound (no commentary)")
     parser.add_argument("--mode", default="gemini_only", choices=["fast_only", "specialist_only", "gemini_only", "hybrid"])
     parser.add_argument("--speed", type=float, default=1.0, help="1 = real time (needed for honest AI delays)")
     parser.add_argument("--specialist-url", default="", help="Colab URL for hybrid / specialist_only")
     parser.add_argument("--feed", default="close_detector", choices=FEEDS, help="which video the story layer watches")
     args = parser.parse_args()
-    run(args.segment, args.mode, args.speed, args.specialist_url, args.feed)
+    if args.clip:
+        # Broadcast clips: plain MVP 2 settings. Prove-it mode: --no-audio (no commentary, no crowd).
+        play(clip_dir(args.clip), story_config(), args.mode, not args.no_audio, args.speed, args.specialist_url)
+    elif args.segment:
+        run(args.segment, args.mode, args.speed, args.specialist_url, args.feed)
+    else:
+        parser.error("give --segment or --clip")
     return 0
 
 
