@@ -142,27 +142,56 @@ class PanoramaDetections:
     def __init__(self, segment: str):
         self.cams = load_cams(segment)
         self.size = self.cams["size"]
-        self.thr = load_config()["detection"]["ball_confidence"]
+        cfg = load_config()
+        self.thr = cfg["detection"]["ball_confidence"]
         self.dets = {c: load_dets(segment, c) for c in DETECT_CAMS}
         self.step = self.dets[DETECT_CAMS[0]]["step"]
+        parked = cfg["studio"]["parked_ball"]
+        fps = load_segment(segment)["fps"]
+        self.parked_window = max(1, round(parked["window_seconds"] * fps / self.step))  # in detection steps
+        self.parked_radius = parked["radius_px"]
+        self.parked_share = parked["min_share"]
+        self.parked_history = parked["min_history"]
+
+    def _balls(self, frame: int) -> list[tuple[float, float, float]]:
+        """Every ball the 3 cams saw at this detection frame, as (x, y, conf) in panorama pixels."""
+        balls = []
+        for c in DETECT_CAMS:
+            det = self.dets[c]["frames"].get(frame)
+            b = _ball(det, self.thr) if det else None
+            if b:
+                x1, y1, x2, y2 = b["box"]
+                rect = self.cams["cams"][c - 1]["rect"]
+                balls.append((*to_source(rect, *self.size, ((x1 + x2) / 2, (y1 + y2) / 2)), b["conf"]))
+        return balls
+
+    def _parked(self, x: float, y: float, frame: int) -> bool:
+        """True if a ball sat at (x, y) in most of the PAST detections: a spare ball, not the match ball.
+
+        Only earlier frames are read, so this stays causal. A match ball that stops for a set piece
+        is dropped too after a few seconds; the director then follows the players, which is fine.
+        """
+        past = [frame - k * self.step for k in range(1, self.parked_window + 1)]
+        past = [f for f in past if f >= 0]
+        if len(past) < self.parked_history:          # not enough history yet (start of the segment)
+            return False
+        r2 = self.parked_radius ** 2
+        near = sum(any((bx - x) ** 2 + (by - y) ** 2 <= r2 for bx, by, _ in self._balls(f)) for f in past)
+        return near >= self.parked_share * len(past)
 
     def at(self, i: int) -> dict:
         """{ball: (x, y, conf) | None, players: [(x, y), ...]} in panorama pixels, from frame <= i."""
         frame = i - i % self.step
-        balls, players = [], []
+        balls = [b for b in self._balls(frame) if not self._parked(b[0], b[1], frame)]
+        players = []
         for c in DETECT_CAMS:
             det = self.dets[c]["frames"].get(frame)
             if det is None:
                 continue
             rect = self.cams["cams"][c - 1]["rect"]
-            w, h = self.size
-            b = _ball(det, self.thr)
-            if b:
-                x1, y1, x2, y2 = b["box"]
-                balls.append((*to_source(rect, w, h, ((x1 + x2) / 2, (y1 + y2) / 2)), b["conf"]))
             for p in det["players"]:
                 x1, y1, x2, y2 = p["box"]
-                players.append(to_source(rect, w, h, ((x1 + x2) / 2, (y1 + y2) / 2)))
+                players.append(to_source(rect, *self.size, ((x1 + x2) / 2, (y1 + y2) / 2)))
         return {"ball": max(balls, key=lambda b: b[2]) if balls else None, "players": players}
 
 

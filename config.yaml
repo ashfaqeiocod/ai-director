@@ -230,6 +230,11 @@ studio:
       group_radius_m: 15 # oracle aim: players within this many metres count as one group
       group_radius_px: 350 # detector aim (no ball seen): players within this many panorama pixels = one group
   detect_fps: 5 # MVP 1 detector on cams 1-3 this many times per second (M1: ~0.3 s per cam per frame)
+  parked_ball: # a spare ball lying off the pitch is a real ball, but not THE ball (eval: cam3, 2455 frames)
+    window_seconds: 4 # look back this far (past only, so it stays causal)
+    radius_px: 20 # "same spot" = within this many panorama pixels (~0.5 m)
+    min_share: 0.4 # a ball seen at the same spot in this share of the past detections is ignored
+    min_history: 3 # judge only after this many past detections (~0.6 s at 5 fps)
   ball_tracker: # MVP 1's BallTracker, run once on the whole panorama (all 5 cams are views of it)
     buffer_size: 5
     max_jump_px: 300 # panorama px between two detections (~0.2 s apart at 5 fps); ~39 px per metre
