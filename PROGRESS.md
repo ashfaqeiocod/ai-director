@@ -310,6 +310,13 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   bunched all the time. Verdict: a helper signal, not enough alone; meaning must come from specialist + Gemini.
   Tuned on P19 only: check on P15 before trusting any setting. The whole clip is late attacking play, so its
   "calm" baseline is not calm.
+- P15 check (unseen, settings NOT retuned): 333 s, ribbon clock 43:34 at 168 s, so ~40:46-46:18 = end of the
+  1st half incl. stoppage, 0-0, mostly midfield play (no big chance in sampled frames). Human picks: cam2 60,
+  cam3 29, cam1 22 (3 s slots). 42.3 min detection. Mean intensity 38 (P19: 57-67), so a calmer stretch scores
+  lower: good. STOP triggers 183 s (keeper alone in the box, likely goal kick), 312 s (ref pointing, players
+  standing = foul) are real; 232 s unclear. Biggest peak (88 at 168 s, cam1) is FALSE: midfield play, keeper
+  near the camera. Pressure still flips 0<->100 second to second (keeper label). Verdict holds: helper only;
+  STOP trigger is the most useful part.
 
 ## Next action (MVP 3)
 PLUG THE MAC IN. Then eval: story pass close_oracle (14 min, alone) -> detection (~2.5 h, sandbox off)
