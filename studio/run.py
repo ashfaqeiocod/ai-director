@@ -25,21 +25,15 @@ import numpy as np
 
 from src.common import ROOT, ffmpeg_exe, load_config
 from src.director import shot_lengths
-from studio.cameras import CLOSE_CAM, OracleAim, cam_rect, cam_video, cams_dir, load_cams
-from studio.cards import BallInfo, CamCard, QualityMeter, StoryFeed, World
+from studio.cameras import OracleAim, cam_video, cams_dir, load_cams
+from studio.cards import StoryFeed
 from studio.detect import PanoramaDetections, detect_step
-from studio.director import DirectorV2
-from studio.pitchmap import PitchMap, Projection
+from studio.pipeline import Pipeline, inside
 from studio.prepare import annotation_frame, load_segment, work_dir
 from studio.story_pass import story_run
 from studio.video import VideoWriter, to_camera
 
 RED, WHITE, GREEN, ORANGE, YELLOW = (40, 40, 230), (255, 255, 255), (80, 220, 80), (0, 160, 255), (0, 220, 255)
-
-
-def inside(point, rect) -> bool:
-    x, y, w, h = rect
-    return point is not None and x <= point[0] < x + w and y <= point[1] < y + h
 
 
 class OraclePlayers:
@@ -55,30 +49,6 @@ class OraclePlayers:
         players = [((p["x1"][k] + p["x2"][k]) / 2, (p["y1"][k] + p["y2"][k]) / 2) for k in range(lo, hi)]
         feet = [((p["x1"][k] + p["x2"][k]) / 2, p["y2"][k]) for k in range(lo, hi)]
         return players, self.aim.point(i), feet
-
-
-def build_cards(t: float, cams: dict, rects: list, world, quality: list, phase, event, source: str,
-                pitch=None) -> list[CamCard]:
-    w, h = cams["size"]
-    cards = []
-    for k, cam in enumerate(cams["cams"]):
-        rect = rects[k]
-        ball = None
-        if world.ball is not None and inside(world.ball, rect):
-            x, y = to_camera(rect, w, h, world.ball)
-            ball = BallInfo(round(x / w, 3), round(y / h, 3), world.ball_status)
-        players = sum(1 for p in world.players if inside(p, rect))
-        action = None
-        if inside(world.action, rect):
-            ax, ay = to_camera(rect, w, h, world.action)
-            action = (round(ax / w, 3), round(ay / h, 3))
-        cards.append(CamCard(cam=cam["cam"], name=cam["name"], time=round(t, 2), logged_at=round(t, 2),
-                             shot_type=cam["shot_type"], ball=ball, players=players,
-                             play_speed=round(world.play_speed, 2), quality=quality[k], event=event, phase=phase,
-                             source=source, action_in_view=action is not None, action=action,
-                             zone=pitch.zone if pitch else "unknown",
-                             map_intensity=pitch.intensity if pitch else 0.0))
-    return cards
 
 
 def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, max_seconds: float | None) -> Path:
@@ -109,13 +79,8 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     out.mkdir(parents=True, exist_ok=True)
     print(f"[run] {segment} -> {out.relative_to(ROOT)}  (story: {story['run_id'] if story else 'none'})", flush=True)
 
-    world = World(cfg, (meta["width"], meta["height"]), fps, step)
-    # The pitch map: ball + players on the pitch, ball remembered for a moment, zone triggers (studio.pitchmap).
-    projection = Projection(np.load(work_dir(segment) / "pitch_to_image.npy"))
-    pitch = PitchMap(cfg["map"], projection)
-    pitch_state = None
-    meters = [QualityMeter(cfg["quality"]) for _ in cams["cams"]]
-    director = DirectorV2(cfg["director"], fps, len(cams["cams"]))
+    # The per-frame brain, shared with live mode (studio.pipeline).
+    pipe = Pipeline(cfg, cams, meta, close_rects, np.load(work_dir(segment) / "pitch_to_image.npy"), feed, source, step)
     caps = [cv2.VideoCapture(str(cam_video(segment, c["cam"], aim))) for c in cams["cams"]]
     w, h = cams["size"]
     program = VideoWriter(out / "program.mp4", w, h, fps)
@@ -125,10 +90,8 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
     log.writerow(["frame", "time", "state", "chosen_cam", *[f"score_cam{c['cam']}" for c in cams["cams"]], "reason"])
     cards_file = open(out / "cards.jsonl", "w")
     map_file = open(out / "map.jsonl", "w")
-    confirmed: dict[str, dict] = {}            # goal id -> when the kick-off line-up confirmed it
     events_file = open(out / "director_events.jsonl", "w")
     chosen, states = [], []
-    cards, phase, story_line, latest_event = [], None, "", None
     start = time.time()
     try:
         for i in range(total):
@@ -139,64 +102,22 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                 if not ok:
                     raise RuntimeError(f"camera video ended early at frame {i}")
                 images.append(image)
-            rects = [cam_rect(cams, c["cam"], i, close_rects) for c in cams["cams"]]
-
-            # New detections (5x per second).
-            if i % step == 0:
+            events = []
+            if i % step == 0:            # new detections (5x per second)
                 if oracle:
-                    players, group, feet = oracle_players.at(i)
-                    pitch_state = pitch.update(t, None, feet)
-                    world.update(t, None, players, group)
+                    events = pipe.detections(i, t, oracle=oracle_players.at(i))
                 else:
-                    d = detections.at(i)
-                    pitch_state = pitch.update(t, d["ball"][:2] if d["ball"] else None, d["feet"])
-                    if cfg["map"]["drive_ball"]:
-                        # The map's ball (seen, or remembered for a moment) is THE ball for every camera.
-                        ball_px = projection.image(*pitch_state.ball) if pitch_state.ball else None
-                        status = {"seen": "detected", "remembered": "predicted"}.get(pitch_state.ball_status, "lost")
-                        world.update(t, ball_px, d["players"], ball_status=status)
-                    else:
-                        world.update(t, d["ball"][:2] if d["ball"] else None, d["players"])
-                map_file.write(json.dumps(pitch_state.to_dict()) + "\n")
-                if any(e["type"] == "KICKOFF_LINEUP" for e in pitch_state.events):
-                    # A kick-off line-up confirms a goal the goal camera reported in the last minute (past only).
-                    window = cfg["map"]["goal_confirm_window_s"]
-                    for g in feed.known_events(t):
-                        if (g["type"] == "goal" and "goalcam" in g["sources"] and g["id"] not in confirmed
-                                and 0 <= t - g["event_time"] <= window):
-                            confirmed[g["id"]] = {"goal_time": g["event_time"], "confirmed_at": round(t, 2)}
-                            msg = f"goal at {g['event_time']:.0f}s confirmed by the kick-off line-up"
-                            events_file.write(json.dumps({"frame": i, "time": round(t, 2), "type": "GOAL_CONFIRMED",
-                                                          "message": msg, "goal_time": g["event_time"]}) + "\n")
-                            print(f"  {t:7.1f}s  GOAL_CONFIRMED: {msg}")
-                for e in pitch_state.events:
-                    events_file.write(json.dumps({"frame": i, "time": round(t, 2), "type": e["type"],
-                                                  "message": f"{e['type'].lower().replace('_', ' ')} "
-                                                             f"({e.get('zone') or e.get('side') or e.get('line') or ''})"}) + "\n")
-            # Picture quality: shake every frame, blur on detection steps.
-            quality = []
-            for k, image in enumerate(images):
-                move = (0.0, 0.0)
-                if cams["cams"][k]["cam"] == CLOSE_CAM and i > 0:
-                    prev = cam_rect(cams, CLOSE_CAM, i - 1, close_rects)
-                    scale = w / rects[k][2]
-                    move = ((rects[k][0] - prev[0]) * -scale, (rects[k][1] - prev[1]) * -scale)
-                quality.append(meters[k].update(t, image, move, measure=i % step == 0))
-
-            # Story known by now.
-            if i % step == 0:
-                known_events = feed.known_events(t)
-                updates = feed.known_updates(t)
-                phase = feed.latest_phase(t, cfg["director"]["reaction_max_s"])
-                story_line = updates[-1]["narration"] if updates else ""
-                headline = [e for e in known_events if e["type"] not in ("none", "whistle")]
-                latest_event = max(headline, key=lambda e: e["known_at"]) if headline else None
-                cards = build_cards(t, cams, rects, world.state, quality, phase,
-                                    _event_summary(latest_event), source, pitch_state)
-                if i % round(fps) == 0:
-                    for card in cards:
-                        cards_file.write(json.dumps(card.to_dict()) + "\n")
-            decision = director.decide(i, t, cards, known_events, updates, phase)
+                    events = pipe.detections(i, t, detector=detections.at(i))
+                map_file.write(json.dumps(pipe.pitch_state.to_dict()) + "\n")
+            r = pipe.frame(i, t, images, events)
+            for e in r.events:
+                events_file.write(json.dumps({"frame": i, "time": round(t, 2), **e}) + "\n")
+                if e["type"] == "GOAL_CONFIRMED":
+                    print(f"  {t:7.1f}s  GOAL_CONFIRMED: {e['message']}")
+            if i % step == 0 and i % round(fps) == 0:
+                for card in r.cards:
+                    cards_file.write(json.dumps(card.to_dict()) + "\n")
+            decision, cards, rects = r.decision, r.cards, r.rects
             chosen.append(decision.cam)
             states.append(decision.state)
             log.writerow([i, f"{t:.3f}", decision.state, decision.cam, *decision.scores, decision.reason])
@@ -206,7 +127,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
 
             live = images[decision.cam - 1]
             program.write(_program_frame(live, cams["cams"][decision.cam - 1]))
-            debug.write(_debug_frame(images, cards, decision, t, story_line, cams, rects, world.state))
+            debug.write(_debug_frame(images, cards, decision, t, r.story_line, cams, rects, pipe.world.state))
             if i % 500 == 0:
                 print(f"[run] frame {i}/{total} ({(i + 1) / (time.time() - start):.0f} fps)", flush=True)
     except BaseException:
@@ -230,7 +151,7 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                "time_per_cam_s": {f"cam{c['cam']}": round(chosen.count(c["cam"]) / fps, 1) for c in cams["cams"]},
                "time_per_state_s": {s: round(states.count(s) / fps, 1) for s in sorted(set(states))},
                "processing_fps": round(len(chosen) / (time.time() - start), 1),
-               "confirmed_goals": sorted(v["goal_time"] for v in confirmed.values())}
+               "confirmed_goals": sorted(v["goal_time"] for v in pipe.confirmed.values())}
     (out / "run.json").write_text(json.dumps({"segment": segment, "run_id": run_id, "source": source,
                                               "story_run": story["run_id"] if story else None,
                                               "story_mode": story["mode"] if story else None,
@@ -238,13 +159,6 @@ def run(segment: str, oracle: bool, story_run_id: str | None, no_story: bool, ma
                                               "config": cfg, "summary": summary}, indent=2))
     print(f"[run] done: {summary}")
     return out
-
-
-def _event_summary(e: dict | None) -> dict | None:
-    if not e:
-        return None
-    return {"type": e["type"], "event_time": e["event_time"], "known_at": round(e["known_at"], 2),
-            "confidence": round(e["confidence"], 2), "sources": e["sources"]}
 
 
 def _add_audio(segment: str, video: Path, meta: dict) -> None:

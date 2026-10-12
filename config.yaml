@@ -212,6 +212,10 @@ studio:
     eval:
       { match: "128057", half: 2, start_s: 1380, end_s: 2220, # 3 goals (1497.8, 1874.1, 2155.0 s)
         degrade: { cam: 2, start_s: 300, end_s: 345, blur: 31, shake_px: 6 } }
+    # HELD-OUT test (added 2026-10-13 after the kick-off window was chosen on eval): all settings frozen, run once.
+    test:
+      { match: "128057", half: 2, start_s: 2400, end_s: 2814, # 1 goal (2711.6 s)
+        degrade: { cam: 1, start_s: 60, end_s: 100, blur: 31, shake_px: 0 } }
   cameras:
     size: [1280, 720] # every camera video
     # Fixed cameras: rect = [x, y, width, height] in the 4096x1080 panorama (16:9 rects avoid black bars).
