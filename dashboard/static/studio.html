@@ -48,7 +48,7 @@
     .dot.bad { background: #ef4444; } .dot.busy { background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }
     .score { height: 4px; background: #1e293b; }
     .score > div { height: 4px; transition: width .25s; }
-    .lane { position: relative; height: 18px; }
+    .lane { position: relative; height: 15px; }
     .lane-label { position: absolute; left: -76px; width: 70px; text-align: right; font-size: 10px; color: #64748b; top: 3px; white-space: nowrap; }
     .caption { background: linear-gradient(90deg, rgba(2,6,23,.92), rgba(2,6,23,.6)); }
     button:disabled, select:disabled, input:disabled { opacity: .4; cursor: not-allowed; }
@@ -118,11 +118,13 @@
   </section>
   <p id="empty" class="text-slate-400 text-sm hidden"></p>
 
-  <!-- ===================================================== main -->
-  <main id="main" class="flex-1 min-h-0 grid grid-cols-12 gap-2 hidden">
+  <!-- ===================================================== main
+       Sized from the window HEIGHT (layout() in the script): the left column is exactly as wide as needed for the
+       16:9 program + the camera grid to fill the height; the right column gets the rest. -->
+  <main id="main" class="flex-1 min-h-0 grid gap-2 hidden" style="grid-template-columns: 58% minmax(0, 1fr)">
     <!-- LEFT: program + cameras -->
-    <section class="col-span-7 flex flex-col gap-2 min-h-0">
-      <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video shrink-0 mx-auto max-w-full" id="programBox">
+    <section class="flex flex-col gap-2 min-h-0 min-w-0">
+      <div class="relative rounded-lg overflow-hidden border border-slate-800 bg-black aspect-video shrink-0 w-full" id="programBox">
         <video id="program" class="w-full h-full" playsinline preload="auto"></video>
         <img id="programImg" class="w-full h-full object-contain hidden" alt="">
         <!-- scoreboard bug -->
@@ -147,8 +149,8 @@
       <div id="tiles" class="grid gap-2 shrink-0"></div>
     </section>
 
-    <!-- RIGHT: status, match card, pitch, logs -->
-    <section class="col-span-5 flex flex-col gap-2 min-h-0">
+    <!-- RIGHT: status + match card on top; below, two columns: pitch map + story so far | live feed -->
+    <section class="flex flex-col gap-2 min-h-0 min-w-0">
       <div id="statusStrip" class="flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-[11px] shrink-0"></div>
 
       <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-2 shrink-0">
@@ -178,45 +180,47 @@
         <div class="flex flex-wrap gap-1 mt-2" id="chips"></div>
       </div>
 
-      <div class="grid grid-cols-3 gap-2 shrink-0">
-        <div class="col-span-2 rounded-lg border border-slate-800 bg-slate-900/60 p-1.5" id="pitchBox">
-          <canvas id="pitch" width="840" height="544" class="w-full rounded"></canvas>
-          <div class="text-[10px] text-slate-500 px-1">dots = players (team colours) · <span class="text-yellow-300">ball</span> + trail (hollow = remembered) · filled = live camera's view, dashed = other cameras</div>
+      <div class="flex-1 min-h-0 grid grid-cols-2 gap-2">
+        <div class="flex flex-col gap-2 min-h-0 min-w-0">
+          <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-1.5 shrink-0" id="pitchBox">
+            <canvas id="pitch" width="840" height="544" class="w-full rounded"></canvas>
+            <div class="text-[10px] text-slate-500 px-1 leading-tight">team dots · <span class="text-yellow-300">ball</span> + trail (hollow = remembered) · filled = live camera, dashed = other cameras</div>
+          </div>
+          <div class="grid grid-cols-2 gap-2 shrink-0" id="goalTiles"></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/60 flex-1 min-h-0 overflow-y-auto scroll px-3 py-2 text-xs text-slate-200" id="storySoFar">
+            <span class="text-[10px] uppercase tracking-wide text-sky-300">📖 story so far</span><br><span class="text-slate-500">The AI's summary of the match appears here after its first minute.</span>
+          </div>
         </div>
-        <div class="flex flex-col gap-2" id="goalTiles"></div>
-      </div>
-
-      <div class="rounded-lg border border-slate-800 bg-slate-900/60 flex-1 min-h-0 flex flex-col">
-        <div class="flex gap-3 px-3 text-xs border-b border-slate-800 shrink-0 items-center">
-          <button class="tab on py-1.5 border-b-2 border-transparent text-slate-400" data-tab="feed">Live feed</button>
-          <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="story">Match story</button>
-          <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="decisions">Director</button>
-          <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="goalai">Goal AI</button>
-          <span class="flex-1"></span>
-          <span id="feedFilters" class="flex gap-1 text-[10px]"></span>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/60 min-h-0 min-w-0 flex flex-col">
+          <div class="flex gap-3 px-3 text-xs border-b border-slate-800 shrink-0 items-center">
+            <button class="tab on py-1.5 border-b-2 border-transparent text-slate-400" data-tab="feed">Live feed</button>
+            <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="story">Story</button>
+            <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="decisions">Director</button>
+            <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="goalai">Goal AI</button>
+          </div>
+          <div id="feedFilters" class="flex flex-wrap gap-1 text-[10px] px-2 py-1 border-b border-slate-800 shrink-0"></div>
+          <ul id="logList" class="scroll flex-1 overflow-y-auto text-xs divide-y divide-slate-800/70"></ul>
         </div>
-        <div id="storySoFar" class="hidden px-3 py-2 border-b border-slate-800 text-xs text-slate-200 shrink-0"></div>
-        <ul id="logList" class="scroll flex-1 overflow-y-auto text-xs divide-y divide-slate-800/70"></ul>
       </div>
     </section>
   </main>
 
-  <!-- ===================================================== timeline -->
-  <footer id="foot" class="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 pr-3 py-1.5 pl-[80px] hidden">
+  <!-- ===================================================== timeline (compact) -->
+  <footer id="foot" class="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 pr-3 py-1 pl-[80px] hidden">
     <div class="lane" id="laneAI"><span class="lane-label">AI events</span></div>
     <div class="lane" id="laneColab"><span class="lane-label">Colab model</span></div>
     <div class="lane" id="laneMap"><span class="lane-label">pitch map</span></div>
     <div class="relative">
-      <span class="lane-label" style="top:1px">on air</span>
-      <div class="relative h-4 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
+      <span class="lane-label" style="top:0">on air</span>
+      <div class="relative h-3 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
         <div id="playhead" class="absolute top-0 bottom-0 w-0.5 bg-white z-10"></div>
       </div>
     </div>
     <div class="relative h-2 mt-0.5 rounded overflow-hidden bg-slate-800 hidden" id="humanBar" title="the human director's pick (MUVS answer key)"></div>
-    <div class="relative"><span class="lane-label" style="top:22px">intensity</span>
-      <canvas id="intensityLine" width="1800" height="80" class="w-full h-14 mt-0.5 cursor-pointer"></canvas></div>
-    <div class="relative h-4" id="truthMarks"></div>
-    <div class="flex justify-between text-[11px] text-slate-400 gap-2"><span id="legend" class="flex flex-wrap gap-x-3"></span><span class="text-slate-500 truncate" id="credit"></span><span class="mono shrink-0" id="clock"></span></div>
+    <div class="relative"><span class="lane-label" style="top:12px">intensity</span>
+      <canvas id="intensityLine" width="1800" height="70" class="w-full h-10 mt-0.5 cursor-pointer"></canvas></div>
+    <div class="relative h-4 hidden" id="truthMarks"></div>
+    <div class="flex justify-between text-[10px] text-slate-400 gap-3 whitespace-nowrap"><span id="legend" class="flex gap-x-3 truncate"></span><span class="text-slate-500 truncate" id="credit"></span><span class="mono shrink-0 text-[11px]" id="clock"></span></div>
   </footer>
 </div>
 
@@ -453,13 +457,10 @@ function setupScreen(segment, runId) {
   const cams = order.map(n => M.cams.cams.find(c => c.cam === n)).filter(c => c && M.onAir.includes(c.cam));
   const cols = M.layout ? M.layout[0].length : cams.length;
   $("tiles").className = `grid gap-2 shrink-0 grid-cols-${cols}`;
-  // many cameras: the program takes the height left above the grid; few: a 16:9 box
-  const many = cams.length > 4;
-  $("programBox").className = `relative rounded-lg overflow-hidden border border-slate-800 bg-black mx-auto w-full ${many ? "flex-1 min-h-0" : "aspect-video shrink-0 max-w-full"}`;
-  $("program").className = `w-full h-full ${many ? "object-contain" : ""} ${live ? "hidden" : ""}`;
+  M.gridRows = M.layout ? M.layout.length : 1; M.gridCols = cols;
   const onAirGoals = M.goalCams.length && M.goalCams.every(g => M.onAir.includes(g.cam));
   $("goalTiles").classList.toggle("hidden", !!onAirGoals || !M.goalCams.length);
-  $("pitchBox").className = `${onAirGoals || !M.goalCams.length ? "col-span-3" : "col-span-2"} rounded-lg border border-slate-800 bg-slate-900/60 p-1.5`;
+
   $("credit").textContent = M.credit || "";
   $("tiles").innerHTML = cams.map((c, k) => `
     <div class="tile rounded overflow-hidden bg-black" id="tile${c.cam}">
@@ -486,14 +487,26 @@ function setupScreen(segment, runId) {
   $("humanBar").classList.toggle("hidden", !M.human.length);
   $("humanBar").innerHTML = M.human.map(h => `<div class="absolute top-0 bottom-0" title="human: ${esc(camName(h.cam))} ${fmt(h.start)}"
       style="left:${100 * h.start / M.duration}%;width:${100 * (h.end - h.start) / M.duration}%;background:${CAM_COLORS[h.cam]}"></div>`).join("");
-  $("legend").innerHTML = cams.map(c =>
-    `<span><span class="inline-block w-2 h-2 rounded-sm mr-1" style="background:${CAM_COLORS[c.cam]}"></span>${esc(c.name)}</span>`).join("")
-    + (M.human.length ? `<span class="text-slate-300">thin row = human's pick</span>` : `<span class="text-amber-300">▬ map intensity</span>`)
+  // the camera colours are on the tiles already: the legend only explains the lines
+  $("legend").innerHTML = (M.human.length ? `<span class="text-slate-300">thin row = human's pick</span>` : `<span class="text-amber-300">▬ map intensity</span>`)
     + `<span class="text-sky-300">▬ story intensity (AI)</span><span class="text-yellow-300">▮ goal-camera look</span>`;
   ["laneAI", "laneColab", "laneMap"].forEach(id => { $(id).dataset.count = ""; $(id).querySelectorAll(".mark").forEach(e => e.remove()); });
   $("timeline").dataset.count = "";
   lastKey = ""; drawTruth(); drawFilters();
+  requestAnimationFrame(layout);
 }
+
+// Fit the screen: left column width so that program (16:9) + camera grid exactly fill the main area's height.
+function layout() {
+  if (!M || !M.cams || $("main").classList.contains("hidden")) return;
+  const main = $("main"), H = main.clientHeight, W = main.clientWidth, gap = 8;
+  const rows = M.gridRows || 1, cols = M.gridCols || 3;
+  const extra = rows * (gap + 8) + gap;                       // gaps + tile borders + score bars
+  let w = (H - extra) / ((9 / 16) * (1 + rows / cols));
+  w = Math.max(W * 0.38, Math.min(w, W * 0.62));
+  main.style.gridTemplateColumns = `${Math.floor(w)}px minmax(0, 1fr)`;
+}
+window.addEventListener("resize", layout);
 
 // ===================================================================== state at time t
 function currentAt(t) {
@@ -607,6 +620,7 @@ function drawTimeline(t) {
 }
 function drawTruth() {
   const box = $("truthMarks"); box.innerHTML = "";
+  box.classList.toggle("hidden", !M || !$("truthToggle").checked || !M.truth.length);
   if (!M || !$("truthToggle").checked) return;
   M.truth.filter(e => e.label === "GOAL").forEach(e => {
     const m = document.createElement("span");
@@ -824,6 +838,7 @@ function drawStatusStrip(t, asking) {
 // ===================================================================== logs
 function drawFilters() {
   const f = [["all", "all"], ["ai", "🧠 AI"], ["colab", "🤖 Colab"], ["map", "🗺️ map"], ["cuts", "🎬 cuts"]];
+  $("feedFilters").classList.toggle("hidden", tab !== "feed");
   $("feedFilters").innerHTML = tab !== "feed" ? "" : f.map(([k, l]) =>
     `<button class="chipf border border-slate-700 rounded px-1.5 ${feedFilter === k ? "on" : ""}" data-f="${k}">${l}</button>`).join("");
   $("feedFilters").querySelectorAll("button").forEach(b => b.onclick = () => { feedFilter = b.dataset.f; lastKey = ""; drawFilters(); });
@@ -866,11 +881,20 @@ function logItems(t) {
     `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b>${e.kind}</b> ${esc((e.message || "").replace(/cam(\d)/g, (_, c) => camName(+c)))}`}));
 }
 function drawLog(t) {
-  // the overall "story so far" (MVP 2 memory), above the feed and the match story
+  // Story box under the pitch map: the AI's overall "story so far" (MVP 2 memory) + its last few live lines.
+  // Redrawn only when something new became known.
   const mem = lastBefore(M.memory, t, "logged_at");
-  $("storySoFar").classList.toggle("hidden", !mem || !(tab === "story" || tab === "feed"));
-  if (mem) $("storySoFar").innerHTML = `<span class="text-[10px] uppercase tracking-wide text-sky-300">📖 story so far · ${fmt(mem.logged_at)}</span><br>${esc(mem.story_so_far)}` +
-    (mem.momentum ? `<br><span class="text-slate-400">momentum: ${esc(mem.momentum)}</span>` : "");
+  const recent = M.updates.filter(u => u.logged_at <= t).slice(-3).reverse();
+  const storyKey = `${mem ? mem.logged_at : "-"}|${recent.length ? recent[0].logged_at : "-"}`;
+  if ($("storySoFar").dataset.key !== storyKey) {
+    $("storySoFar").dataset.key = storyKey;
+    $("storySoFar").innerHTML =
+      `<div class="text-[10px] uppercase tracking-wide text-sky-300">📖 story so far${mem ? " · " + fmt(mem.logged_at) : ""}</div>` +
+      (mem ? `<div class="mt-0.5">${esc(mem.story_so_far)}</div>` + (mem.momentum ? `<div class="text-slate-400 mt-0.5">momentum: ${esc(mem.momentum)}</div>` : "")
+           : `<div class="text-slate-500">The AI's match summary appears here after about a minute.</div>`) +
+      (recent.length ? `<div class="text-[10px] uppercase tracking-wide text-sky-300 mt-2">🎙️ live</div>` +
+        recent.map(u => `<div class="mt-0.5"><span class="text-slate-500 mono">${fmt(u.window_end)}</span> ${esc(u.narration)}</div>`).join("") : "");
+  }
   const items = logItems(t).sort((a, b) => b.at - a.at);
   const key = tab + feedFilter + items.length;
   if (key === lastKey) return;
