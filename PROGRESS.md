@@ -252,6 +252,17 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - The HF token was pasted in chat: regenerate it on huggingface.co when setup is done and update `.env`.
 - Disk: ~19 GB free before the 6.7 GB download.
 
+- dev results (detector + hybrid story, Colab T4): ball on air excl. WIDE 77% (always-CENTRE baseline 52%),
+  WIDE time 20% (69% before the players' group could stand in for an unseen ball), shortest shot 3.0 s,
+  degraded cam 0% on air, goal reaction 0/1 (no layer saw the goal).
+- Story on the close-up (dev, oracle aim, Flash Lite): avg delay 4.0 s (wide: 6.2 s), saw the kick-off after the
+  goal (87.6 s, true ~85 s) but not the goal. Colab specialist (hybrid): no GOAL; many headers/crosses that the
+  truth doesn't have (dev truth: 76 passes, 62 dribbles, 1 free kick, 1 goal) -> it doesn't transfer to this camera.
+- Audio: no crowd at this amateur match (YAMNet crowd ~0); "cheer" triggers every 10-30 s, so audio can't flag goals.
+- 2026-10-12 ~07:00: the MacBook was on BATTERY (4%) and kept sleeping: renders slowed (eval cams 74 min), and an
+  eval story pass "played" while asleep with 0 Gemini looks (marked invalid; story_pass now detects this).
+
 ## Next action (MVP 3)
-Finish dev: detection (real model) -> close-up aimed by the detector -> story passes (close_oracle, close_detector)
--> runs + reports -> tune director thresholds on dev only -> prepare + run eval.
+PLUG THE MAC IN. Then eval: story pass close_oracle (14 min, alone) -> detection (~2.5 h, sandbox off)
+-> close-up aimed by the detector -> story pass close_detector -> 2 runs + reports + compare.md.
+dev is done (eval cameras are rendered, eval segment cut).

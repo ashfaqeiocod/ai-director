@@ -117,10 +117,15 @@ def run(segment: str, mode: str, speed: float = 1.0, specialist_url: str = "", f
           f"avg delay {summary['avg_llm_delay']} s, errors {summary['llm_errors']}")
     # A run that fell behind the video (machine overloaded) or lost many AI answers is not a fair
     # measurement: it is kept on disk but marked invalid, and story_run() skips it.
-    valid = summary["lag_skips"] == 0 and summary["llm_errors"] <= load_config()["studio"]["story"]["max_llm_errors"]
+    # Also invalid: the wall clock ran much longer than the clip (the Mac slept: the playhead jumped ahead
+    # and the AI never looked), or a Gemini mode that got no Gemini answer at all.
+    slept = summary["wall_seconds"] > 1.2 * duration / speed + 60
+    no_ai = mode in ("gemini_only", "hybrid") and summary["story_gemini"] == 0
+    valid = (summary["lag_skips"] == 0 and not slept and not no_ai
+             and summary["llm_errors"] <= load_config()["studio"]["story"]["max_llm_errors"])
     if not valid:
-        print(f"[story] run marked INVALID (lag skips {summary['lag_skips']}, AI errors {summary['llm_errors']}): "
-              "run it again with nothing heavy running alongside")
+        print(f"[story] run marked INVALID (lag skips {summary['lag_skips']}, AI errors {summary['llm_errors']}, "
+              f"slept {slept}, no AI {no_ai}): run it again with nothing heavy alongside and the Mac plugged in")
     record_run(segment, engine.run_id, engine.clip, mode, speed, summary, wall_start=start, feed=feed, valid=valid)
     return engine.run_id
 
