@@ -86,6 +86,9 @@ delay. Above the timeline: last + average delay per AI, the detector's round tri
 Tab **All events**: every event in one table (happened → known, delay, which AI + model); filter by AI; in Replay a
 click jumps there. The run's average / 90% delay per AI is in its `run.json` (summary → latency).
 
+**Proof runs (2026-10-14, Hybrid, cached detector):** Replay → "Alfheim …" → the 47-min run of 10/14 01:58
+(220 cuts, 1 confirmed goal at 5:36). The latency row shows Gemini ~4 s, goal AI ~6 s, Colab model ~5 s.
+
 **Before a long run:** close other apps (the IDE alone took ~4 CPU cores on 2026-10-13 and the run fell to
 4 frames/s → INVALID), and run `venv/bin/python -m studio.gemini_check`.
 

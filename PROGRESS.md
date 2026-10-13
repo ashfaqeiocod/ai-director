@@ -538,11 +538,26 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   Players match; the ball is found ~20-25% less often (JPEG q85 + TensorRT fp16 push borderline balls under 0.3).
   Mac shown fps 10.5 with the IDE + 2 Claude sessions + background detection running.
 
+### 2026-10-14 night: proof runs, Alfheim, Hybrid (Gemini + light Colab action model), CACHED detector
+Mac NOT free (IDE + 2 other Claude sessions running); runs were still valid. Detection cache complete at 00:46
+(the whole half, 540 min on the M1). Colab: `specialist_light.ipynb` (action model only, ~5 min to start).
+| run | fps shown | lag | cuts (shortest, avg) | Gemini avg / p90 | goal AI avg | Colab events |
+|---|---|---|---|---|---|---|
+| 0:00 +5 min (20261014-014232) | 24.8 | 0.00 | 28 (3.0, 10.3 s) | 3.2 / 4.4 s | 4.5 s | 2 (4.1 s) |
+| 23:40 +5 min (20261014-014752) | 25.5 | 0.00 | 28 (3.0, 10.3 s) | 2.6 / 3.6 s | 3.7 s | 0 |
+| 41:00 +5 min (20261014-015317) | 22.2 | 0.01 | 23 (3.0, 12.5 s) | 3.4 / 4.8 s | 5.1 s | 1 (4.2 s) |
+| FULL HALF 47:06 (20261014-015836) | 21.4 | 0.01 | 220 (3.0, 12.8 s) | 4.3 / 7.3 s (338 looks) | 5.6 s (340 looks) | 16 (5.3 s) |
+- New session from 23:40: first caption 23:40-23:48, first "story so far" 24:41 (start + 61 s), 0 LAG.
+- Goals (no ground truth here; checked by eye): ONE goal confirmed in the full half, 5:36 (left goal: cross, keeper
+  punch, "white/red celebrate" in the follow-up look, then both teams round the centre circle at 5:52-6:02 =
+  kick-off) -> very likely real. Goal-camera "goal" calls NOT confirmed (no kick-off line-up): 11:42, 15:31, 19:29
+  (full half) and 25:16, 27:33 (23:40 run): at 25:16 and 27:33 play went on normally -> false alarms; the
+  kick-off rule kept them out of the score (each only caused a ~8 s close-up). 25:16's note mentions the stadium's
+  big screen ("replay") which camera 1 sees. KICKOFF_LINEUP fired 12x in the half, mostly without a goal
+  call (harmless alone, but the rule depends on the two coming together).
+- The real goal times of this match are still needed to score goals properly (Alfheim has no event file).
+
 ## Next action (MVP 3)
-Decision 2026-10-14: proof runs with the CACHED detector first (live Gemini / goal watcher / Colab action model).
-1. Mac free (close the IDE, other Claude sessions; Gemini quota: one session only), `python -m studio.gemini_check`.
-2. Alfheim Live, Hybrid, cached detector: 5 min from 0:00 and from 23:40; from 41:00 once the cache reaches ~46:00
-   (the background detection: 38:59 cached at 2026-10-14 ~03:40, ~1.5 h left).
-3. The full half (47 min), same settings. Then PROGRESS + TESTING_MVP3 0A.
-Colab detector: "Later tests" A-D in docs/MVP3_LIVE_TEST_PLAN.md (pure live at the upload's rate, 960 px, q95 /
-no fp16, a faster upload).
+Proof runs done (cached detector, Hybrid, valid). Open: the real goal times of Tromsø-Strømsgodset 2013-11-03
+(1st half) to score the goal AI; false "goal" calls (stadium big screen); Colab detector "Later tests" A-D
+(docs/MVP3_LIVE_TEST_PLAN.md); repeat the full half with the Mac free for clean fps/delay numbers.
