@@ -429,6 +429,17 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - A live run is now INVALID below 8 frames/s shown (a run starved by another app, the Antigravity IDE at ~300%
   CPU, showed 0.9 fps with no lag and was called valid). Clean live re-test still to do with the CPU free.
 
+### 2026-10-13: live mode made smooth and as good as offline
+- Light decoding: 960x540 copies of the 6 cameras (`studio.issia` makes cam*_540.mp4): every camera is read
+  small (tiles, quality, shirts), only the camera on air in full HD for the program. Offline 2:00 run: 266 s ->
+  76 s with the IDE busy; identical director results and teams. Replay tiles use the small copies too.
+- LIVE BUG: camera cards (ball / action per camera) were rebuilt only on frames numbered like detection steps;
+  live mode skips frames, so cards went stale for seconds. Now rebuilt whenever detections arrived (all three
+  pipelines; offline results identical). Live (Gemini + goal watcher): 13.9 -> 22.8 fps shown, ball on air
+  60 -> 77% (offline 78%), goal-area camera in danger moments 26 -> 85% (offline 89%).
+- Studio: old ISSIA test runs moved to outputs/studio_archive/ (kept: 220319 + 220544 hybrid, 072441 + 082637
+  Gemini); run picker = ISSIA first, invalid / no-story runs only with "all runs"; Replay fills in as it plays.
+
 ## Next action (MVP 3)
 ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
 (25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match

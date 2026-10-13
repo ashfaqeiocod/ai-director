@@ -267,6 +267,11 @@ class IssiaSource:
     def video(self, cam: int) -> Path:
         return self.folder / f"cam{cam}.mp4"
 
+    def small_video(self, cam: int) -> Path | None:
+        """The 960x540 copy (python -m studio.issia makes it): tiles and cameras not on air. None if missing."""
+        path = self.folder / f"cam{cam}_540.mp4"
+        return path if path.exists() else None
+
     def pipeline(self, feed):
         from studio.multicam import CalibratedPipeline
 

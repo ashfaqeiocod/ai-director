@@ -90,6 +90,7 @@ class Pipeline:
         self.phase = None
         self.story_line = ""
         self.last_i: int | None = None
+        self.fresh = False                            # detections arrived since the last frame()
 
     def rects(self, i: int) -> list:
         return [cam_rect(self.cams, c["cam"], i, self.close_rects) for c in self.cams["cams"]]
@@ -98,6 +99,7 @@ class Pipeline:
     def detections(self, i: int, t: float, detector: dict | None = None, oracle: tuple | None = None) -> list[dict]:
         """New detections for frame i. detector = PanoramaDetections.at(i); oracle = OraclePlayers.at(i).
         Returns the events this caused (map triggers, GOAL_CONFIRMED)."""
+        self.fresh = True
         cfg = self.cfg
         if oracle is not None:
             players, group, feet = oracle
@@ -136,6 +138,8 @@ class Pipeline:
     # ------------------------------------------------------------------ every frame
     def frame(self, i: int, t: float, images: list, events: list[dict] | None = None) -> StepResult:
         """Quality, cards (on detection steps) and the director's decision for frame i."""
+        # New detections since the last frame (live mode may have skipped their own frame) or a detection frame.
+        fresh, self.fresh = self.fresh or i % self.step == 0, False
         cfg, cams = self.cfg, self.cams
         w = cams["size"][0]
         rects = self.rects(i)
@@ -148,8 +152,8 @@ class Pipeline:
                 prev = cam_rect(cams, CLOSE_CAM, i - 1, self.close_rects)
                 scale = w / rects[k][2]
                 move = ((rects[k][0] - prev[0]) * -scale, (rects[k][1] - prev[1]) * -scale)
-            quality.append(self.meters[k].update(t, image, move, measure=i % self.step == 0, frames_since=gap))
-        if i % self.step == 0 or not self.cards:
+            quality.append(self.meters[k].update(t, image, move, measure=fresh, frames_since=gap))
+        if fresh or not self.cards:
             self.known_events = self.feed.known_events(t)
             self.updates = self.feed.known_updates(t)
             self.phase = self.feed.latest_phase(t, cfg["director"]["reaction_max_s"])
@@ -190,10 +194,13 @@ class IndependentPipeline:
         self.radius = cfg["cameras"]["close"]["group_radius_px"]
         self.thr = ball_cfg["min_confidence"]
         self.last_i: int | None = None
+        self.fresh = False                            # detections arrived since the last frame()
 
     def detections(self, i: int, t: float, detector: dict | None = None, oracle=None) -> list[dict]:
         """detector = {cam: {"players": [...], "ball": {...} | None}} for this detection frame."""
         from studio.cameras import group_center
+
+        self.fresh = True
 
         for c, det in (detector or {}).items():
             b = det.get("ball")
@@ -208,13 +215,15 @@ class IndependentPipeline:
     def frame(self, i: int, t: float, images: list, events: list[dict] | None = None) -> StepResult:
         from studio.cards import BallInfo
 
+        # New detections since the last frame (live mode may have skipped their own frame) or a detection frame.
+        fresh, self.fresh = self.fresh or i % self.step == 0, False
         cams = self.cams
         w, h = cams["size"]
         gap = i - self.last_i if self.last_i is not None else 1
         self.last_i = i
-        quality = [self.meters[k].update(t, img, (0.0, 0.0), measure=i % self.step == 0, frames_since=gap)
+        quality = [self.meters[k].update(t, img, (0.0, 0.0), measure=fresh, frames_since=gap)
                    for k, img in enumerate(images)]
-        if i % self.step == 0 or not self.cards:
+        if fresh or not self.cards:
             self.known_events = self.feed.known_events(t)
             self.updates = self.feed.known_updates(t)
             self.phase = self.feed.latest_phase(t, self.cfg["director"]["reaction_max_s"])

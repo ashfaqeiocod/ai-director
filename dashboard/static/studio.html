@@ -74,6 +74,7 @@
       <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono text-xs max-w-[460px]"></select>
       <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-0.5 text-sm">Load</button>
       <button id="reportBtn" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-300">Report</button>
+      <label class="text-xs text-slate-400 flex items-center gap-1" title="also list invalid runs and runs without the AI story"><input id="allRuns" type="checkbox"> all runs</label>
       <label class="text-xs text-slate-400 flex items-center gap-1" title="off: the timeline fills in as the replay plays, like live (no spoilers)"><input id="wholeToggle" type="checkbox"> whole run</label>
       <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> real goals</label>
     </div>
@@ -309,9 +310,19 @@ const media = (path, k) => (k >= 3 && ALT_ORIGIN ? ALT_ORIGIN : "") + path;
 
 // ===================================================================== REPLAY
 async function loadRuns() {
-  runs = await (await fetch("/studio/runs")).json();
-  const label = (r) => `${r.segment} · ${r.run_id}${r.story_mode ? " · story " + r.story_mode : ""}${r.summary && r.summary.valid === false ? " · INVALID" : ""}`;
-  $("runSelect").innerHTML = runs.map((r, i) => `<option value="${i}">${esc(label(r))}</option>`).join("");
+  const all = await (await fetch("/studio/runs")).json();
+  // The picker: the 6-camera ISSIA match first, newest first; invalid runs and runs without the AI story are
+  // hidden unless "all runs" is ticked (they stay on disk).
+  const showAll = $("allRuns").checked;
+  runs = all.filter(r => showAll || (r.summary.valid !== false && r.story_mode))
+            .sort((a, b) => (b.segment.startsWith("issia") - a.segment.startsWith("issia")) || b.run_id.localeCompare(a.run_id));
+  const STORY = {hybrid: "Hybrid · Gemini + Colab", gemini_only: "Gemini", specialist_only: "Colab only"};
+  const label = (r) => `${r.run_id.slice(4, 6)}/${r.run_id.slice(6, 8)} ${r.run_id.slice(9, 11)}:${r.run_id.slice(11, 13)} · ` +
+    `${STORY[r.story_mode] || "no story"} · ${r.summary.cuts} cuts${r.summary.valid === false ? " · INVALID" : ""}`;
+  const groups = [...new Set(runs.map(r => r.segment))];
+  const name = (seg) => seg.startsWith("issia") ? "ISSIA Serie A · 6 stadium cameras" : seg.startsWith("muvs") ? `MUVS phones · ${seg}` : `SoccerTrack · ${seg}`;
+  $("runSelect").innerHTML = groups.map(g => `<optgroup label="${esc(name(g))}">` +
+    runs.map((r, i) => r.segment === g ? `<option value="${i}">${esc(label(r))}</option>` : "").join("") + `</optgroup>`).join("");
   if (mode === "replay") {
     $("empty").classList.toggle("hidden", runs.length > 0);
     $("empty").textContent = "No finished runs yet: switch to ● Live and go live.";
@@ -1013,6 +1024,7 @@ document.querySelectorAll(".seg-btn").forEach(b => b.onclick = async () => {
 });
 $("loadBtn").onclick = () => loadRun(+$("runSelect").value);
 $("truthToggle").onchange = () => drawTruth();
+$("allRuns").onchange = () => loadRuns();
 $("wholeToggle").onchange = () => { $("timeline").dataset.count = ""; };
 $("reportBtn").onclick = () => $("reportBox").classList.remove("hidden");
 $("aboutBtn").onclick = () => $("aboutBox").classList.remove("hidden");

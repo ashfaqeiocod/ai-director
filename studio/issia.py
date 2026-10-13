@@ -82,6 +82,20 @@ def convert(src: Path, dst: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def make_small(folder: Path, force: bool = False) -> None:
+    """cam1_540.mp4 ...: 960x540 copies. Decoding 6 full-HD streams at once is heavy (live mode on the M1, and the
+    browser in Replay): the camera tiles and the cameras NOT on air use these; only the program uses full HD."""
+    def one(c: int) -> None:
+        src, dst = folder / f"cam{c}.mp4", folder / f"cam{c}_540.mp4"
+        if dst.exists() and not force:
+            return
+        subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(src), "-vf", "scale=960:540",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-g", "25",
+                        "-movflags", "+faststart", str(dst)], check=True)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(one, range(1, 7)))
+
+
 def make_mosaic(folder: Path, force: bool = False) -> None:
     """story_mosaic.mp4: three stand-A cameras side by side (whole pitch, 1920x360) for the story layer.
 
@@ -225,6 +239,7 @@ def prepare(force: bool = False) -> list[dict]:
         frames = {c: i["frames"] for c, i in infos.items()}
         print(f"  frames per camera: {frames}")
         make_mosaic(folder, force)
+        make_small(folder, force)
         meta = {"dataset": "ISSIA-CNR Soccer", "take": take, "fps": 25, "frames": min(frames.values()),
                 "length_s": round(min(frames.values()) / 25, 2), "cameras": {f"cam{c}": cams[c].name for c in cams},
                 "audio": False, "credit": CREDIT}

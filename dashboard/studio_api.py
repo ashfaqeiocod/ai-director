@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -314,6 +315,13 @@ def run_video(segment: str, run_id: str, name: str) -> FileResponse:
     return FileResponse(_run_dir(segment, run_id) / name, media_type="video/mp4")
 
 
+@lru_cache(maxsize=8)
+def _cached_source(key: str):
+    from studio.sources import get_source
+
+    return get_source(key)
+
+
 @router.get("/cam/{segment}/{run_id}/{cam}")
 def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     from studio.cameras import cam_video as path_of
@@ -322,7 +330,9 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     from studio.sources import get_source, is_folder_source
 
     if is_folder_source(segment):
-        path = get_source(segment).video(cam)
+        src = _cached_source(segment)          # a playing video asks again and again (range requests)
+        small = getattr(src, "small_video", lambda c: None)(cam)   # tiles: the light 960x540 copy if there is one
+        path = small or src.video(cam)
     else:
         aim = "oracle" if info["source"] == "oracle" else "detector"
         path = path_of(segment, cam, aim)      # cams 1-5, and 6/7 = the goal cameras

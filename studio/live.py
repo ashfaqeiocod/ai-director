@@ -253,7 +253,13 @@ class LiveStudio:
     def _loop(self) -> None:
         cams, fps, step = self.cams, self.fps, self.step
         cam_ids = [c["cam"] for c in cams["cams"]]
-        caps = {c: cv2.VideoCapture(str(self.src.video(c))) for c in cam_ids if c in self.on_air}
+        # Light decoding: with small copies (ISSIA 960x540), every camera is read small (tiles, quality, shirts) and
+        # only the camera ON AIR is read in full HD for the program. 6 full-HD streams at once made the M1 drop
+        # to ~13 fps shown (the program then looks jerky).
+        small_of = getattr(self.src, "small_video", lambda c: None)
+        light = all(small_of(c) for c in cam_ids if c in self.on_air)
+        caps = {c: cv2.VideoCapture(str(small_of(c) if light else self.src.video(c))) for c in cam_ids if c in self.on_air}
+        full: dict[int, list] = {}                    # cam -> [capture, index of the frame it reads next]
         blank = np.zeros((36, 64, 3), np.uint8)      # cameras that are never aired are not decoded (CPU budget)
         out = ROOT / self.cfg["outputs_dir"] / self.segment / self.run_id
         files = self._open_files(out) if self.record else None
@@ -355,7 +361,9 @@ class LiveStudio:
                     if det_frame == i and i % round(fps) == 0:
                         for card in r.cards:
                             files["cards"].write(json.dumps(card.to_dict()) + "\n")
-                live_img = images.get(decision.cam, blank)
+                live_img = self._full_frame(full, decision.cam, i) if light else None
+                if live_img is None:
+                    live_img = images.get(decision.cam, blank)
                 if program:
                     last_program = live_img if live_img.shape[1] == w else cv2.resize(live_img, (w, h))
                     program.write(last_program)
@@ -375,12 +383,30 @@ class LiveStudio:
         finally:
             for cap in caps.values():
                 cap.release()
+            for cap, _ in full.values():
+                cap.release()
             self._stop_ai()
             if program:
                 program.close() if chosen else program.abort()
             summary = self._finish(out, files, chosen, states, frames_shown, skipped, lags, start)
             self.status["state"] = "ended"
             self.publish({"type": "live_ended", "run_id": self.run_id, "summary": summary})
+
+    def _full_frame(self, full: dict, cam: int, i: int) -> np.ndarray | None:
+        """Frame i of the on-air camera in full HD. The capture of each camera is kept; after a cut it jumps
+        (keyframe every second, so a seek costs at most ~1 s of decoding once)."""
+        if cam not in full:
+            full[cam] = [cv2.VideoCapture(str(self.src.video(cam))), 0]
+        cap, pos = full[cam]
+        if i < pos or i - pos > round(self.fps):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            pos = i
+        while pos < i:
+            cap.grab()
+            pos += 1
+        ok, img = cap.read()
+        full[cam][1] = pos + 1
+        return img if ok else None
 
     def _open_files(self, out: Path) -> dict:
         out.mkdir(parents=True, exist_ok=True)

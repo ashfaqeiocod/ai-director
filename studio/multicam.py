@@ -105,6 +105,7 @@ class CalibratedPipeline:
         self.cards: list[CamCard] = []
         self.known_events, self.updates, self.phase, self.story_line = [], [], None, ""
         self.last_i: int | None = None
+        self.fresh = False                            # detections arrived since the last frame()
         self.teams = TeamClassifier(cfg["teams"])
         self.possession = [0, 0]                              # detection steps each team had the ball
         self.score = [0, 0]
@@ -115,11 +116,17 @@ class CalibratedPipeline:
                    images: dict | None = None) -> list[dict]:
         """detector = {cam: {"players": [...], "ball": {...} | None}} for this detection frame.
         images = {cam: picture} of the same moment (for the shirt colours, optional)."""
+        self.fresh = True
         per_cam, balls = {}, []
         for c, det in (detector or {}).items():
             img = (images or {}).get(c)
-            teams = self.teams.observe(img, det.get("players", [])) if img is not None and img.size > 1000 else \
-                [None] * len(det.get("players", []))
+            players = det.get("players", [])
+            if img is not None and img.size > 1000:
+                k = img.shape[1] / self.cams["size"][0]          # the picture may be a small copy (960 wide)
+                shirts = [{**p, "box": [v * k for v in p["box"]]} for p in players] if k != 1 else players
+                teams = self.teams.observe(img, shirts)
+            else:
+                teams = [None] * len(players)
             spots = to_pitch(self.H_inv[c], feet(det))
             pts = [(x, y, team) for (x, y), team in zip(spots, teams) if abs(x) <= HALF_X + 3 and abs(y) <= HALF_Y + 3]
             per_cam[c] = pts
@@ -223,11 +230,13 @@ class CalibratedPipeline:
 
     # ------------------------------------------------------------------ every frame
     def frame(self, i: int, t: float, images: list, events: list[dict] | None = None) -> StepResult:
+        # New detections since the last frame (live mode may have skipped their own frame) or a detection frame.
+        fresh, self.fresh = self.fresh or i % self.step == 0, False
         gap = i - self.last_i if self.last_i is not None else 1
         self.last_i = i
-        quality = [self.meters[k].update(t, img, (0.0, 0.0), measure=i % self.step == 0, frames_since=gap)
+        quality = [self.meters[k].update(t, img, (0.0, 0.0), measure=fresh, frames_since=gap)
                    for k, img in enumerate(images)]
-        if i % self.step == 0 or not self.cards:
+        if fresh or not self.cards:
             self.known_events = self.feed.known_events(t)
             self.updates = self.feed.known_updates(t)
             self.phase = self.feed.latest_phase(t, self.cfg["director"]["reaction_max_s"])
