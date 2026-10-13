@@ -130,7 +130,8 @@ def run_data(segment: str, run_id: str) -> dict:
             "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams),
             "pitch": pitch_data(folder, segment, info["source"], cams),
             "intensity": story_intensity(info, segment),
-            "goal_cams": cams.get("goal_cams", []), "goal_looks": goal_looks(segment, info)}
+            "goal_cams": cams.get("goal_cams", []), "goal_looks": goal_looks(segment, info),
+            "latency": latency_items(folder, story, goal_looks(segment, info))}
 
 
 def _jsonl(path: Path, keep: tuple) -> list[dict]:
@@ -207,7 +208,12 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
                 dets[int(c)][str(row["frame"] - row["frame"] % src.step)] = d
     else:
         dets = {c: src.dets[c]["frames"] for c in cam_ids}
+    # only this run's stretch of the match (a full-half cache would ship 47 min of boxes for a 5-min run)
+    t0 = info.get("start_s", 0.0)
+    t1 = t0 + info["summary"]["seconds"]
     for f in sorted({int(k) for c in cam_ids for k in dets[c]}):
+        if not t0 - 1 <= f / src.fps <= t1 + 1:
+            continue
         frames[str(f)] = {str(c): {"players": [[round(v / q, 3) for v, q in zip(p["box"], (w, h, w, h))]
                                                for p in dets[c].get(str(f), {}).get("players", [])]}
                           for c in cam_ids}
@@ -227,6 +233,7 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
         pitch = {"rows": rows, "step": src.step, "coverage": src.coverage(), "close_coverage": {}, "close_cam": None}
     report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
     looks = goal_looks(key, info) if getattr(src, "calibrated", False) else []
+    latency = latency_items(folder, story, looks)
     return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
                                                 "goal_looks")},
             # A run may start later in the match (start_s): program.mp4 starts there, everything else is match time.
@@ -237,7 +244,17 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
             "overlays": {"step": src.step, "frames": frames}, "pitch": pitch, "intensity": intensity,
             "goal_cams": src.cams.get("goal_cams", []), "goal_looks": looks, "credit": src.meta.get("credit", ""),
             "scores": scores_by_second(folder, src.fps), "layout": src.info().get("layout"),
-            "teams": info.get("teams")}
+            "teams": info.get("teams"), "latency": latency}
+
+
+def latency_items(folder: Path, story: dict, looks: list[dict]) -> list[dict]:
+    """Every AI answer's delay (studio.latency): latency.jsonl of the run, or derived from older runs' logs."""
+    path = folder / "latency.jsonl"
+    if path.exists():
+        return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+    from studio.latency import derive
+
+    return derive(story.get("updates", []), story.get("events", []), looks)
 
 
 def goal_looks(segment: str, info: dict) -> list[dict]:

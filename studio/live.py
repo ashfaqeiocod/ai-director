@@ -205,17 +205,22 @@ class LiveStudio:
         if self.story_mode != "off":
             from story.engine import StoryEngine
 
+            self.status["state"] = "preparing"
+            self.publish({"type": "live_preparing", "message": "preparing the story layer (the first time on a new "
+                          "match it converts the story video: a few minutes)"})
             folder, cfg = self.src.story_clip()        # what the story layer watches (+ its settings)
 
             def on_story(message: dict) -> None:
                 kind = message.get("type")
                 if kind == "event":
                     self.feed.add_story_event(message, clock())
+                    self.latency.event(message)
                     # a cross / header / shot near a goal: the goal watcher looks at that goal again
                     if self.watcher and message.get("event_type") in self.cfg["goalwatch"]["recheck_events"] \
                             and not message.get("rejected"):
                         self.watcher.request(message["event_type"], message["event_time"], self.pipe.pitch_state)
                 elif kind == "story":
+                    self.latency.story(message)
                     self.feed.add_update({k: message.get(k) for k in ("window_start", "window_end", "logged_at", "phase",
                                                                       "sentiment", "narration", "intensity", "source",
                                                                       "events")})
@@ -226,11 +231,19 @@ class LiveStudio:
                                             specialist_url=self.specialist_url, specialist_video=self.program_feed,
                                             start_s=self.start_s)
             self.story_engine.start()
+            llm = self.story_engine.llm
+            if llm is not None:                        # Gemini's call log -> the model + request time of each look
+                engine_on_call = llm.on_call
+                llm.on_call = lambda item: (self.latency.note_llm_call(item), engine_on_call(item))
         if self.use_goalwatch:
             from studio.goalwatch import LiveGoalWatcher
 
             llm = self.story_engine.llm if self.story_engine and self.story_engine.llm else None
-            self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, self.feed.add_look, self.publish,
+            def on_look(look: dict) -> None:
+                self.feed.add_look(look)
+                self.latency.goal_look(look, getattr(self.watcher.llm, "model", None))
+
+            self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, on_look, self.publish,
                                            shared_llm=llm, out_dir=work_dir(self.src.segment) / "goalwatch" / self.run_id,
                                            snapshot=self._goal_snapshot, video_of=self._goal_video,
                                            cfg=self.src.cfg["goalwatch"] if self.src.kind != "soccertrack" else None)
@@ -286,6 +299,9 @@ class LiveStudio:
         blank = np.zeros((36, 64, 3), np.uint8)      # cameras that are never aired are not decoded (CPU budget)
         out = ROOT / self.cfg["outputs_dir"] / self.segment / self.run_id
         files = self._open_files(out) if self.record else None
+        from studio.latency import LatencyLog
+
+        self.latency = LatencyLog(out if self.record else None, self.publish)   # every AI answer's delay
         w, h = 1280, 720                              # the recorded program (phones are 1080p: smaller = cheaper)
         program = VideoWriter(out / "program.mp4", w, h, fps) if self.record else None
         chosen, states, frames_shown, skipped, lags = [], [], 0, 0, []
@@ -488,6 +504,7 @@ class LiveStudio:
                     self.det_counts["ignored_late"] += 1
             pending.popleft()
             self.det_counts[source] += 1
+            self.latency.detection(f / self.fps, now, source, answer["rtt_ms"] if answer and source == "colab" else None)
             if det is not None:
                 events += self.pipe.detections(f, f / self.fps, detector=det, images=ring.get(f))
                 self.src.shown_dets = det
@@ -535,6 +552,7 @@ class LiveStudio:
                    # A live run that fell far behind is not a fair measurement (like an invalid story pass).
                    "shown_fps": round(shown / max(1e-6, time.time() - start), 1),
                    "detector": self.detector,
+                   "latency": self.latency.close(),            # average / 90% / max delay per AI source
                    **({"detections": dict(self.det_counts), "colab_link": self.remote.status()} if self.remote else {}),
                    "valid": ((not lags) or float(np.max(lags)) <= self.cfg["live"]["max_lag_s"])
                             and (not self.realtime or shown / max(1e-6, time.time() - start) >= self.cfg["live"]["min_shown_fps"])}

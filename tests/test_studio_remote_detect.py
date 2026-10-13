@@ -13,6 +13,7 @@ import pytest
 
 import studio.remote_detect as rd
 from colab.detector_server import parse
+from studio.latency import LatencyLog
 from studio.live import LiveStudio
 
 FPS = 30.0
@@ -72,6 +73,7 @@ def live(cached=None) -> LiveStudio:
     lv.fps, lv.watcher, lv.colab_answers = FPS, None, {}
     lv.det_counts = {"colab": 0, "cached_late": 0, "cached_skipped": 0, "none": 0, "ignored_late": 0}
     lv.src, lv.pipe = FakeSource(cached or {}), FakePipe()
+    lv.latency = LatencyLog(None, lambda m: None)
     return lv
 
 

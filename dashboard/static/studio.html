@@ -207,6 +207,7 @@
             <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="story">Story</button>
             <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="decisions">Director</button>
             <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="goalai">Goal AI</button>
+            <button class="tab py-1.5 border-b-2 border-transparent text-slate-400" data-tab="all" title="every event: when it happened, when the system knew it, the delay, which AI">All events</button>
           </div>
           <div id="feedFilters" class="flex flex-wrap gap-1 text-[10px] px-2 py-1 border-b border-slate-800 shrink-0"></div>
           <ul id="logList" class="scroll flex-1 overflow-y-auto text-xs divide-y divide-slate-800/70"></ul>
@@ -217,9 +218,12 @@
 
   <!-- ===================================================== timeline (compact) -->
   <footer id="foot" class="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 pr-3 py-1 pl-[80px] hidden">
+    <div id="latStrip" class="flex flex-wrap gap-x-4 text-[10px] text-slate-400 mono" title="how late each AI's answers arrive (happened -> known)"></div>
     <div class="lane" id="laneAI"><span class="lane-label">AI events</span></div>
     <div class="lane" id="laneColab"><span class="lane-label">Colab model</span></div>
     <div class="lane" id="laneMap"><span class="lane-label">pitch map</span></div>
+    <div class="relative" title=""><span class="lane-label" style="top:5px">latency</span>
+      <canvas id="latencyLane" width="1800" height="48" class="w-full cursor-pointer" style="height:24px;display:block"></canvas></div>
     <div class="relative">
       <span class="lane-label" style="top:0">on air</span>
       <div class="relative h-3 rounded overflow-hidden bg-slate-800 cursor-pointer" id="timeline">
@@ -295,7 +299,8 @@ const TEAM_DISPLAY = {WHITE: "#f1f5f9", BLACK: "#0f172a", GREY: "#94a3b8", RED: 
 const teamColour = (team) => TEAM_DISPLAY[(team.name || "").split(" ")[0]] || team.rgb;
 const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 // Where match time t sits on the timeline (0..100 %): the timeline runs from the run's start (t0) to its end.
-const pct = (t) => 100 * (t - M.t0) / Math.max(1e-6, M.duration - M.t0);
+// Live: the timeline grows in 5-minute steps (a 5-minute test on a 47-minute half would be a sliver).
+const pct = (t) => 100 * (t - M.t0) / Math.max(1e-6, (M.view || M.duration) - M.t0);
 const parseClock = (text) => String(text).trim().split(":").reduce((s, x) => s * 60 + (+x || 0), 0);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const zoneText = (z) => ({left_box: "left penalty box", right_box: "right penalty box", left_third: "left third",
@@ -309,7 +314,7 @@ function emptyModel() {
           decisions: [], updates: [], events: [], looks: [], intensity: [], overlays: null, cards: {}, cardsBySecond: {},
           cur: null, info: null, lights: {}, asking: null, report: null, human: [], kind: "soccertrack", layout: null,
           scores: {}, credit: "", memory: [], signals: [], teams: null, liveTeams: null, rechecks: [],
-          t0: 0, cachedUntil: null};   // t0 = where the run starts in the match (duration = where it ends)
+          t0: 0, cachedUntil: null, latency: []};   // t0 = where the run starts in the match (duration = where it ends)
 }
 const camName = (c) => (M.cams.cams.find(x => x.cam === c) || {name: "cam" + c}).name;
 const shown = () => M.cams.cams.filter(c => M.onAir.includes(c.cam));
@@ -321,8 +326,11 @@ const ALT_ORIGIN = ["localhost", "127.0.0.1"].includes(location.hostname)
 const media = (path, k) => (k >= 3 && ALT_ORIGIN ? ALT_ORIGIN : "") + path;
 
 // ===================================================================== REPLAY
+let runsSeq = 0;
 async function loadRuns() {
+  const mine = ++runsSeq;
   const all = await (await fetch("/studio/runs")).json();
+  if (mine !== runsSeq) return;            // an older request answering late must not undo a newer one
   // The picker: the real multi-camera matches first (Alfheim full half, then ISSIA), newest first; invalid runs and
   // runs without the AI story are hidden unless "all runs" is ticked (they stay on disk).
   const showAll = $("allRuns").checked;
@@ -343,9 +351,11 @@ async function loadRuns() {
     if (runs.length) loadRun(0);
   }
 }
+let loadSeq = 0;
 async function loadRun(index) {
-  const r = runs[index];
+  const r = runs[index], mine = ++loadSeq;
   const d = await (await fetch(`/studio/run/${r.segment}/${r.run_id}`)).json();
+  if (mine !== loadSeq) return;            // a newer Load was clicked meanwhile: that one wins
   M = emptyModel();
   Object.assign(M, {cams: d.cams, onAir: d.on_air_cams, goalCams: d.goal_cams || [], fps: d.fps, duration: d.duration, t0: d.start_s || 0,
                     truth: d.truth, pitch: d.pitch, timeline: d.timeline, mapRows: d.pitch ? d.pitch.rows : [],
@@ -354,7 +364,7 @@ async function loadRun(index) {
                     overlays: d.overlays, cardsBySecond: d.cards, info: d.info, report: d.report,
                     human: d.human || [], kind: d.kind || "soccertrack", layout: d.layout || null,
                     scores: d.scores || {}, credit: d.credit || "", memory: d.story.memory || [],
-                    signals: d.story.signals || [], teams: d.teams || null});
+                    signals: d.story.signals || [], teams: d.teams || null, latency: d.latency || []});
   setupScreen(r.segment, r.run_id);
   $("program").src = `/studio/video/${r.segment}/${r.run_id}/program.mp4`;
 }
@@ -437,6 +447,10 @@ function onLive(m) {
         M.events.push({id: "gv" + M.looks.length, type: "save", event_time: when, known_at: m.logged_at, confidence: 0.7, sources: ["goalcam"]});
     }
     M.lights.goal = null;
+  } else if (m.type === "live_preparing") {
+    $("liveStats").textContent = m.message;
+  } else if (m.type === "latency") {
+    M.latency.push(m);
   } else if (m.type === "goal_recheck") {
     M.rechecks.push({...m, t: now});
   } else if (m.type === "goal_look_error") {
@@ -633,7 +647,7 @@ function colabItem(s) {
           at: key && m ? +m[1] : s.t, conf: m ? +m[2] : p ? +p[1] : null};
 }
 function drawTimeline(t) {
-  const tl = $("timeline"), D = M.duration, segs = M.timeline;
+  const tl = $("timeline"), D = M.view || M.duration, segs = M.timeline;
   // Replay fills in as it plays, exactly like live (only what had happened by t), unless "whole run" is ticked.
   const upTo = mode === "live" || !$("wholeToggle").checked ? t : D;
   if (tl.dataset.count !== String(segs.length) || upTo < D) {
@@ -650,7 +664,7 @@ function drawTimeline(t) {
     tl.dataset.count = String(segs.length);
   }
   $("playhead").style.left = `${pct(t)}%`;
-  $("clock").textContent = M.t0 ? `${fmt(t)} · run ${fmt(M.t0)}–${fmt(D)}` : `${fmt(t)} / ${fmt(D)}`;
+  $("clock").textContent = M.t0 ? `${fmt(t)} · run ${fmt(M.t0)}–${fmt(M.duration)}` : `${fmt(t)} / ${fmt(M.duration)}`;
   // lanes: each item appears only once it was known
   laneMarks("laneAI", M.events.filter(e => e.type !== "none" && e.type !== "whistle").map(e => ({at: e.known_at, x: e.event_time, icon: ICONS[e.type] || "•",
     tip: `${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)} (+${(e.known_at - e.event_time).toFixed(1)}s) · ${(e.sources || []).join("+")}`})), t);
@@ -925,11 +939,85 @@ function drawStatusStrip(t, asking) {
   }
 }
 
+// ===================================================================== latency (studio.latency)
+// Every AI answer is a bar from "happened" to "known" on its own row: a long bar = a slow answer.
+const LAT_NAMES = {gemini: "🧠 Gemini", goal_ai: "🥅 goal AI", colab: "🤖 Colab model", detector: "📡 detector"};
+const LAT_COLORS = {gemini: "#38bdf8", goal_ai: "#facc15", colab: "#a78bfa", detector: "#4ade80"};
+const LAT_ROWS = ["gemini", "goal_ai", "colab", "detector"];
+const latKnown = (t) => M.latency.filter(i => i.known <= t);
+function latText(i) {
+  const who = LAT_NAMES[i.source] + (i.model ? ` · ${i.model}` : "") + (i.request_s ? ` · request ${i.request_s}s` : "");
+  const extra = i.kind === "second" ? ` · avg ${(i.avg ?? 0).toFixed(2)}s · round trip ${i.rtt_ms ?? "–"} ms${i.late ? ` · ${i.late} late` : ""}` : "";
+  return `${who} · happened ${fmt(i.happened)} · known ${fmt(i.known)} · delay ${i.delay.toFixed(1)}s${extra} · ${i.what}`;
+}
+function drawLatency(t) {
+  const c = $("latencyLane"), g = c.getContext("2d"), W = c.width, H = c.height, rowH = H / LAT_ROWS.length;
+  const whole = mode === "replay" && $("wholeToggle").checked;          // like the other lanes
+  const items = latKnown(t), bars = whole ? M.latency : items;
+  const key = `${bars.length}|${M.t0}|${M.view}|${Math.floor(t * 2)}`;
+  if (c.dataset.key !== key) {
+    c.dataset.key = key;
+    g.clearRect(0, 0, W, H);
+    LAT_ROWS.forEach((r, k) => { g.fillStyle = k % 2 ? "rgba(30,41,59,.5)" : "rgba(30,41,59,.25)"; g.fillRect(0, k * rowH, W, rowH); });
+    bars.forEach(i => {
+      const k = LAT_ROWS.indexOf(i.source); if (k < 0) return;
+      const x0 = W * pct(i.happened) / 100, x1 = W * pct(i.known) / 100;
+      g.fillStyle = i.kind === "late" ? "#ef4444" : LAT_COLORS[i.source];
+      g.globalAlpha = i.kind === "second" ? 0.55 : 0.95;
+      g.fillRect(x0, k * rowH + 1.5, Math.max(3, x1 - x0), rowH - 3);
+    });
+    g.globalAlpha = 1; g.fillStyle = "rgba(255,255,255,.85)"; g.fillRect(W * pct(t) / 100, 0, 2, H);
+  }
+  // the strip above the timeline: last + average delay per AI, the detector's round trip, frames shown per second
+  const parts = LAT_ROWS.map(r => {
+    const xs = items.filter(i => i.source === r && i.kind !== "late");
+    if (!xs.length) return "";
+    const avg = xs.reduce((s, i) => s + (i.kind === "second" ? i.avg : i.delay), 0) / xs.length, last = xs[xs.length - 1];
+    const lastD = last.kind === "second" ? last.avg : last.delay;
+    const rtt = r === "detector" ? xs.filter(i => i.rtt_ms).slice(-10) : [];
+    return `<span><span style="color:${LAT_COLORS[r]}">■</span> ${LAT_NAMES[r]} ${lastD.toFixed(1)}s (avg ${avg.toFixed(1)}s)` +
+      (rtt.length ? ` · round trip ${Math.round(rtt.reduce((s, i) => s + i.rtt_ms, 0) / rtt.length)} ms` : "") + `</span>`;
+  }).filter(Boolean);
+  if (mode === "live" && M.cur) parts.push(`<span>🎞️ ${M.cur.shown_fps} frames/s shown</span>`);
+  const strip = parts.join("") || `<span>no AI answers yet</span>`;
+  if ($("latStrip").dataset.html !== strip) { $("latStrip").dataset.html = strip; $("latStrip").innerHTML = strip; }
+}
+$("latencyLane").onmousemove = (ev) => {
+  if (!M) return;
+  const c = $("latencyLane"), box = c.getBoundingClientRect();
+  const row = LAT_ROWS[Math.floor((ev.clientY - box.top) / box.height * LAT_ROWS.length)];
+  const at = M.t0 + ((M.view || M.duration) - M.t0) * (ev.clientX - box.left) / box.width, slack = ((M.view || M.duration) - M.t0) * 4 / box.width;
+  const t = mode === "replay" ? $("program").currentTime + M.t0 : (M.cur ? M.cur.t : M.t0);
+  const hit = latKnown(t).filter(i => i.source === row && i.happened - slack <= at && at <= i.known + slack).pop();
+  c.title = hit ? latText(hit) : "";
+};
+// "All events" tab: one table of everything (newest first). Detector: only its late frames (5 a second otherwise).
+function allEvents(t) {
+  const out = [], want = (k) => feedFilter === "all" || feedFilter === k;
+  latKnown(t).filter(i => want(i.source) && !(i.source === "detector" && i.kind === "second")).forEach(i => out.push({at: i.known,
+    jump: Math.max(M.t0, i.happened), html:
+    `<span class="mono text-slate-400">${fmt(i.happened)} → ${fmt(i.known)}</span> <b class="mono" style="color:${i.delay > 6 ? "#f87171" : "#e2e8f0"}">+${i.delay.toFixed(1)}s</b> ` +
+    `<span style="color:${LAT_COLORS[i.source]}">${LAT_NAMES[i.source]}</span>${i.model ? ` <span class="text-slate-500">${esc(i.model)}</span>` : ""} ${esc(i.what)}`}));
+  if (want("director")) M.decisions.filter(e => e.time <= t && (e.kind === "CUT" || e.kind in MAP_ICONS || e.kind.startsWith("REACTION"))).forEach(e => out.push({at: e.time, jump: e.time, html:
+    `<span class="mono text-slate-400">${fmt(e.time)} → ${fmt(e.time)}</span> <b class="mono text-slate-500">+0.0s</b> ` +
+    `<span class="text-slate-300">${e.kind in MAP_ICONS ? "🗺️ map" : "🎬 director"}</span> ${esc(e.kind in MAP_ICONS ? (MAP_EVENTS[e.kind] || e.message) : (e.message || "").replace(/cam(\d)/g, (_, c) => camName(+c)))}`}));
+  return out;
+}
+$("logList").onclick = (ev) => {
+  const li = ev.target.closest("li[data-jump]");
+  if (!li || mode !== "replay" || !M) return;
+  $("program").currentTime = Math.max(0, +li.dataset.jump - M.t0);
+  lastKey = ""; ["laneAI", "laneColab", "laneMap"].forEach(id => $(id).dataset.count = "");
+};
+$("latencyLane").onclick = (ev) => seek(ev, $("latencyLane"));
+
 // ===================================================================== logs
 function drawFilters() {
-  const f = [["all", "all"], ["ai", "🧠 AI"], ["colab", "🤖 Colab"], ["map", "🗺️ map"], ["cuts", "🎬 cuts"]];
-  $("feedFilters").classList.toggle("hidden", tab !== "feed");
-  $("feedFilters").innerHTML = tab !== "feed" ? "" : f.map(([k, l]) =>
+  const f = tab === "all" ? [["all", "all"], ...Object.entries(LAT_NAMES).map(([k, v]) => [k, v]), ["director", "🎬 director + map"]]
+    : [["all", "all"], ["ai", "🧠 AI"], ["colab", "🤖 Colab"], ["map", "🗺️ map"], ["cuts", "🎬 cuts"]];
+  if (!f.some(([k]) => k === feedFilter)) feedFilter = "all";
+  $("feedFilters").classList.toggle("hidden", tab !== "feed" && tab !== "all");
+  $("feedFilters").innerHTML = tab !== "feed" && tab !== "all" ? "" : f.map(([k, l]) =>
     `<button class="chipf border border-slate-700 rounded px-1.5 ${feedFilter === k ? "on" : ""}" data-f="${k}">${l}</button>`).join("");
   $("feedFilters").querySelectorAll("button").forEach(b => b.onclick = () => { feedFilter = b.dataset.f; lastKey = ""; drawFilters(); });
 }
@@ -972,6 +1060,7 @@ function lookVerdict(l) {
 }
 function logItems(t) {
   if (tab === "feed") return feedItems(t);
+  if (tab === "all") return allEvents(t);
   if (tab === "story") return M.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
     `<span class="text-slate-500 mono">${fmt(u.window_start || 0)}–${fmt(u.window_end)}</span> <span class="text-sky-300">${PHASES[u.phase] || u.phase}</span> ` +
     `<span class="text-slate-400">${esc(u.sentiment || "")}</span><br>${esc(u.narration)}`}));
@@ -1002,7 +1091,7 @@ function drawLog(t) {
   if (key === lastKey) return;
   const fresh = lastKey.startsWith(tab + feedFilter) && items.length > +lastKey.slice((tab + feedFilter).length);
   lastKey = key;
-  $("logList").innerHTML = items.slice(0, 300).map((i, n) => `<li class="px-3 py-1 ${n === 0 && fresh ? "flash" : ""}">${i.html}</li>`).join("")
+  $("logList").innerHTML = items.slice(0, 300).map((i, n) => `<li class="px-3 py-1 ${n === 0 && fresh ? "flash" : ""}${i.jump !== undefined ? " cursor-pointer hover:bg-slate-800/60" : ""}"${i.jump !== undefined ? ` data-jump="${i.jump}"` : ""}>${i.html}</li>`).join("")
     || `<li class="px-3 py-2 text-slate-500">nothing yet</li>`;
 }
 
@@ -1042,6 +1131,11 @@ function render() {
     });
     $("playBtn").textContent = p.paused ? "▶" : "❚❚";
   } else t = M.cur ? M.cur.t : !$("setup").classList.contains("hidden") ? parseClock($("startAt").value) : M.t0;
+  const view = mode === "live" && M.cur ? Math.min(M.duration, M.t0 + 300 * Math.ceil((t - M.t0 + 30) / 300)) : M.duration;
+  if (view !== M.view) {                     // new scale: every lane is drawn again
+    M.view = view; $("timeline").dataset.count = "";
+    ["laneAI", "laneColab", "laneMap"].forEach(id => $(id).dataset.count = "");
+  }
   const cur = currentAt(t), teams = withGeminiNames(teamsAt(t), t);
   let asking = null;
   if (mode === "live") asking = M.asking;
@@ -1052,6 +1146,7 @@ function render() {
   drawOverlays(t); drawCards(t); drawScores(t);
   const row = drawPitch(t, cur.cam, teams);
   drawTimeline(t);
+  drawLatency(t);
   drawMatch(t, cur, row, teams, asking);
   drawStatusStrip(t, asking);
   drawLog(t);
