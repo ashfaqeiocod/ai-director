@@ -4,6 +4,7 @@
   venv/bin/python -m studio.live --segment eval --story gemini_only --goalwatch  # + AI story + goal watcher
   venv/bin/python -m studio.live --segment muvs-P19 --seconds 60                 # real phone cameras (MUVS)
   venv/bin/python -m studio.live --segment issia-T2 --goalwatch                  # 6 real stadium cameras (ISSIA)
+  venv/bin/python -m studio.live --segment alfheim-2013-11-03-H1 --start 23:40   # the broadcast starts at 23:40
 
 A wall clock decides which frame is "now" (like a real broadcast). Each loop:
   1. read the newest frame of every on-air camera (frames we are too slow for are skipped: that's live);
@@ -136,7 +137,7 @@ class ProgramFeed:
 class LiveStudio:
     def __init__(self, source: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
                  goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True,
-                 realtime: bool = True):
+                 realtime: bool = True, start_s: float = 0.0):
         self.cfg = load_config()["studio"]
         self.src = get_source(source)              # SoccerTrack segment ("eval") or MUVS period ("muvs-P19")
         self.segment, self.publish = self.src.key, publish or (lambda m: None)
@@ -144,7 +145,12 @@ class LiveStudio:
         self.use_goalwatch = goalwatch and self.src.goalwatch
         self.speed, self.record, self.realtime = speed, record, realtime
         self.cams, self.fps, self.step, self.on_air = self.src.cams, self.src.fps, self.src.step, self.src.on_air
-        self.total = self.src.frames if not seconds else min(self.src.frames, round(seconds * self.fps))
+        # Start from anywhere: the broadcast begins at start_s, like a NEW session (teams, possession, score and
+        # the story are learned again from there). All times in the recorded files stay ABSOLUTE match times.
+        self.start_frame = max(0, min(round(start_s * self.fps), self.src.frames - 1))
+        self.start_s = self.start_frame / self.fps
+        end = self.src.frames if not seconds else self.start_frame + round(seconds * self.fps)
+        self.total = min(self.src.frames, end)      # the frame where the run ends (absolute)
         self.feed = LiveFeed(self.cfg["goalwatch"])
         self.pipe = self.src.pipeline(self.feed)
         self.stop_flag = threading.Event()
@@ -205,7 +211,8 @@ class LiveStudio:
                               "kind": kind, "log_kind": message.get("kind") if kind == "log" else None})
 
             self.story_engine = StoryEngine(folder, cfg, self.story_mode, on_story, send_audio=self.src.has_audio,
-                                            specialist_url=self.specialist_url, specialist_video=self.program_feed)
+                                            specialist_url=self.specialist_url, specialist_video=self.program_feed,
+                                            start_s=self.start_s)
             self.story_engine.start()
         if self.use_goalwatch:
             from studio.goalwatch import LiveGoalWatcher
@@ -259,6 +266,10 @@ class LiveStudio:
         small_of = getattr(self.src, "small_video", lambda c: None)
         light = all(small_of(c) for c in cam_ids if c in self.on_air)
         caps = {c: cv2.VideoCapture(str(small_of(c) if light else self.src.video(c))) for c in cam_ids if c in self.on_air}
+        if self.start_frame:
+            for cap in caps.values():
+                cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)   # exact on these H.264 files (tested)
+        self.pipe.director.start_at(self.start_frame)
         full: dict[int, list] = {}                    # cam -> [capture, index of the frame it reads next]
         blank = np.zeros((36, 64, 3), np.uint8)      # cameras that are never aired are not decoded (CPU budget)
         out = ROOT / self.cfg["outputs_dir"] / self.segment / self.run_id
@@ -267,18 +278,19 @@ class LiveStudio:
         program = VideoWriter(out / "program.mp4", w, h, fps) if self.record else None
         chosen, states, frames_shown, skipped, lags = [], [], 0, 0, []
         start = time.time()
-        clock = lambda: min((time.time() - start) * self.speed, self.total / fps)   # noqa: E731
+        clock = lambda: min(self.start_s + (time.time() - start) * self.speed, self.total / fps)   # noqa: E731
         if not self.realtime:
             # Offline (tuning / scoring): every frame, as fast as the machine goes; the "clock" is the frame.
-            frame_clock = {"t": 0.0}
+            frame_clock = {"t": self.start_s}
             clock = lambda: frame_clock["t"]                                             # noqa: E731
         self._start_ai(clock)
         if self.realtime:
             start = time.time()   # the match clock starts once the AI is ready (its start-up took seconds)
         self.status["state"] = "live"
         self.publish({"type": "live_started", "segment": self.segment, "run_id": self.run_id,
-                      "duration": self.total / fps, "story": self.story_mode, "goalwatch": self.use_goalwatch})
-        i, last_det, last_pub, last_tiles = -1, -1, 0.0, 0.0
+                      "duration": self.total / fps, "start_s": self.start_s, "story": self.story_mode,
+                      "goalwatch": self.use_goalwatch})
+        i, last_det, last_pub, last_tiles = self.start_frame - 1, -1, 0.0, 0.0
         images = {}
         decision = None
         last_program = None                          # the last picture written to program.mp4
@@ -423,7 +435,8 @@ class LiveStudio:
         shots = shot_lengths(chosen, fps) if chosen else [0.0]
         # The last shot is cut short by the end of the clip, not by the director: leave it out of "shortest".
         whole = shots[:-1] or shots
-        summary = {"frames": len(chosen), "seconds": round(len(chosen) / fps, 1), "cuts": max(0, len(shots) - 1),
+        summary = {"start_s": round(self.start_s, 2), "end_s": round((self.start_frame + len(chosen)) / fps, 2),
+                   "frames": len(chosen), "seconds": round(len(chosen) / fps, 1), "cuts": max(0, len(shots) - 1),
                    "shortest_shot_s": round(min(whole), 2), "average_shot_s": round(sum(shots) / len(shots), 2),
                    "time_per_state_s": {s: round(states.count(s) / fps, 1) for s in sorted(set(states))},
                    "frames_shown": shown, "frames_skipped": skipped,
@@ -444,7 +457,11 @@ class LiveStudio:
             (out / "run.json").write_text(json.dumps({
                 "segment": self.segment, "run_id": self.run_id, "source": "detector", "live": True,
                 "source_kind": self.src.kind,
-                "story_clip": self.story_engine.clip if self.story_engine else None, "story_wall_start": start,
+                # program.mp4 starts at start_s (Replay plays it with that offset).
+                "start_s": round(self.start_s, 2),
+                # wall clock at match time 0 (so wall_time - story_wall_start = match time, as for runs from 0:00)
+                "story_clip": self.story_engine.clip if self.story_engine else None,
+                "story_wall_start": start - self.start_s / self.speed,
                 "story_run": story["run_id"] if story else None, "story_mode": story["mode"] if story else None,
                 "specialist_feed": "program" if self.program_feed is not None else "story clip",
                 "goal_looks": len(self.feed.looks), "goalwatch_run": self.run_id if self.watcher else None,
@@ -454,7 +471,7 @@ class LiveStudio:
                 from studio.story_pass import record_run
 
                 record_run(self.segment, self.story_engine.run_id, self.story_engine.clip, self.story_mode, 1.0,
-                           self.story_engine.summary(), wall_start=start, feed="close_detector",
+                           self.story_engine.summary(), wall_start=start - self.start_s / self.speed, feed="close_detector",
                            valid=summary["valid"])
             if self.watcher:
                 self.watcher.save_run()
@@ -477,10 +494,19 @@ class LiveStudio:
                 "asking": self.watcher.asking if self.watcher else None, "frame": i}
 
 
+def parse_time(text: str) -> float:
+    """'23:40' -> 1420.0, '1:02:03' -> 3723.0, '95.5' -> 95.5"""
+    seconds = 0.0
+    for part in str(text).strip().split(":"):
+        seconds = seconds * 60 + float(part)
+    return seconds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--segment", required=True, help="a SoccerTrack segment (dev, eval, test), muvs-P19 / muvs-P15 or issia-T2")
     parser.add_argument("--seconds", type=float, default=None)
+    parser.add_argument("--start", default="0", help="where the broadcast starts: seconds or mm:ss (e.g. 23:40)")
     parser.add_argument("--story", default="off", choices=["off", "fast_only", "gemini_only", "hybrid"])
     parser.add_argument("--specialist-url", default="")
     parser.add_argument("--goalwatch", action="store_true")
@@ -498,7 +524,7 @@ def main() -> int:
             print(f"[live] {kind}: {m}")
 
     live = LiveStudio(args.segment, publish, args.story, args.specialist_url, args.goalwatch, args.seconds,
-                      record=not args.no_record, realtime=not args.offline)
+                      record=not args.no_record, realtime=not args.offline, start_s=parse_time(args.start))
     live.start()
     try:
         while live.thread.is_alive():

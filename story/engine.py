@@ -44,15 +44,18 @@ Publish = Callable[[dict], None]
 
 class StoryEngine:
     def __init__(self, clip_folder: Path, cfg: dict, mode: str, publish: Publish, send_audio: bool = True,
-                 specialist_url: str = "", proof: bool = False, specialist_video=None):
+                 specialist_url: str = "", proof: bool = False, specialist_video=None, start_s: float = 0.0):
+        # start_s: the broadcast starts here (MVP 3 "start from anywhere"): a new session, as if the video began
+        # at start_s. Nothing before it is analysed and the first story window ends start_s + interval. Default 0.
         self.cfg = cfg
+        self.start_s = start_s
         self.specialist_video = specialist_video   # None = the specialist watches the clip (MVP 2)
         self.mode = mode
         self.layers = MODE_LAYERS[mode]
         self.publish_raw = publish
         self.send_audio = send_audio
         self.clip = Path(clip_folder).name
-        self.playhead = Playhead()
+        self.playhead = Playhead(start_s)
         self.reader = CausalReader(clip_folder, self.playhead)
         self.fusion = Fusion(cfg, mode)
         self.fast = FastLayer(cfg, self.reader)
@@ -69,7 +72,7 @@ class StoryEngine:
         self.paused = True
         self.ended = False
         self.ticks = 0
-        self.fast_done_to = 0.0                   # the fast layer has analysed everything up to here
+        self.fast_done_to = start_s               # the fast layer has analysed everything up to here
         self.recent_fast: deque[FastResult] = deque(maxlen=120)
         self.updates: list[StoryUpdate] = []
         self.memory: Memory | None = None
@@ -78,8 +81,8 @@ class StoryEngine:
         self.llm_replay = False                   # Gemini's latest is_replay (blocks new events)
         self.replay_from_llm_at = -999.0
         self.story_busy = self.memory_busy = False
-        self.next_story_at = cfg["llm"]["interval_s"]
-        self.next_memory_at = cfg["memory"]["interval_s"]
+        self.next_story_at = start_s + cfg["llm"]["interval_s"]
+        self.next_memory_at = start_s + cfg["memory"]["interval_s"]
         self.last_story_request = -999.0
         self.pending_triggers: list[str] = []
         self.delays: list[float] = []             # Gemini delays (logged_at - window_end)
@@ -224,7 +227,7 @@ class StoryEngine:
         self.specialist = SpecialistClient(self.cfg, self.reader, self.specialist_url,
                                            on_event=self._on_specialist_event, on_status=self._on_specialist_status,
                                            log_call=lambda item: self.log_file.append("specialist_calls", item),
-                                           video_source=self.specialist_video)
+                                           video_source=self.specialist_video, start_s=self.start_s)
         self.specialist.start()
 
     # ------------------------------------------------------------------ main loop
@@ -330,7 +333,7 @@ class StoryEngine:
     # ------------------------------------------------------------------ story (Gemini / template)
     def _maybe_story(self) -> None:
         now = self.playhead.now()
-        if self.story_busy or now < 1.0:
+        if self.story_busy or now < self.start_s + 1.0:
             return
         triggered = bool(self.pending_triggers) and \
             now - self.last_story_request >= self.cfg["llm"]["trigger_min_gap_s"]
@@ -352,7 +355,7 @@ class StoryEngine:
         # Round DOWN to 0.01 s: rounding up could point past the playhead (the causal guard refuses
         # that, rightly). logged_at is rounded to 0.01 s too, so delays never show "-0.0".
         now = math.floor(now * 100) / 100
-        start = round(max(0.0, now - self.cfg["llm"]["window_s"]), 2)
+        start = round(max(self.start_s, now - self.cfg["llm"]["window_s"]), 2)
         with self.lock:
             window_fast = [r for r in self.recent_fast if r.t > start]
             fast = {"intensity": self.fusion.intensity(window_fast[-1]) if window_fast else 0,
@@ -458,7 +461,7 @@ class StoryEngine:
             return
         self.next_memory_at = now + self.cfg["memory"]["interval_s"]
         with self.lock:
-            since = self.memory.logged_at if self.memory else 0.0
+            since = self.memory.logged_at if self.memory else self.start_s
             ctx = MemoryContext(sport=self.cfg["sport"], playhead=now, previous=self.memory,
                                 updates=[u for u in self.updates if u.window_end > since],
                                 events=[e.to_dict() for e in self.fusion.events if e.headline],

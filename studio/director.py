@@ -57,6 +57,10 @@ class DirectorV2:
         self.wide_cam = cfg.get("wide_cam", WIDE)
         self.close_cam = cfg.get("close_cam", CLOSE)
 
+    def start_at(self, i: int) -> None:
+        """A live run that starts at frame i (not 0): the first shot starts there."""
+        self.shot_start = self.challenger_since = i
+
     # ------------------------------------------------------------------ scores
     def scores(self, cards: list[CamCard]) -> list[float]:
         """One score per camera for IN_PLAY (unusable cameras get -1)."""

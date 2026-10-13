@@ -52,7 +52,8 @@ def check_health(url: str, timeout: float = 10) -> dict:
 class SpecialistClient:
     def __init__(self, cfg: dict, reader: CausalReader, url: str,
                  on_event: Callable[[Event | None, float, str], None],
-                 on_status: Callable[[dict], None], log_call: Callable[[dict], None], video_source=None):
+                 on_status: Callable[[dict], None], log_call: Callable[[dict], None], video_source=None,
+                 start_s: float = 0.0):
         self.cfg = cfg["specialist"]
         self.reader = reader
         self.url = normalize_url(url)
@@ -62,6 +63,7 @@ class SpecialistClient:
         # Where the frames come from: the clip (default), or anything with the same frames(t0, t1, fps) / close()
         # (MVP 3 live: the program, i.e. the camera on air). It must never return a frame after the playhead.
         self.video_source = video_source
+        self.start_s = start_s                     # the session starts here: nothing earlier is sent (default 0)
         self.stop_flag = threading.Event()
         self.last_reported: dict[str, float] = {}
         self.rtfs: deque[float] = deque(maxlen=5)
@@ -113,7 +115,7 @@ class SpecialistClient:
     def _send_loop(self, ws, fps: float, size: tuple[int, int]) -> None:
         """Send every frame that has played since the last send (model frame rate)."""
         video = self.video_source() if self.video_source else self.reader.video()
-        sent_until = 0.0
+        sent_until = self.start_s
         quality = [cv2.IMWRITE_JPEG_QUALITY, self.cfg["jpeg_quality"]]
         try:
             while not self.stop_flag.is_set():
