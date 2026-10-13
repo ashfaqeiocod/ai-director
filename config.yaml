@@ -373,6 +373,12 @@ studio:
     max_lag_s: 2.0 # a live run that falls further behind than this is marked invalid
     min_shown_fps: 8 # ...or that shows fewer frames per second than this (2026-10-13: another app took 3 CPU cores,
                      # a run showed 0.9 fps with no lag and was still called "valid")
+    remote_detect: # studio.remote_detect: the football detector on the Colab GPU while the match plays (detector "colab")
+      max_age_s: 1.5 # a detection answer older than this (live clock - its frame time) is ignored; the cached one is used
+      max_in_flight: 2 # frames sent and not answered yet; newer frames wait, older unsent ones are dropped (counted)
+      jpeg_quality: 85 # 1280x960 x 3 cams ~0.5 MB per frame = ~19 Mbit/s upload at 5/s (q95: same as cached, 1.6x more)
+      send_width: 0 # 0 = full resolution (the model works at 1280); e.g. 960 if the upload or the Mac can't keep up
+      lost_after_s: 5 # an answer that never comes (tunnel hiccup) stops counting as "in flight" after this
   goalwatch: # studio.goalwatch: Gemini looks at a goal camera when play is near that goal
     near_goal_m: 27 # ball (or the main group) within this many metres of a goal line -> watch that goal
     group_radius_m: 15 # main group of players = biggest group within this radius (when the ball is not known)

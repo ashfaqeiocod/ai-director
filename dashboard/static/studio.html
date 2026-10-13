@@ -110,6 +110,11 @@
           <button id="colabTest" class="text-sky-300 hover:text-white text-xs">Test</button>
         </div>
         <div class="text-[11px] text-slate-400 mt-1" id="colabMsg">Run colab/specialist_server.ipynb on a GPU, paste its URL, press Test. No GPU? Leave it empty.</div>
+        <div class="flex flex-col gap-0.5 mt-2 text-xs" title="cached: detections computed before the run (read up to the playhead). Colab GPU: the football model runs on Colab WHILE the match plays: a real live test, every answer arrives with its real delay.">
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">Detector</span>
+          <label class="flex gap-2"><input type="radio" name="detector" value="cached" checked> <span><b>Cached</b> · computed before the run</span></label>
+          <label class="flex gap-2"><input type="radio" name="detector" value="colab" disabled id="detColab"> <span><b>Colab GPU</b> · detects while the match plays <span class="text-slate-500" id="detColabNote">(Test the Colab URL first)</span></span></label>
+        </div>
         <label class="flex items-center gap-2 mt-2 text-xs"><input id="liveGoal" type="checkbox" checked> <span><b>Goal watcher</b> · Gemini checks the goal camera when play is near a goal</span></label>
       </div>
       <div class="col-span-2 flex flex-col justify-between gap-2">
@@ -460,11 +465,12 @@ $("goLive").onclick = async () => {
     if (!confirm("This story mode uses the Colab specialist, but no Colab URL is set. Go live without it?")) return;
   }
   const start_s = parseClock($("startAt").value);
+  const detector = document.querySelector('input[name="detector"]:checked').value;
   showSetup(false);
   await prepareLive(liveKey);
   connectLive();
   const r = await fetch("/studio/live/start", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({segment: liveKey, story, specialist_url: colab, goalwatch: $("liveGoal").checked, start_s})});
+    body: JSON.stringify({segment: liveKey, story, specialist_url: colab, goalwatch: $("liveGoal").checked, start_s, detector})});
   if (!r.ok) { alert((await r.json()).detail || "could not start"); showSetup(true); return; }
   setLiveButtons(true);
 };
@@ -477,6 +483,9 @@ async function testColab() {
   $("colabDot").className = `dot ${r.state === "connected" ? "ok" : r.state === "error" ? "bad" : ""}`;
   $("colabMsg").innerHTML = r.state === "connected" ? `<span class="text-green-300">Connected:</span> ${esc(r.message)}`
     : r.state === "error" ? `<span class="text-red-300">${esc(r.message)}</span><br>No GPU? Leave it empty: Gemini still runs.` : esc(r.message);
+  $("detColab").disabled = !(r.state === "connected" && r.detector);
+  $("detColabNote").textContent = r.state === "connected" && r.detector ? "" : r.state === "connected" ? "(this Colab has no detector)" : "(Test the Colab URL first)";
+  if ($("detColab").disabled && $("detColab").checked) document.querySelector('input[name="detector"][value="cached"]').checked = true;
   if (r.state === "connected") {
     const cur = document.querySelector('input[name="story"]:checked');
     if (cur.value === "gemini_only" || cur.value === "off") document.querySelector('input[name="story"][value="hybrid"]').checked = true;
@@ -789,10 +798,13 @@ function drawOverlays(t) {
     const cv = $("ov" + c.cam); if (!cv) return;
     const g = cv.getContext("2d"), item = frame[String(c.cam)] || {};
     g.clearRect(0, 0, cv.width, cv.height);
+    // The picture is fitted into the 16:9 tile (a 4:3 camera like Alfheim's gets side bars): draw inside it
+    const [pw, ph] = M.cams.size || [16, 9], k = Math.min(cv.width / pw, cv.height / ph);
+    const W = pw * k, H = ph * k, ox = (cv.width - W) / 2, oy = (cv.height - H) / 2;
     g.lineWidth = 1.5; g.strokeStyle = "rgba(56,189,248,.85)"; g.fillStyle = "rgba(56,189,248,.9)";
-    (item.players || []).forEach(([x1, y1, x2, y2]) => g.strokeRect(x1 * cv.width, y1 * cv.height, (x2 - x1) * cv.width, (y2 - y1) * cv.height));
-    (item.dots || []).forEach(([x, y]) => { g.beginPath(); g.arc(x * cv.width, y * cv.height, 3, 0, 7); g.fill(); });
-    if (item.ball) { g.strokeStyle = "#facc15"; g.lineWidth = 3; g.beginPath(); g.arc(item.ball[0] * cv.width, item.ball[1] * cv.height, 9, 0, 7); g.stroke(); }
+    (item.players || []).forEach(([x1, y1, x2, y2]) => g.strokeRect(ox + x1 * W, oy + y1 * H, (x2 - x1) * W, (y2 - y1) * H));
+    (item.dots || []).forEach(([x, y]) => { g.beginPath(); g.arc(ox + x * W, oy + y * H, 3, 0, 7); g.fill(); });
+    if (item.ball) { g.strokeStyle = "#facc15"; g.lineWidth = 3; g.beginPath(); g.arc(ox + item.ball[0] * W, oy + item.ball[1] * H, 9, 0, 7); g.stroke(); }
   });
 }
 function drawCards(t) {
@@ -872,6 +884,15 @@ function drawMatch(t, cur, row, teams, asking) {
       : last ? (last.goal ? `<span class="text-yellow-300">⚽ goal!</span>` : `last check: ${last.shot ? "shot" : last.celebration ? "celebration" : "no goal"}`) : "AI eyes";
   });
 }
+// The detector light: cached (computed before) or the Colab GPU while the match plays (round trip, late answers)
+function detectorItem(item, cur) {
+  const d = cur && cur.detector;
+  if (!d || d.mode !== "colab") return item(cur ? "ok" : "", "Detector", "cached · 5×/s", "football model (players, ball), computed before the run, read only up to the playhead");
+  const u = d.used || {}, late = (u.cached_late || 0) + (u.ignored_late || 0);
+  const cls = d.state !== "connected" ? "bad" : late > (u.colab || 0) * 0.1 ? "warn" : "ok";
+  return item(cls, "Detector", d.state === "connected" ? `Colab GPU · ${d.gpu_ms ?? "–"} ms · round trip ${d.rtt_ms ?? "–"} ms · ${d.upload_mbit} Mbit/s` : `Colab ${d.state} → cached`,
+    `${d.message || ""} | used: Colab ${u.colab || 0}, cached because late ${u.cached_late || 0}, cached (frame skipped) ${u.cached_skipped || 0}, none ${u.none || 0}; answers ignored as too late ${u.ignored_late || 0}; dropped before sending ${d.dropped || 0}`);
+}
 function drawStatusStrip(t, asking) {
   const item = (cls, label, text, tip) => `<span class="flex items-center gap-1" title="${esc(tip || "")}"><span class="dot ${cls}"></span><b class="text-slate-200">${label}</b><span class="text-slate-400">${esc(text)}</span></span>`;
   const n = shown().length, cuts = Math.max(0, M.timeline.filter(s => s.t <= t).length - 1);
@@ -879,7 +900,7 @@ function drawStatusStrip(t, asking) {
     const gm = M.lights.gemini, cb = M.lights.colab, cur = M.cur;
     $("statusStrip").innerHTML = [
       item(cur ? (cur.lag_s < 1 ? "ok" : "warn") : "", "Cameras", cur ? `${n} live · ${cur.shown_fps} fps` : `${n} ready`, "camera pictures decoded at real speed"),
-      item(cur ? "ok" : "", "Detector", "5×/s", "football model (players, ball), computed before the run, read only up to the playhead"),
+      detectorItem(item, cur),
       item(cur ? "ok" : "", "Director", `${cuts} cuts`, "MVP 1 scoring + 3 s minimum shot + 180° rule"),
       gm ? item(gm.state === "ok" ? "ok" : gm.state === "busy" ? "busy" : gm.state === "off" ? "" : "warn", "Gemini",
                 `${gm.state} · ${gm.rpm}/${gm.max_rpm}/min${gm.avg_delay ? ` · delay ${gm.avg_delay}s` : ""}`, "story looks every ~8 s")
@@ -898,6 +919,8 @@ function drawStatusStrip(t, asking) {
       item(M.signals.some(isColab) ? "ok" : "", "Colab", `${M.signals.filter(isColab).length} outputs`),
       item(M.looks.length ? "ok" : "", "Goal AI", `${M.looks.length} looks`),
       item(s.valid === false ? "bad" : "ok", "Live run", s.valid === false ? "INVALID (fell behind)" : `valid · lag ${s.avg_lag_s ?? 0}s`),
+      item("ok", "Detector", s.detector === "colab" ? `Colab GPU · ${(s.detections || {}).colab ?? 0} answers used` : "cached",
+           s.detections ? JSON.stringify(s.detections) : "detections computed before the run"),
     ].join("");
   }
 }

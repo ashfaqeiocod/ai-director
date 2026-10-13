@@ -8,7 +8,10 @@
 
 A wall clock decides which frame is "now" (like a real broadcast). Each loop:
   1. read the newest frame of every on-air camera (frames we are too slow for are skipped: that's live);
-  2. 5x per second: new detections (cached by default: the M1 detects ~1 frame/s, too slow for live);
+  2. 5x per second: new detections. detector="cached": computed before the run (the M1 detects ~1 frame/s, too
+     slow for live). detector="colab": REALLY live, the football model runs on Colab's GPU while the match plays
+     (studio.remote_detect); each answer is used when it arrives, with its own frame time, in frame order;
+     an answer later than max_age_s falls back to the cached detection of that frame (if there is one);
   3. the shared Pipeline (studio.pipeline): pitch map, cards, goal confirmation, the director's choice;
   4. the AI layers run beside it, at real speed:
        story      MVP 2's StoryEngine on the close-up, with this clock as its playhead (Gemini, + Colab if hybrid)
@@ -34,6 +37,7 @@ import numpy as np
 
 from src.common import ROOT, load_config
 from src.director import shot_lengths
+from src.render import letterbox
 from studio.prepare import work_dir
 from studio.sources import get_source
 from studio.video import VideoWriter
@@ -137,7 +141,7 @@ class ProgramFeed:
 class LiveStudio:
     def __init__(self, source: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
                  goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True,
-                 realtime: bool = True, start_s: float = 0.0):
+                 realtime: bool = True, start_s: float = 0.0, detector: str = "cached", detector_url: str = ""):
         self.cfg = load_config()["studio"]
         self.src = get_source(source)              # SoccerTrack segment ("eval") or MUVS period ("muvs-P19")
         self.segment, self.publish = self.src.key, publish or (lambda m: None)
@@ -151,6 +155,14 @@ class LiveStudio:
         self.start_s = self.start_frame / self.fps
         end = self.src.frames if not seconds else self.start_frame + round(seconds * self.fps)
         self.total = min(self.src.frames, end)      # the frame where the run ends (absolute)
+        # Where the detections come from: "cached" (computed before) or "colab" (the GPU, while the match plays)
+        if detector not in ("cached", "colab"):
+            raise ValueError(f"detector must be cached or colab, not {detector}")
+        if detector == "colab" and not (getattr(self.src, "calibrated", False) and realtime):
+            raise ValueError("the Colab detector is for live runs on calibrated stadium cameras (ISSIA, Alfheim)")
+        self.detector, self.detector_url = detector, detector_url or specialist_url
+        self.remote = None                          # studio.remote_detect.RemoteDetector (detector "colab")
+        self.det_counts = {"colab": 0, "cached_late": 0, "cached_skipped": 0, "none": 0, "ignored_late": 0}
         self.feed = LiveFeed(self.cfg["goalwatch"])
         self.pipe = self.src.pipeline(self.feed)
         self.stop_flag = threading.Event()
@@ -286,6 +298,17 @@ class LiveStudio:
         self._start_ai(clock)
         if self.realtime:
             start = time.time()   # the match clock starts once the AI is ready (its start-up took seconds)
+        remote, pending, ring = None, deque(), {}    # Colab detector: frames waiting for an answer, their small pictures
+        if self.detector == "colab":
+            from studio.remote_detect import RemoteDetector
+
+            from studio.remote_detect import FullFrameReader
+
+            reader = FullFrameReader({c: self.src.video(c) for c in caps}, fps) if light else None
+            remote = self.remote = RemoteDetector(self.detector_url, fps, clock, self.cfg["live"]["remote_detect"], reader)
+            remote.start()
+            self.src.shown_dets = {}                  # tiles draw what the detector answered (not the cache)
+            self.colab_answers: dict[int, dict] = {}
         self.status["state"] = "live"
         self.publish({"type": "live_started", "segment": self.segment, "run_id": self.run_id,
                       "duration": self.total / fps, "start_s": self.start_s, "story": self.story_mode,
@@ -323,7 +346,9 @@ class LiveStudio:
                             program.write(last_program)   # keep program.mp4 in real time (Replay's clock)
                     # A skipped frame's detections are still read (cached, cheap): the pitch map keeps the ball.
                     # Before: a run that showed ~13 fps lost half the map updates (324 of 600) and ball on air fell.
-                    if i % step == 0 and i != last_det:
+                    if remote is not None and i % step == 0:
+                        pending.append((i, False))      # not sent (frame skipped): the cached detection, in turn
+                    elif remote is None and i % step == 0 and i != last_det:
                         last_det = i
                         skip_events = self.pipe.detections(i, i / fps, detector=self.src.detection_at(i))
                         if files and self.pipe.pitch_state is not None:
@@ -345,7 +370,17 @@ class LiveStudio:
                 # Detections: the newest 5 Hz step at or before this frame (causal).
                 events = []
                 det_frame = i - i % step
-                if det_frame != last_det:
+                if remote is not None:
+                    # Colab: send this detection frame (full resolution, every camera), apply what has arrived.
+                    if i % step == 0:
+                        # full resolution: read by the detector's own thread (light), else these pictures already are
+                        remote.submit(i, None if light else dict(images))
+                        pending.append((i, True))
+                        ring[i] = dict(images)
+                        for f in [f for f in ring if f < i - 2 * fps]:
+                            del ring[f]
+                    events = self._apply_remote(remote, pending, ring, clock(), files)
+                elif det_frame != last_det:
                     last_det = det_frame
                     if hasattr(self.pipe, "teams"):      # calibrated cameras: shirt colours from these pictures
                         events = self.pipe.detections(det_frame, det_frame / fps, detector=self.src.detection_at(det_frame),
@@ -377,7 +412,8 @@ class LiveStudio:
                 if live_img is None:
                     live_img = images.get(decision.cam, blank)
                 if program:
-                    last_program = live_img if live_img.shape[1] == w else cv2.resize(live_img, (w, h))
+                    # same size as the recording (a 4:3 camera like Alfheim's gets black side bars, never stretched)
+                    last_program = live_img if live_img.shape[:2] == (h, w) else letterbox(live_img, w, h)
                     program.write(last_program)
                 wall = time.time()
                 if self.program_feed is not None and self.story_engine is not None:
@@ -395,8 +431,10 @@ class LiveStudio:
         finally:
             for cap in caps.values():
                 cap.release()
-            for cap, _ in full.values():
-                cap.release()
+            for item in full.values():
+                item[0].release()
+            if remote is not None:
+                remote.stop()
             self._stop_ai()
             if program:
                 program.close() if chosen else program.abort()
@@ -408,8 +446,10 @@ class LiveStudio:
         """Frame i of the on-air camera in full HD. The capture of each camera is kept; after a cut it jumps
         (keyframe every second, so a seek costs at most ~1 s of decoding once)."""
         if cam not in full:
-            full[cam] = [cv2.VideoCapture(str(self.src.video(cam))), 0]
-        cap, pos = full[cam]
+            full[cam] = [cv2.VideoCapture(str(self.src.video(cam))), 0, None]
+        cap, pos, last = full[cam]
+        if i == pos - 1:
+            return last                               # already read (the Colab detector and the program share it)
         if i < pos or i - pos > round(self.fps):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             pos = i
@@ -417,8 +457,50 @@ class LiveStudio:
             cap.grab()
             pos += 1
         ok, img = cap.read()
-        full[cam][1] = pos + 1
+        full[cam][1], full[cam][2] = pos + 1, img if ok else None
         return img if ok else None
+
+    def _apply_remote(self, remote, pending: deque, ring: dict, now: float, files: dict | None) -> list[dict]:
+        """Colab detector: apply the detection frames whose turn has come, OLDEST FIRST (the pitch map only moves
+        forward in time). A frame is applied when its answer has arrived, or with the cached detection once it is
+        max_age_s old without one (or right away if it was never sent). Answers for frames already done are ignored."""
+        for r in remote.results():
+            self.colab_answers[r["frame"]] = r
+        max_age = self.cfg["live"]["remote_detect"]["max_age_s"]
+        events = []
+        while pending:
+            f, sent = pending[0]
+            answer = self.colab_answers.pop(f, None)
+            if answer is not None and answer["age_s"] <= max_age:
+                det, source = answer["cams"], "colab"
+            elif sent and answer is None and now - f / self.fps <= max_age:
+                break                                 # still on its way: wait (keeps the order)
+            else:
+                cached = self.src.detection_at(f)
+                has = any(d.get("players") or d.get("ball") for d in cached.values())
+                det = cached if has else None
+                source = ("cached_late" if sent else "cached_skipped") if has else "none"
+                if answer is not None:
+                    self.det_counts["ignored_late"] += 1
+            pending.popleft()
+            self.det_counts[source] += 1
+            if det is not None:
+                events += self.pipe.detections(f, f / self.fps, detector=det, images=ring.get(f))
+                self.src.shown_dets = det
+                if self.watcher:
+                    self.watcher.consider(now, self.pipe.pitch_state)
+                if files and self.pipe.pitch_state is not None:
+                    files["map"].write(json.dumps(self.pipe.pitch_state.to_dict()) + "\n")
+            if files:
+                files["dets"].write(json.dumps({"frame": f, "time": round(f / self.fps, 3), "source": source,
+                    "applied_at": round(now, 3), **({k: answer[k] for k in ("sent", "received", "rtt_ms", "infer_ms", "age_s")}
+                                                   if answer else {}),
+                    "cams": {str(c): d for c, d in (det or {}).items()}}) + "\n")
+        # answers for frames that were already applied (too late): forget them
+        for f in [f for f in self.colab_answers if not pending or f < pending[0][0]]:
+            del self.colab_answers[f]
+            self.det_counts["ignored_late"] += 1
+        return events
 
     def _open_files(self, out: Path) -> dict:
         out.mkdir(parents=True, exist_ok=True)
@@ -427,7 +509,9 @@ class LiveStudio:
         log.writerow(["frame", "time", "state", "chosen_cam", *[f"score_cam{c['cam']}" for c in self.cams["cams"]],
                       "reason"])
         return {"log_file": log_file, "log": log, "cards": open(out / "cards.jsonl", "w"),
-                "map": open(out / "map.jsonl", "w"), "events": open(out / "director_events.jsonl", "w")}
+                "map": open(out / "map.jsonl", "w"), "events": open(out / "director_events.jsonl", "w"),
+                # the Colab detector's answers as they were used (frame, source, round trip...), for replay + comparison
+                "dets": open(out / "detections_live.jsonl", "w")}
 
     def _finish(self, out: Path, files: dict | None, chosen: list, states: list, shown: int, skipped: int,
                 lags: list, start: float) -> dict:
@@ -446,10 +530,12 @@ class LiveStudio:
                    "confirmed_goals": sorted(v["goal_time"] for v in self.pipe.confirmed.values()),
                    # A live run that fell far behind is not a fair measurement (like an invalid story pass).
                    "shown_fps": round(shown / max(1e-6, time.time() - start), 1),
+                   "detector": self.detector,
+                   **({"detections": dict(self.det_counts), "colab_link": self.remote.status()} if self.remote else {}),
                    "valid": ((not lags) or float(np.max(lags)) <= self.cfg["live"]["max_lag_s"])
                             and (not self.realtime or shown / max(1e-6, time.time() - start) >= self.cfg["live"]["min_shown_fps"])}
         if files:
-            for k in ("log_file", "cards", "map", "events"):
+            for k in ("log_file", "cards", "map", "events", "dets"):
                 files[k].close()
             story = None
             if self.story_engine:
@@ -491,7 +577,9 @@ class LiveStudio:
                 "cards": cards, "map": ps.to_dict() if ps else None, "story_line": r.story_line,
                 "lag_s": self.status["lag_s"], "shown_fps": self.status["shown_fps"],
                 "skipped": self.status["skipped"], "confirmed": [v["goal_time"] for v in self.pipe.confirmed.values()],
-                "asking": self.watcher.asking if self.watcher else None, "frame": i}
+                "asking": self.watcher.asking if self.watcher else None, "frame": i,
+                "detector": {"mode": self.detector, **({**self.remote.status(), "used": dict(self.det_counts)}
+                                                       if self.remote else {})}}
 
 
 def parse_time(text: str) -> float:
@@ -509,6 +597,9 @@ def main() -> int:
     parser.add_argument("--start", default="0", help="where the broadcast starts: seconds or mm:ss (e.g. 23:40)")
     parser.add_argument("--story", default="off", choices=["off", "fast_only", "gemini_only", "hybrid"])
     parser.add_argument("--specialist-url", default="")
+    parser.add_argument("--detector", default="cached", choices=["cached", "colab"],
+                        help="colab = the football model on Colab's GPU while the match plays (needs --detector-url)")
+    parser.add_argument("--detector-url", default="", help="the Colab URL (default: --specialist-url)")
     parser.add_argument("--goalwatch", action="store_true")
     parser.add_argument("--no-record", action="store_true")
     parser.add_argument("--offline", action="store_true", help="every frame, as fast as possible (no AI): for scoring")
@@ -524,7 +615,8 @@ def main() -> int:
             print(f"[live] {kind}: {m}")
 
     live = LiveStudio(args.segment, publish, args.story, args.specialist_url, args.goalwatch, args.seconds,
-                      record=not args.no_record, realtime=not args.offline, start_s=parse_time(args.start))
+                      record=not args.no_record, realtime=not args.offline, start_s=parse_time(args.start),
+                      detector=args.detector, detector_url=args.detector_url)
     live.start()
     try:
         while live.thread.is_alive():

@@ -251,6 +251,7 @@ class IssiaSource:
     goalwatch = True                   # cam1 / cam5 film the goals: the goal watcher can check them
     layout = None                      # set below (the tiles as the cameras stand around the pitch)
     small_suffix = "_540"              # the light copies made by studio.issia
+    shown_dets: dict | None = None     # live with the Colab detector: the newest answer used ({cam: detection})
 
     def __init__(self, take: int):
         self._setup("issia", ROOT / load_config()["studio"]["issia"]["dir"] / f"T{take}", f"issia-T{take}",
@@ -333,7 +334,7 @@ class IssiaSource:
         st = pipe.pitch_state
         out = {}
         for c in self.cam_ids:
-            det = self.dets[c]["frames"].get(str(frame), {})
+            det = self.shown_dets.get(c, {}) if self.shown_dets is not None else self.dets[c]["frames"].get(str(frame), {})
             item = {"players": [[round(v / s, 3) for v, s in zip(p["box"], (w, h, w, h))] for p in det.get("players", [])]}
             spot = pipe.in_picture(c, st.ball if st is not None and st.ball_status != "lost" else None)
             if spot:

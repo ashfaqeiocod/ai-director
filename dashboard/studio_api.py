@@ -199,9 +199,17 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
     w, h = src.cams["size"]
     rows = [json.loads(x) for x in (folder / "map.jsonl").read_text().splitlines()] if (folder / "map.jsonl").exists() else []
     frames = {}
-    for f in sorted({int(k) for k in src.dets[cam_ids[0]]["frames"]}):
+    live_dets = folder / "detections_live.jsonl"        # a run with the Colab detector: what it really used
+    if live_dets.exists() and info.get("summary", {}).get("detector") == "colab":
+        dets = {c: {} for c in cam_ids}
+        for row in map(json.loads, live_dets.read_text().splitlines()):
+            for c, d in row["cams"].items():
+                dets[int(c)][str(row["frame"] - row["frame"] % src.step)] = d
+    else:
+        dets = {c: src.dets[c]["frames"] for c in cam_ids}
+    for f in sorted({int(k) for c in cam_ids for k in dets[c]}):
         frames[str(f)] = {str(c): {"players": [[round(v / q, 3) for v, q in zip(p["box"], (w, h, w, h))]
-                                               for p in src.dets[c]["frames"].get(str(f), {}).get("players", [])]}
+                                               for p in dets[c].get(str(f), {}).get("players", [])]}
                           for c in cam_ids}
     pitch = None
     if getattr(src, "calibrated", False):           # ISSIA, Alfheim
@@ -430,8 +438,12 @@ def live_colab(body: dict) -> dict:
         health = check_health(url)
     except Exception as error:                     # noqa: BLE001 — shown on the page
         return {"state": "error", "url": url, "message": f"can't reach {url}/health: {type(error).__name__}: {error}"}
-    return {"state": "connected", "url": url,
-            "message": f"{health['model'].split('/')[-1]} on {health.get('gpu') or 'CPU'} · {health['fps']:.2f} fps"}
+    det = health.get("detector") or {}
+    detector = (f"detector ready · {det.get('ms_per_frame') or '?'} ms per camera frame"
+                + ("" if "CUDAExecutionProvider" in det.get("providers", []) else " (NO GPU: too slow for live)")
+                if det.get("ready") else "no detector (old notebook, or no ROBOFLOW_API_KEY secret)")
+    return {"state": "connected", "url": url, "detector": bool(det.get("ready")),
+            "message": f"{health['model'].split('/')[-1]} on {health.get('gpu') or 'CPU'} · {health['fps']:.2f} fps · {detector}"}
 
 
 @router.get("/live/info/{segment}")
@@ -461,10 +473,17 @@ def live_start(body: dict) -> dict:
             raise HTTPException(400, "start_s must be a number of seconds") from None
         if not 0 <= start_s < duration - 10:
             raise HTTPException(400, f"start must be between 0:00 and {int(duration - 10) // 60}:{int(duration - 10) % 60:02d}")
+        detector = body.get("detector", "cached")
+        if detector == "colab" and not body.get("specialist_url", "").strip():
+            raise HTTPException(400, "the Colab detector needs the Colab URL")
         live_ctl.history, live_ctl.last_state = [], None
-        live_ctl.live = LiveStudio(segment, live_ctl.publish, story=body.get("story", "off"),
-                                   specialist_url=body.get("specialist_url", "").strip(),
-                                   goalwatch=bool(body.get("goalwatch", False)), record=True, start_s=start_s)
+        try:
+            live_ctl.live = LiveStudio(segment, live_ctl.publish, story=body.get("story", "off"),
+                                       specialist_url=body.get("specialist_url", "").strip(),
+                                       goalwatch=bool(body.get("goalwatch", False)), record=True, start_s=start_s,
+                                       detector=detector)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
         live_ctl.live.start()
     return live_ctl.status()
 
