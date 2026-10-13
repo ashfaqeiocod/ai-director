@@ -29,10 +29,10 @@ dashboard on your Mac connects to.
 2. **Roboflow key (for the detector):** click the 🔑 *Secrets* icon (left bar) → *Add new secret* → name
    `ROBOFLOW_API_KEY` (exactly), value = your Roboflow API key, switch *Notebook access* on. Without it the
    action model still runs, only the detector is off.
-3. *(Optional, recommended)* **ngrok token:** make a free account at https://dashboard.ngrok.com, copy your
+3. *(Optional, only for the action model alone; the detector needs far more than ngrok's free 1 GB/month)* **ngrok token:** make a free account at https://dashboard.ngrok.com, copy your
    authtoken, then in Colab click the 🔑 *Secrets* icon (left bar) → *Add new secret* → name
    `NGROK_AUTHTOKEN`, value = your token, and switch *Notebook access* on.
-   Without it, the notebook uses a free Cloudflare tunnel instead (no account needed).
+   By default the notebook uses a free Cloudflare quick tunnel (no account, no data cap); ngrok only with TUNNEL = 'ngrok' in step 5.
 4. **Run everything:** menu *Runtime → Run all*. The first run takes ~5–8 minutes (installing + downloading the models).
 5. **Copy the URL** printed in big letters at the end (it looks like `https://xxxx.ngrok-free.app`
    or `https://xxxx.trycloudflare.com`).
@@ -146,13 +146,16 @@ def build() -> dict:
              "if roboflow_key: await detector_selftest()\n"
              "else: print('detector off (no ROBOFLOW_API_KEY secret)')"),
         markdown("## 5. Open a public tunnel and print the URL\n"
-                 "Uses ngrok if the `NGROK_AUTHTOKEN` secret exists, otherwise a free Cloudflare quick tunnel."),
+                 "Default: a free Cloudflare quick tunnel (no account, no data cap). The detector sends ~19 Mbit/s "
+                 "(~7 GB per half), far over ngrok's free 1 GB/month: set `TUNNEL = 'ngrok'` only for the action model "
+                 "alone (it uses the `NGROK_AUTHTOKEN` secret)."),
         code("import re, subprocess\n"
              "from IPython.display import HTML, display\n"
+             "TUNNEL = 'cloudflare'   # or 'ngrok'\n"
              "public_url = None\n"
              "try:\n"
              "    from google.colab import userdata\n"
-             "    token = userdata.get('NGROK_AUTHTOKEN')\n"
+             "    token = userdata.get('NGROK_AUTHTOKEN') if TUNNEL == 'ngrok' else None\n"
              "except Exception:\n"
              "    token = None\n"
              "if token:\n"
@@ -160,7 +163,7 @@ def build() -> dict:
              "    conf.get_default().auth_token = token\n"
              "    public_url = ngrok.connect(PORT, 'http').public_url.replace('http://', 'https://')\n"
              "else:\n"
-             "    print('No NGROK_AUTHTOKEN secret: using a Cloudflare quick tunnel instead.')\n"
+             "    print('Cloudflare quick tunnel (no account needed).')\n"
              "    !wget -q -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x cloudflared\n"
              "    tunnel = subprocess.Popen(['./cloudflared', 'tunnel', '--no-autoupdate', '--url', f'http://127.0.0.1:{PORT}'],\n"
              "                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)\n"
