@@ -139,12 +139,30 @@ within a few %. Write the numbers into PROGRESS.md.
 
 ## Step 4 — Proof runs and report
 1. `python -m studio.gemini_check` + Colab Test (both lights green).
-2. Alfheim Live, Hybrid + Colab detector, three 5-minute starts (0:00, 23:40, 41:00) -> check the new-session
-   behaviour and the latency numbers.
-3. One full half (47 min), Hybrid + Colab detector. Keep the Mac free (memory!).
+2. Alfheim Live, Hybrid + CACHED detector (see "Decision" below), three 5-minute starts (0:00, 23:40, 41:00) ->
+   check the new-session behaviour and the latency numbers. (41:00 needs the cache to reach 46:00.)
+3. One full half (47 min), Hybrid + cached detector. Keep the Mac free (memory!). Colab detector: "Later tests".
 4. Compare with the cached-detector run: cuts, ball on air (where measurable), danger coverage, delays.
 5. PROGRESS.md entry + TESTING_MVP3.md section 0A updated; update the HTML report artifact
    (`scratchpad/report/src.html` -> republish) if the user asks.
+
+### Decision (2026-10-14, after step 2d on the real Colab GPU)
+Proof runs use the **cached detector** first (option 1): full ball rate, no upload limit; Gemini, the goal watcher
+and the Colab action model still run truly live with their real delays (latency lane). Reason: with TensorRT the
+T4 does 77 ms per camera frame, but the home upload (~10-12 Mbit/s) lets only ~1/3 of the detection steps reach
+Colab in time (round trip 580 ms), and the GPU finds the ball ~20-25% less often (JPEG + fp16). Numbers: PROGRESS.md.
+
+### Later tests (the Colab detector, still to do)
+- **A. Pure live at the upload's rate:** `studio.live.remote_detect.cache_fallback: false`, Colab detector, 5 min
+  from 23:40. Expect ~1-2 detection steps/s from the GPU, none from the cache. Measure: ball on air, cuts, detector
+  delay, vs the cached run of the same 5 min (`python -m studio.compare_detectors ... --cached-run <id>`).
+- **B. Smaller pictures:** `send_width: 960` (~30% less upload) with A's settings: more steps in time, but check
+  the ball rate per camera (it may drop further).
+- **C. Ball rate gap:** JPEG quality 95 (q95 matched the cache exactly on the Mac, but 1.6x the upload) and/or
+  TensorRT without fp16, to see which one loses the borderline balls.
+- **D. Faster link:** the same run from a place with a faster upload (>= 20 Mbit/s), or Colab Pro, to see the
+  detector at full rate (5 steps/s x 3 cameras).
+Each: Colab notebook Run all (~20-25 min, builds the TensorRT engine once), Test in the setup panel, Detector: Colab GPU.
 
 ## What the user does (and when)
 - Now: nothing on Colab until Step 2a is built (the notebook changes).

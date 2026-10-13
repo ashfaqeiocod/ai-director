@@ -539,8 +539,10 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   Mac shown fps 10.5 with the IDE + 2 Claude sessions + background detection running.
 
 ## Next action (MVP 3)
-Live test environment (`docs/MVP3_LIVE_TEST_PLAN.md`): steps 1-3 built. Next: the user runs the new Colab notebook
-(ROBOFLOW_API_KEY secret, T4) -> step 2d parity (60 s Alfheim, Colab vs cached: ball rate per cam, players per
-frame, cuts) -> step 4 proof runs (0:00, 23:40, 41:00 x 5 min, then the full half) with the Mac free.
-Alfheim detection runs unattended (`data/alfheim/pipeline.log`); it stalls when the Mac runs out of
-memory (8 GB): close other apps.
+Decision 2026-10-14: proof runs with the CACHED detector first (live Gemini / goal watcher / Colab action model).
+1. Mac free (close the IDE, other Claude sessions; Gemini quota: one session only), `python -m studio.gemini_check`.
+2. Alfheim Live, Hybrid, cached detector: 5 min from 0:00 and from 23:40; from 41:00 once the cache reaches ~46:00
+   (the background detection: 38:59 cached at 2026-10-14 ~03:40, ~1.5 h left).
+3. The full half (47 min), same settings. Then PROGRESS + TESTING_MVP3 0A.
+Colab detector: "Later tests" A-D in docs/MVP3_LIVE_TEST_PLAN.md (pure live at the upload's rate, 960 px, q95 /
+no fp16, a faster upload).
