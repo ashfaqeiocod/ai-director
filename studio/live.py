@@ -139,11 +139,15 @@ class ProgramFeed:
 
 
 class LiveStudio:
-    def __init__(self, source: str, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
+    def __init__(self, source, publish: Publish | None = None, story: str = "off", specialist_url: str = "",
                  goalwatch: bool = False, seconds: float | None = None, speed: float = 1.0, record: bool = True,
                  realtime: bool = True, start_s: float = 0.0, detector: str = "cached", detector_url: str = ""):
         self.cfg = load_config()["studio"]
-        self.src = get_source(source)              # SoccerTrack segment ("eval") or MUVS period ("muvs-P19")
+        # SoccerTrack segment ("eval"), MUVS period ("muvs-P19"), ... or an already loaded source (the dashboard shares
+        # one copy: a full Alfheim half's detections take ~0.5 GB)
+        self.src = get_source(source) if isinstance(source, str) else source
+        if hasattr(self.src, "shown_dets"):
+            self.src.shown_dets = None                 # a previous Colab run on the shared copy must not show here
         self.segment, self.publish = self.src.key, publish or (lambda m: None)
         self.story_mode, self.specialist_url = story, specialist_url
         self.use_goalwatch = goalwatch and self.src.goalwatch
@@ -454,6 +458,7 @@ class LiveStudio:
                 item[0].release()
             if remote is not None:
                 remote.stop()
+                self.src.shown_dets = None            # the shared source: Replay and later runs draw the cache again
             self._stop_ai()
             if program:
                 program.close() if chosen else program.abort()

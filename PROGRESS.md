@@ -493,7 +493,27 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - Fixes found on the way: Alfheim's 4:3 picture crashed program.mp4 recording (now letterboxed); detection boxes on
   4:3 tiles were drawn as if 16:9 (offset).
 
+### 2026-10-13 evening: live test step 3 (latency) + checks
+- `studio/latency.py`: every AI answer = happened -> known (Gemini looks with model + request seconds from its call
+  log, Gemini events, goal-camera looks, Colab action events, the Colab detector per second + every late frame),
+  latency.jsonl + live messages + run.json summary (avg / p90 / max). Older runs: derived from their logs.
+  Studio: latency lane (a row per AI), delay strip, "All events" tab (filter, click = jump). Live timeline grows in
+  5-minute steps (a 5-minute test on a 47-minute timeline was a sliver).
+- First Alfheim run with the story layer: the mosaic clip intake took 6 min (once); the page now says "preparing".
+- Test run Alfheim 1:00-1:55 (Gemini + goal watcher + FAKE GPU detector, Chrome open): Gemini avg 8.2 s / p90 17 s,
+  goal AI avg 15 s, detector 0.83 s, BUT 3.5 frames/s shown -> INVALID: the Antigravity IDE used ~380% CPU, two
+  other Claude sessions + the background Alfheim detection ran too. Not a fair measurement; repeat with the Mac free.
+- Replay races fixed (an older run list / run answering late overwrote the newer one).
+- MVP 1 quick check: same as before (ball rate 24/34/15%, 5 cuts, shortest 2.00 s). pytest: 92 passed.
+- Memory: a loaded Alfheim source holds its detections: ~112 MB per 10 min cached -> ~0.5 GB for the full half. The
+  dashboard now keeps ONE copy (shared by Replay, camera videos and live runs; reloaded only when the detection
+  files change) and Replay sends only the run's own stretch of overlays. The background detection itself uses
+  ~1.1 GB and ~150% CPU: with Chrome open a live run fell to ~4 fps while it ran (CLI: Colab mode 23 fps, cached 26).
+- `python -m studio.compare_detectors --segment ... --colab-run <id> [--cached-run <id>]`: the step 2d table.
+
 ## Next action (MVP 3)
-Live test environment: follow `docs/MVP3_LIVE_TEST_PLAN.md` (start from anywhere, detector on Colab, latency on
-the timeline). Alfheim detection runs unattended (`data/alfheim/pipeline.log`); it stalls when the Mac runs out of
+Live test environment (`docs/MVP3_LIVE_TEST_PLAN.md`): steps 1-3 built. Next: the user runs the new Colab notebook
+(ROBOFLOW_API_KEY secret, T4) -> step 2d parity (60 s Alfheim, Colab vs cached: ball rate per cam, players per
+frame, cuts) -> step 4 proof runs (0:00, 23:40, 41:00 x 5 min, then the full half) with the Mac free.
+Alfheim detection runs unattended (`data/alfheim/pipeline.log`); it stalls when the Mac runs out of
 memory (8 GB): close other apps.

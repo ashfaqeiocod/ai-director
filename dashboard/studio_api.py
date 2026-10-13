@@ -173,7 +173,7 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
     from studio.cards import StoryFeed
     from studio.sources import get_source
 
-    src = get_source(key)
+    src = _cached_source(key)
     timeline, cards, events = _timeline_cards_events(folder)
     story, intensity = {"updates": [], "events": []}, []
     if info.get("story_run") and info.get("story_clip"):
@@ -344,11 +344,40 @@ def run_video(segment: str, run_id: str, name: str) -> FileResponse:
     return FileResponse(_run_dir(segment, run_id) / name, media_type="video/mp4")
 
 
-@lru_cache(maxsize=8)
 def _cached_source(key: str):
+    """One loaded copy per match, shared by Replay, the camera videos and live runs. A full Alfheim half's
+    detections take ~0.5 GB in memory: several copies at once could fill the 8 GB Mac. Loaded again only when the
+    detection files changed (a detection run still going), and never while a live run uses the old copy."""
+    from studio.sources import get_source, is_folder_source
+
+    stamp = 0.0
+    if is_folder_source(key):
+        lv = live_ctl.live
+        if lv and lv.status["state"] in ("live", "preparing") and lv.segment == key:
+            return lv.src
+        folder = get_source_folder(key)
+        stamp = max((f.stat().st_mtime for f in folder.glob("detections/cam*.json")), default=0.0) if folder else 0.0
+    return _load_source(key, stamp)
+
+
+@lru_cache(maxsize=2)
+def _load_source(key: str, stamp: float):
     from studio.sources import get_source
 
     return get_source(key)
+
+
+def get_source_folder(key: str) -> Path | None:
+    """The footage folder of a folder source (without loading it)."""
+    cfg = load_config()["studio"]
+    if key.startswith("alfheim-"):
+        match, half = key[len("alfheim-"):].rsplit("-H", 1)
+        return ROOT / cfg["alfheim"]["dir"] / f"{match}_H{half}"
+    if key.startswith("issia-T"):
+        return ROOT / cfg["issia"]["dir"] / key[len("issia-"):]
+    if key.startswith("muvs-P"):
+        return ROOT / cfg["muvs"]["dir"] / key[len("muvs-"):]
+    return None
 
 
 @router.get("/cam/{segment}/{run_id}/{cam}")
@@ -470,7 +499,7 @@ def live_info(segment: str) -> dict:
         raise HTTPException(404, "not ready")
     from studio.sources import get_source
 
-    return get_source(segment).info()
+    return _cached_source(segment).info()
 
 
 @router.post("/live/start")
@@ -494,8 +523,11 @@ def live_start(body: dict) -> dict:
         if detector == "colab" and not body.get("specialist_url", "").strip():
             raise HTTPException(400, "the Colab detector needs the Colab URL")
         live_ctl.history, live_ctl.last_state = [], None
+        from studio.sources import is_folder_source
+
+        source = _cached_source(segment) if is_folder_source(segment) else segment   # share the loaded copy
         try:
-            live_ctl.live = LiveStudio(segment, live_ctl.publish, story=body.get("story", "off"),
+            live_ctl.live = LiveStudio(source, live_ctl.publish, story=body.get("story", "off"),
                                        specialist_url=body.get("specialist_url", "").strip(),
                                        goalwatch=bool(body.get("goalwatch", False)), record=True, start_s=start_s,
                                        detector=detector)

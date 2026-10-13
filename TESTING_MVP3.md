@@ -50,6 +50,42 @@ Expect: 3 tiles in one row, the director mostly on the midfield camera and switc
 goes there, the pitch map with both teams (red/white vs dark blue), box entries, goal-camera looks.
 Honest limits: players are small (~35 px), the ball is found less often than on ISSIA, all shots are wide.
 
+### 0A-live. The REAL live test: start anywhere, detector on Colab's GPU, every delay on the timeline
+
+**Start from anywhere.** Studio → ● Live: the setup panel shows the whole match on the timeline at the bottom.
+Click a moment (or type `23:40` in **Start at**): the broadcast starts there like a new session (teams, possession,
+score and the AI story are learned again from that moment). Same from the command line:
+`venv/bin/python -m studio.live --segment alfheim-2013-11-03-H1 --start 23:40 --seconds 300 --story gemini_only`.
+Check: cameras show 23:40, the first AI caption is about ~23:40–23:49, no `LAG` lines. In Replay the run is listed
+as "… from 23:40" and plays in sync (the timeline shows match time).
+Under Start at, "cached detections up to mm:ss" says how far the pre-computed detections reach.
+
+**The detector on Colab (a real live test).** The Mac detects ~1 frame/s; live needs 15. On Colab:
+1. Secrets (🔑, left bar): `ROBOFLOW_API_KEY` (exactly this name), *Notebook access* on.
+2. Upload `colab/specialist_server.ipynb` → Runtime → Change runtime type → **T4 GPU** → Run all (~5–8 min).
+3. Check these lines in the notebook:
+   - `detector env OK, onnxruntime … ['CUDAExecutionProvider', …]` (no CUDA = too slow; send me `detector.log`);
+   - `detector ready: {… 'providers': ['CUDAExecutionProvider', …]}`;
+   - the self-test: `detector: NN ms per camera frame … -> OK for live` (must be well under 66 ms);
+   - the big box with the URL.
+4. Studio → ● Live → paste the URL → **Test**: it should say "… detector ready · NN ms per camera frame".
+   Then **Detector: Colab GPU** becomes clickable. Pick it, Start at, Go live.
+5. The **Detector** light shows the GPU time, the round trip and the upload (~19 Mbit/s at full quality; if your
+   upload is slower, set `studio.live.remote_detect.send_width: 960` in `config.yaml`). Hover it for the counts:
+   answers used, cached because late (> 1.5 s), dropped before sending.
+A late answer falls back to the cached detection of that frame (if there is one). For a "pure live" run with no
+cache at all: `cache_fallback: false` in the same config block.
+
+**Every delay on the timeline.** The **latency** row under the timeline has one thin line per AI: 🧠 Gemini (blue),
+🥅 goal AI (yellow), 🤖 Colab action model (purple), 📡 detector (green, red = a late frame). Each bar runs from
+when something HAPPENED to when the system KNEW it: a long bar = a slow answer. Hover a bar for the model and the
+delay. Above the timeline: last + average delay per AI, the detector's round trip, frames shown per second.
+Tab **All events**: every event in one table (happened → known, delay, which AI + model); filter by AI; in Replay a
+click jumps there. The run's average / 90% delay per AI is in its `run.json` (summary → latency).
+
+**Before a long run:** close other apps (the IDE alone took ~4 CPU cores on 2026-10-13 and the run fell to
+4 frames/s → INVALID), and run `venv/bin/python -m studio.gemini_check`.
+
 ## 0. The 6-camera match (ISSIA): the main demo
 
 Six REAL fixed cameras of one Serie A match (ISSIA-CNR Soccer Dataset, 2 min, no sound), two per area:
