@@ -571,6 +571,15 @@ function laneMarks(id, items, t) {
   lane.dataset.count = String(known.length);
 }
 function colabName(message) { const m = /^([A-Za-z_][A-Za-z_ ]*?)(?: \(| @|$)/.exec(message || ""); return m ? m[1].trim() : ""; }
+// One Colab model output, read from its log line:
+//   SPECIALIST       "throw_in @60.9s (0.53)"  a real event (above the confidence threshold), with WHEN it happened
+//   SPECIALIST_PLAY  "PASS (0.29)"             a low-level play signal (pass, run with the ball...), only nudges intensity
+function colabItem(s) {
+  const name = colabName(s.message), m = /@([\d.]+)s \(([\d.]+)\)/.exec(s.message || ""), p = /\(([\d.]+)\)/.exec(s.message || "");
+  const key = s.kind === "SPECIALIST";
+  return {key, name: name.replace("_", " ").toUpperCase(), icon: COLAB_ICONS[name] || "•", known: s.t,
+          at: key && m ? +m[1] : s.t, conf: m ? +m[2] : p ? +p[1] : null};
+}
 function drawTimeline(t) {
   const tl = $("timeline"), D = M.duration, segs = M.timeline;
   if (tl.dataset.count !== String(segs.length) || mode === "live") {
@@ -589,10 +598,13 @@ function drawTimeline(t) {
   $("playhead").style.left = `${100 * t / D}%`;
   $("clock").textContent = `${fmt(t)} / ${fmt(D)}`;
   // lanes: each item appears only once it was known
-  laneMarks("laneAI", M.events.filter(e => HEADLINE.has(e.type)).map(e => ({at: e.known_at, x: e.event_time, icon: ICONS[e.type] || "•",
+  laneMarks("laneAI", M.events.filter(e => e.type !== "none" && e.type !== "whistle").map(e => ({at: e.known_at, x: e.event_time, icon: ICONS[e.type] || "•",
     tip: `${e.type} ${fmt(e.event_time)} · known ${fmt(e.known_at)} (+${(e.known_at - e.event_time).toFixed(1)}s) · ${(e.sources || []).join("+")}`})), t);
-  laneMarks("laneColab", M.signals.filter(isColab).map(s => ({at: s.t, x: s.t, icon: COLAB_ICONS[colabName(s.message)] || "•",
-    small: s.kind === "SPECIALIST_PLAY", tip: `Colab model: ${esc(s.message)} · ${fmt(s.t)}`})), t);
+  // Colab lane: real events big, at the moment they happened; passes / runs as small dots
+  laneMarks("laneColab", M.signals.filter(isColab).map(colabItem).map(c => ({at: c.known, x: c.at,
+    icon: c.key ? c.icon : "·", small: !c.key,
+    tip: c.key ? `Colab model: ${c.name} at ${fmt(c.at)} · ${Math.round(100 * c.conf)}% · reported +${(c.known - c.at).toFixed(1)}s`
+               : `Colab model: ${c.name} (${c.conf}) · ${fmt(c.at)}`})), t);
   laneMarks("laneMap", M.decisions.filter(e => MAP_ICONS[e.kind] || e.kind === "REACTION").map(e => ({at: e.time, x: e.time,
     icon: MAP_ICONS[e.kind] || "🎥", tip: `${e.kind} ${fmt(e.time)} · ${esc(MAP_EVENTS[e.kind] || e.message || "")}`})), t);
   // intensity graph: story (AI, blue area) + map (amber line); whole run in replay, so far in live
@@ -686,6 +698,16 @@ function drawPitch(t, liveCam, teams) {
   });
   g.lineWidth = 4; g.strokeStyle = "#fff";
   [-52.5, 52.5].forEach(x => { g.beginPath(); g.moveTo(px(x), py(-3.66)); g.lineTo(px(x), py(3.66)); g.stroke(); });
+  // banner: the newest event the system knows (Colab model, Gemini, goal camera), shown for 5 s after it arrived
+  const recent = M.events.filter(e => e.type !== "none" && e.type !== "whistle" && e.known_at <= t && t - e.known_at < 5)
+    .sort((a, b) => b.known_at - a.known_at)[0];
+  if (recent) {
+    const who = (recent.sources || []).map(x => ({specialist: "Colab", gemini: "Gemini", goalcam: "goal cam"}[x] || x)).join(" + ");
+    const text = `${ICONS[recent.type] || "•"} ${recent.type.replace("_", " ").toUpperCase()} · ${who}`;
+    g.font = "bold 30px ui-sans-serif, system-ui"; const w = g.measureText(text).width + 28;
+    g.fillStyle = "rgba(2,6,23,.85)"; g.fillRect(P.w / 2 - w / 2, 22, w, 46);
+    g.fillStyle = "#fde68a"; g.textAlign = "center"; g.fillText(text, P.w / 2, 56); g.textAlign = "left";
+  }
   if (!row) return null;
   const colours = teams && teams.teams ? teams.teams.map(teamColour) : null;
   row.players.forEach((p, j) => {
@@ -846,9 +868,10 @@ function drawFilters() {
 function feedItems(t) {
   const out = [], want = (k) => feedFilter === "all" || feedFilter === k;
   if (want("ai")) {
-    M.events.filter(e => e.known_at <= t && e.type !== "none").forEach(e => out.push({at: e.known_at, html:
+    // events only the Colab model reported are listed once, as its own line below
+    M.events.filter(e => e.known_at <= t && e.type !== "none" && (e.sources || []).join() !== "specialist").forEach(e => out.push({at: e.known_at, html:
       `<span class="text-slate-500 mono">${fmt(e.event_time)} +${(e.known_at - e.event_time).toFixed(1)}s</span> ` +
-      `<b>${ICONS[e.type] || "•"} ${e.type.replace("_", " ")}</b>${e.team ? ` <span class="text-slate-400">(${esc(e.team)})</span>` : ""} ` +
+      `<b>${ICONS[e.type] || "•"} ${e.type.replace("_", " ")}</b> <span class="text-slate-400">event</span>${e.team ? ` <span class="text-slate-400">(${esc(e.team)})</span>` : ""} ` +
       `<span class="text-slate-500">${Math.round((e.confidence || 0) * 100)}% · ${(e.sources || []).join("+")}</span>`}));
     M.updates.filter(u => u.logged_at <= t).forEach(u => out.push({at: u.logged_at, html:
       `<span class="text-slate-500 mono">${fmt(u.window_end)} +${(u.logged_at - u.window_end).toFixed(1)}s</span> ` +
@@ -857,8 +880,14 @@ function feedItems(t) {
       `<span class="text-slate-500 mono">${fmt(l.t)} +${(l.logged_at - l.t).toFixed(1)}s</span> <b class="text-yellow-200">🥅 ${l.side} goal:</b> ` +
       `${l.goal ? "⚽ GOAL" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal"} <span class="text-slate-400">${esc(l.note || "")}</span>`}));
   }
-  if (want("colab")) M.signals.filter(s => s.t <= t && isColab(s)).forEach(s => out.push({at: s.t, html:
-    `<span class="text-slate-500 mono">${fmt(s.t)}</span> <span class="text-violet-300">🤖 ${COLAB_ICONS[colabName(s.message)] || ""} ${esc(s.message)}</span>`}));
+  // Colab: its real events always (highlighted); passes / runs only under the 🤖 Colab filter (there are ~50 a match)
+  M.signals.filter(s => s.t <= t && isColab(s)).map(colabItem).forEach(c => {
+    if (c.key && (want("colab") || want("ai"))) out.push({at: c.known, html:
+      `<span class="text-slate-500 mono">${fmt(c.at)} +${(c.known - c.at).toFixed(1)}s</span> <b class="text-violet-200">🤖 Colab model: ${c.icon} ${c.name}</b> ` +
+      `<span class="text-slate-500">${Math.round(100 * c.conf)}%</span>`});
+    else if (!c.key && feedFilter === "colab") out.push({at: c.known, html:
+      `<span class="text-slate-500 mono">${fmt(c.at)}</span> <span class="text-violet-300/70">🤖 ${c.icon} ${c.name.toLowerCase()} <span class="text-slate-500">(${c.conf})</span></span>`});
+  });
   M.decisions.filter(e => e.time <= t).forEach(e => {
     const isMap = e.kind in MAP_ICONS;
     if (isMap ? !want("map") : !want("cuts")) return;
