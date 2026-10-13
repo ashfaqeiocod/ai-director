@@ -56,7 +56,8 @@ def ready_sources() -> list[str]:
             out.append(f"issia-{folder.name}")
     alfheim = ROOT / load_config()["studio"]["alfheim"]["dir"]
     for folder in sorted(alfheim.glob("*_H[12]")):
-        if (folder / "calibration.json").exists() and (folder / "detections" / "cam3.json").exists():
+        # Ready once calibrated: cached detections may still be on their way (the Colab detector needs none).
+        if (folder / "calibration.json").exists() and (folder / "cam3.mp4").exists():
             out.append("alfheim-" + folder.name.replace("_H", "-H"))
     return out
 
@@ -282,12 +283,23 @@ class IssiaSource:
         self.on_air = self.cfg["director"]["on_air_cams"]
         calib = json.loads((self.folder / "calibration.json").read_text())
         self.H = {c: np.asarray(calib[f"cam{c}"]["pitch_to_image"]) for c in self.cam_ids}
-        self.dets = {c: json.loads((self.folder / "detections" / f"cam{c}.json").read_text()) for c in self.cam_ids}
-        self.step = self.dets[1]["step"]
+        # Cached detections (made by studio.intensity, saved every 300 frames). They may be missing or partial
+        # (a full Alfheim half takes hours): live mode can then detect on Colab instead (studio.remote_detect).
+        default_step = max(1, round(self.fps / self.cfg_all["vision_intensity"]["detect_fps"]))
+        self.dets = {}
+        for c in self.cam_ids:
+            path = self.folder / "detections" / f"cam{c}.json"
+            self.dets[c] = json.loads(path.read_text()) if path.exists() else {"frames": {}, "step": default_step}
+        self.step = self.dets[self.cam_ids[0]].get("step", default_step)
         self.work = work_dir(self.key)
 
     def video(self, cam: int) -> Path:
         return self.folder / f"cam{cam}.mp4"
+
+    def cached_until(self) -> float:
+        """Match time up to which EVERY camera has cached detections (0 = none yet)."""
+        last = [max(map(int, self.dets[c]["frames"]), default=-1) for c in self.cam_ids]
+        return max(0.0, (min(last) + 1) / self.fps) if min(last) >= 0 else 0.0
 
     def small_video(self, cam: int) -> Path | None:
         """The light copy (ISSIA 960x540, Alfheim 640x480): tiles and cameras not on air. None if missing."""
@@ -340,7 +352,7 @@ class IssiaSource:
         return {"kind": self.kind, "key": self.key, "cams": self.cams, "fps": self.fps, "duration": self.frames / self.fps,
                 "on_air_cams": self.on_air, "goal_cams": self.cams["goal_cams"], "layout": self.layout,
                 "pitch": {"coverage": self.coverage(), "close_coverage": {}, "close_cam": None},
-                "truth": [], "human": [], "credit": self.meta.get("credit", "")}
+                "truth": [], "human": [], "credit": self.meta.get("credit", ""), "cached_until": self.cached_until()}
 
 
 IssiaSource.layout = LAYOUT_ISSIA

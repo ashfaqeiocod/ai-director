@@ -60,6 +60,7 @@ def runs() -> list[dict]:
         _recheck_valid(info["summary"])
         out.append({"segment": info["segment"], "run_id": info["run_id"], "source": info["source"],
                     "story_mode": info.get("story_mode"), "summary": info["summary"],
+                    "start_s": info.get("start_s", 0.0),
                     "has_report": (path.parent / "report.json").exists(),
                     "has_map": (path.parent / "map.jsonl").exists()})
     return out
@@ -123,7 +124,8 @@ def run_data(segment: str, run_id: str) -> dict:
     on_air = load_config()["studio"]["director"].get("on_air_cams", [c["cam"] for c in cams["cams"]])
     return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
                                                 "goal_looks")},
-            "cams": cams, "fps": meta["fps"], "duration": info["summary"]["seconds"], "timeline": timeline,
+            "cams": cams, "fps": meta["fps"], "start_s": info.get("start_s", 0.0),
+            "duration": info.get("start_s", 0.0) + info["summary"]["seconds"], "timeline": timeline,
             "cards": cards, "director_events": events, "story": story, "truth": truth, "report": report,
             "on_air_cams": on_air, "overlays": overlays(segment, info["source"], cams),
             "pitch": pitch_data(folder, segment, info["source"], cams),
@@ -219,7 +221,9 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
     looks = goal_looks(key, info) if getattr(src, "calibrated", False) else []
     return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
                                                 "goal_looks")},
-            "kind": src.kind, "cams": src.cams, "fps": src.fps, "duration": info["summary"]["seconds"],
+            # A run may start later in the match (start_s): program.mp4 starts there, everything else is match time.
+            "kind": src.kind, "cams": src.cams, "fps": src.fps, "start_s": info.get("start_s", 0.0),
+            "duration": info.get("start_s", 0.0) + info["summary"]["seconds"],
             "timeline": timeline, "cards": cards, "director_events": events, "story": story, "truth": [],
             "human": src.human_picks() if src.kind == "muvs" else [], "report": report, "on_air_cams": src.on_air,
             "overlays": {"step": src.step, "frames": frames}, "pitch": pitch, "intensity": intensity,
@@ -450,10 +454,17 @@ def live_start(body: dict) -> dict:
         segment = body.get("segment")
         if segment not in _ready_segments():
             raise HTTPException(400, f"segment '{segment}' is not ready")
+        duration = _cached_source(segment).frames / _cached_source(segment).fps
+        try:
+            start_s = float(body.get("start_s") or 0.0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "start_s must be a number of seconds") from None
+        if not 0 <= start_s < duration - 10:
+            raise HTTPException(400, f"start must be between 0:00 and {int(duration - 10) // 60}:{int(duration - 10) % 60:02d}")
         live_ctl.history, live_ctl.last_state = [], None
         live_ctl.live = LiveStudio(segment, live_ctl.publish, story=body.get("story", "off"),
                                    specialist_url=body.get("specialist_url", "").strip(),
-                                   goalwatch=bool(body.get("goalwatch", False)), record=True)
+                                   goalwatch=bool(body.get("goalwatch", False)), record=True, start_s=start_s)
         live_ctl.live.start()
     return live_ctl.status()
 
