@@ -74,6 +74,7 @@
       <select id="runSelect" class="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 mono text-xs max-w-[460px]"></select>
       <button id="loadBtn" class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-0.5 text-sm">Load</button>
       <button id="reportBtn" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-300">Report</button>
+      <label class="text-xs text-slate-400 flex items-center gap-1" title="off: the timeline fills in as the replay plays, like live (no spoilers)"><input id="wholeToggle" type="checkbox"> whole run</label>
       <label class="text-xs text-slate-400 flex items-center gap-1"><input id="truthToggle" type="checkbox"> real goals</label>
     </div>
     <div id="liveBar" class="hidden flex items-center gap-2 text-xs">
@@ -590,10 +591,12 @@ function colabItem(s) {
 }
 function drawTimeline(t) {
   const tl = $("timeline"), D = M.duration, segs = M.timeline;
-  if (tl.dataset.count !== String(segs.length) || mode === "live") {
+  // Replay fills in as it plays, exactly like live (only what had happened by t), unless "whole run" is ticked.
+  const upTo = mode === "live" || !$("wholeToggle").checked ? t : D;
+  if (tl.dataset.count !== String(segs.length) || upTo < D) {
     tl.querySelectorAll(".seg").forEach(e => e.remove());
-    segs.forEach((s, i) => {
-      const end = i + 1 < segs.length ? segs[i + 1].t : (mode === "live" ? t : D);
+    segs.filter(s => s.t <= upTo).forEach((s, i) => {
+      const end = Math.min(i + 1 < segs.length ? segs[i + 1].t : D, upTo);
       const div = document.createElement("div");
       div.className = "seg absolute top-0 bottom-0";
       Object.assign(div.style, {left: `${100 * s.t / D}%`, width: `${100 * Math.max(0, end - s.t) / D}%`,
@@ -622,7 +625,7 @@ function drawTimeline(t) {
   [0.25, 0.5, 0.75].forEach(f => { g.beginPath(); g.moveTo(0, H * f); g.lineTo(W, H * f); g.stroke(); });
   const smooth = (arr, n) => arr.map((p, i) => [p[0], arr.slice(Math.max(0, i - n), i + 1).reduce((s, q) => s + q[1], 0) / Math.min(i + 1, n + 1)]);
   const Y = (v) => H - 2 - (H - 4) * Math.min(1, Math.max(0, v));
-  const story = smooth(M.intensity.map(([x, v]) => [x, v / 100]), 2);
+  const story = smooth(M.intensity.filter(([x]) => x <= upTo).map(([x, v]) => [x, v / 100]), 2);
   if (story.length) {
     g.beginPath(); g.moveTo(W * story[0][0] / D, H);
     story.forEach(([x, v]) => g.lineTo(W * x / D, Y(v)));
@@ -632,7 +635,7 @@ function drawTimeline(t) {
     g.strokeStyle = "#38bdf8"; g.lineWidth = 2; g.beginPath();
     story.forEach(([x, v], i) => i ? g.lineTo(W * x / D, Y(v)) : g.moveTo(W * x / D, Y(v))); g.stroke();
   }
-  const map = smooth(M.mapRows.map(r => [r.t, r.intensity]), 10);
+  const map = smooth(M.mapRows.filter(r => r.t <= upTo).map(r => [r.t, r.intensity]), 10);
   g.strokeStyle = "#fbbf24"; g.lineWidth = 2; g.beginPath();
   map.forEach(([x, v], i) => i ? g.lineTo(W * x / D, Y(v)) : g.moveTo(W * x / D, Y(v))); g.stroke();
   g.fillStyle = "#facc15"; M.looks.filter(l => l.logged_at <= t).forEach(l => g.fillRect(W * l.t / D - 1, H - 7, 3, 7));
@@ -1010,6 +1013,7 @@ document.querySelectorAll(".seg-btn").forEach(b => b.onclick = async () => {
 });
 $("loadBtn").onclick = () => loadRun(+$("runSelect").value);
 $("truthToggle").onchange = () => drawTruth();
+$("wholeToggle").onchange = () => { $("timeline").dataset.count = ""; };
 $("reportBtn").onclick = () => $("reportBox").classList.remove("hidden");
 $("aboutBtn").onclick = () => $("aboutBox").classList.remove("hidden");
 $("playBtn").onclick = () => { const p = $("program"); p.paused ? p.play() : p.pause(); };

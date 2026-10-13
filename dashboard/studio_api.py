@@ -56,6 +56,7 @@ def runs() -> list[dict]:
         info = json.loads(path.read_text())
         if not (path.parent / "program.mp4").exists():
             continue
+        _recheck_valid(info["summary"])
         out.append({"segment": info["segment"], "run_id": info["run_id"], "source": info["source"],
                     "story_mode": info.get("story_mode"), "summary": info["summary"],
                     "has_report": (path.parent / "report.json").exists(),
@@ -63,10 +64,19 @@ def runs() -> list[dict]:
     return out
 
 
+def _recheck_valid(summary: dict) -> None:
+    """Runs saved before the 'min shown fps' rule: judge them by it too (a starved run showed 0.9 fps, 'valid')."""
+    shown, wall = summary.get("frames_shown"), summary.get("wall_seconds")
+    if shown and wall and shown / wall < load_config()["studio"]["live"]["min_shown_fps"] \
+            and summary.get("frames_skipped", 0) > 0:
+        summary["valid"] = False
+
+
 @router.get("/run/{segment}/{run_id}")
 def run_data(segment: str, run_id: str) -> dict:
     folder = _run_dir(segment, run_id)
     info = json.loads((folder / "run.json").read_text())
+    _recheck_valid(info["summary"])
     from studio.sources import is_folder_source
 
     if is_folder_source(segment):
