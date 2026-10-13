@@ -71,3 +71,14 @@ def test_looks_follow_the_map_intensity_when_enabled():
     assert p.plan(32.5, hot) is not None                              # hot: again after 2 s
     assert p.plan(32.5, calm) is None and p.plan(38.5, calm) is not None   # calm: waits 8 s
     assert GoalPlanner(CFG).interval(hot) == CFG["interval_s"]        # SoccerTrack / MUVS: unchanged
+
+
+def test_a_save_needs_the_follow_up_look():
+    from studio.cards import StoryFeed
+
+    p = GoalPlanner(CFG)
+    first = p.answer(p.plan(22.0, state(-48.0)), GoalLook(shot=True, save=True, shot_at_s=4.0), 23.0)
+    after = p.answer(p.plan(first["shot_time"] + CFG["aftermath_s"][0], state(-48.0)), AfterLook(), 30.0)
+    feed = StoryFeed(None)
+    feed.add_goal_looks([first, after], CFG)          # the follow-up did NOT see the keeper with the ball
+    assert not [e for e in feed.events if e["type"] == "save"]

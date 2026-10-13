@@ -440,6 +440,17 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - Studio: old ISSIA test runs moved to outputs/studio_archive/ (kept: 220319 + 220544 hybrid, 072441 + 082637
   Gemini); run picker = ISSIA first, invalid / no-story runs only with "all runs"; Replay fills in as it plays.
 
+### 2026-10-13: full Hybrid live run (all fixes), run 20261013-083406-live
+- Colab T4 connected (RTF 0.13, 57 inferences), Gemini 14 lines (avg delay 2.5 s) + story summary, goal watcher
+  15 looks, 23.2 fps shown, lag 0.0 s, valid. 11 cuts, shortest 3.0 s, ball on air 72%, goal-area camera in
+  danger moments 79%, possession 50/50 WHITE vs PURPLE.
+- Colab this run: 29 PASS, 27 DRIVE, 1 BALL PLAYER BLOCK at 68.0 s (0.81) = the keeper's claim (~66 s): its
+  nearest class to a save. No throw-in/out/header this time (same video, other runs had them: threshold edge).
+- Goal-camera saves: 65.5 s TRUE (both follow-ups "keeper catches the ball and holds it"); 20.9 s FALSE (a duel in
+  the left box, defenders clear, keeper never touches it; its follow-ups saw no keeper with the ball).
+  -> rule: a 🧤 save counts only when a follow-up look sees the keeper holding the ball. The single-look "shot"
+  at 20.9 s is still shown (shots are not confirmed by follow-ups).
+
 ## Next action (MVP 3)
 ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
 (25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match

@@ -214,8 +214,9 @@ class StoryFeed:
                 self.events.append(event)
             if lk["shot"]:
                 self.events.append({"id": f"gs{n}", "type": "shot", "event_time": lk["shot_time"], "confidence": 0.7, **src})
-            if lk.get("save") and not lk["goal"]:
-                # the keeper stopped it (a look saw the save, or the follow-up look saw the keeper holding the ball)
+            if lk.get("save") and not lk["goal"] and lk.get("kind") == "after":
+                # A save counts only when a FOLLOW-UP look sees the keeper holding the ball. One look alone said
+                # "saved" for a duel the defenders cleared (ISSIA 21 s); the real save (66 s) was confirmed twice.
                 when = lk.get("save_time", lk["shot_time"]) or lk["t"]
                 if not any(e["type"] == "save" and abs(e["event_time"] - when) < 4 for e in self.events):
                     self.events.append({"id": f"gv{n}", "type": "save", "event_time": when, "confidence": 0.7, **src})

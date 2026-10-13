@@ -407,7 +407,7 @@ function onLive(m) {
                                 confidence: m.goal_confidence, sources: ["goalcam"]});
     else if (m.shot) M.events.push({id: "gs" + M.looks.length, type: "shot", event_time: m.shot_time, known_at: m.logged_at,
                                      confidence: 0.7, sources: ["goalcam"]});
-    if (m.save && !m.goal) {           // the keeper stopped it (or held the ball in the follow-up look)
+    if (m.save && !m.goal && m.kind === "after") {   // a save counts once a follow-up look sees the keeper holding the ball
       const when = m.save_time || m.shot_time || m.t;
       if (!M.events.some(e => e.type === "save" && Math.abs(e.event_time - when) < 4))
         M.events.push({id: "gv" + M.looks.length, type: "save", event_time: when, known_at: m.logged_at, confidence: 0.7, sources: ["goalcam"]});
