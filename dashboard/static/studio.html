@@ -311,16 +311,18 @@ const media = (path, k) => (k >= 3 && ALT_ORIGIN ? ALT_ORIGIN : "") + path;
 // ===================================================================== REPLAY
 async function loadRuns() {
   const all = await (await fetch("/studio/runs")).json();
-  // The picker: the 6-camera ISSIA match first, newest first; invalid runs and runs without the AI story are
-  // hidden unless "all runs" is ticked (they stay on disk).
+  // The picker: the real multi-camera matches first (Alfheim full half, then ISSIA), newest first; invalid runs and
+  // runs without the AI story are hidden unless "all runs" is ticked (they stay on disk).
   const showAll = $("allRuns").checked;
+  const rank = (seg) => seg.startsWith("alfheim") ? 2 : seg.startsWith("issia") ? 1 : 0;
   runs = all.filter(r => showAll || (r.summary.valid !== false && r.story_mode))
-            .sort((a, b) => (b.segment.startsWith("issia") - a.segment.startsWith("issia")) || b.run_id.localeCompare(a.run_id));
+            .sort((a, b) => (rank(b.segment) - rank(a.segment)) || b.run_id.localeCompare(a.run_id));
   const STORY = {hybrid: "Hybrid · Gemini + Colab", gemini_only: "Gemini", specialist_only: "Colab only"};
   const label = (r) => `${r.run_id.slice(4, 6)}/${r.run_id.slice(6, 8)} ${r.run_id.slice(9, 11)}:${r.run_id.slice(11, 13)} · ` +
     `${STORY[r.story_mode] || "no story"} · ${r.summary.cuts} cuts${r.summary.valid === false ? " · INVALID" : ""}`;
   const groups = [...new Set(runs.map(r => r.segment))];
-  const name = (seg) => seg.startsWith("issia") ? "ISSIA Serie A · 6 stadium cameras" : seg.startsWith("muvs") ? `MUVS phones · ${seg}` : `SoccerTrack · ${seg}`;
+  const name = (seg) => seg.startsWith("alfheim") ? `Alfheim · 3 stadium cameras · full ${seg.slice(-2).replace("H", "half ")}`
+    : seg.startsWith("issia") ? "ISSIA Serie A · 6 stadium cameras" : seg.startsWith("muvs") ? `MUVS phones · ${seg}` : `SoccerTrack · ${seg}`;
   $("runSelect").innerHTML = groups.map(g => `<optgroup label="${esc(name(g))}">` +
     runs.map((r, i) => r.segment === g ? `<option value="${i}">${esc(label(r))}</option>` : "").join("") + `</optgroup>`).join("");
   if (mode === "replay") {
@@ -700,7 +702,7 @@ function drawPitch(t, liveCam, teams) {
     g.fillStyle = "rgba(239,68,68,.3)";
     g.fillRect(left ? px(-52.5) : px(36), py(-20.16), px(-36) - px(-52.5), py(20.16) - py(-20.16));
   }
-  if (M.kind === "issia") Object.entries(M.pitch.coverage).forEach(([c, poly]) => {
+  if (M.kind === "issia" || M.kind === "alfheim") Object.entries(M.pitch.coverage).forEach(([c, poly]) => {
     if (+c === liveCam || !poly || poly.length < 3) return;
     g.beginPath(); poly.forEach(([x, y], i) => i ? g.lineTo(px(x), py(y)) : g.moveTo(px(x), py(y))); g.closePath();
     g.setLineDash([6, 6]); g.strokeStyle = CAM_COLORS[c] + "80"; g.lineWidth = 1.5; g.stroke(); g.setLineDash([]);

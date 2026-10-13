@@ -202,7 +202,7 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
                                                for p in src.dets[c]["frames"].get(str(f), {}).get("players", [])]}
                           for c in cam_ids}
     pitch = None
-    if src.kind == "issia":
+    if getattr(src, "calibrated", False):           # ISSIA, Alfheim
         import numpy as np
         from studio.multicam import to_picture
         # The map's ball, drawn into every camera it falls in (like live mode does)
@@ -216,7 +216,7 @@ def folder_run_data(key: str, folder: Path, info: dict) -> dict:
                     frames[f][str(c)]["ball"] = [round(pt[0] / w, 3), round(pt[1] / h, 3)]
         pitch = {"rows": rows, "step": src.step, "coverage": src.coverage(), "close_coverage": {}, "close_cam": None}
     report = (folder / "report.md").read_text() if (folder / "report.md").exists() else None
-    looks = goal_looks(key, info) if src.kind == "issia" else []
+    looks = goal_looks(key, info) if getattr(src, "calibrated", False) else []
     return {"info": {k: info.get(k) for k in ("segment", "run_id", "source", "story_run", "story_mode", "summary",
                                                 "goal_looks")},
             "kind": src.kind, "cams": src.cams, "fps": src.fps, "duration": info["summary"]["seconds"],
@@ -403,8 +403,8 @@ def live_sources() -> dict:
 
     cfg = load_config()["story"]
     segments = _ready_segments()
-    # ISSIA first: the real multi-camera match is the main demo
-    segments.sort(key=lambda k: (not k.startswith("issia-"), k))
+    # The real multi-camera matches first: Alfheim (a full half), then ISSIA
+    segments.sort(key=lambda k: (not k.startswith("alfheim-"), not k.startswith("issia-"), k))
     from story.common import gemini_keys
 
     llm = {**cfg["llm"], **load_config()["studio"].get("llm", {})}

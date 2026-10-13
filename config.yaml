@@ -308,6 +308,50 @@ studio:
       cam6: [[-36, -20.16, 912, 202], [-36, 20.16, 893, 697], [-47, -9.16, 385, 298], [-47, 9.16, 268, 517],
              [-52.5, -34, 280, 102], [-52.5, -20.16, 200, 202], [-52.5, -9.16, 122, 298], [-36, -34, 916, 102],
              [-36, 34, 880, 1027]]
+  alfheim: # Alfheim (studio.alfheim, studio.sources.AlfheimSource): a FULL half, 3 real FIXED cameras, no sound
+    dir: "data/alfheim" # data/alfheim/<match>_H<half>/cam1-3.mp4 + detections/ + calibration.json
+    match: "2013-11-03" # the match `python -m studio.alfheim` prepares by default
+    half: 1
+    matches: { "2013-11-03": "Tromsø IL - Strømsgodset (Tippeligaen)", "2013-11-07": "Tromsø IL - Anzhi (Europa League)" }
+    # Colour fix: the cameras give a strong green cast at night. Gains per channel, then gamma (< 1 = brighter).
+    colour: { red: 1.12, green: 0.9, blue: 1.1, gamma: 0.85 }
+    cam_names: # all three stand together at the halfway line, high in the main stand
+      cam1: { name: "GOAL L · main stand", shot_type: "wide" }
+      cam2: { name: "MIDFIELD · main stand", shot_type: "wide" }
+      cam3: { name: "GOAL R · main stand", shot_type: "wide" }
+    # One stand only: no 180-degree rule. The midfield camera is the main camera (like a TV main camera at
+    # the halfway line); a goal camera takes over when play is in its third, and in danger moments.
+    director: { on_air_cams: [1, 2, 3], follow_cams: [1, 2, 3], wide_cam: null, close_cam: null, start_cam: 2,
+                stands: { 1: A, 2: A, 3: A }, cross_line_penalty: 0, live_bonus: 20, cam_bonus: { 2: 10 },
+                danger_min_intensity: 0.5, danger_bonus: 30,
+                danger_cams: { left_box: [1], left_third: [1], right_box: [3], right_third: [3] } }
+    ball_tracker: { buffer_size: 5, max_jump_px: 170, max_predict_updates: 5, min_confidence: 0.3 }
+    # Neighbouring cameras put the same player 1-1.5 m apart on average (+ ~2 m noise: players are only ~35 px
+    # tall), measured on 90 s: one player within 3 m from two cameras = one dot (ISSIA: 1.5 m).
+    merge_players_m: 3.0
+    parked_radius_m: 0.6
+    goal_cams: { left: 1, right: 3 }
+    goalwatch: # the goals are far from the cameras (~70 px wide): Gemini gets the sharpest clip we have
+      interval_by_intensity: { hot: 0.5, hot_s: 2, calm: 0.2, calm_s: 8 }
+      video_height: 960
+    story_sport: "soccer (a Norwegian top-league match at night; the video is a mosaic of three FIXED cameras side by side, all filming from the halfway line: left third with the left goal, middle third, right third with the right goal; no TV graphics, no commentary, no sound)"
+    # Calibration: pitch landmarks on each camera's 1280x960 picture, [pitch x m, pitch y m, picture x px,
+    # picture y px] (left goal at -x, far touchline at -y; pitch 105 x 68 m). Read off zoomed frames.
+    calibration:
+      cam1: [[-52.5, 34, 52, 301], [-52.5, 20.16, 318, 248], [-36, 20.16, 478, 295], [-36, -20.16, 898, 192],
+             [-52.5, -20.16, 740, 170], [-47, 9.16, 518, 226], [-47, -9.16, 700, 191], [-41.5, 0, 677, 214],
+             [-32.35, 0, 817, 216]]
+      cam2: [[0, -34, 640, 108], [0, -9.15, 660, 162], [0, 9.15, 697, 252], [0, 34, 872, 777],
+             [-36, -20.16, 143, 168], [-32.35, 0, 53, 220], [36, -20.16, 1136, 116], [32.35, 0, 1250, 151]]
+      cam3: [[36, -20.16, 455, 210], [36, 20.16, 881, 280], [52.5, 20.16, 1012, 237], [52.5, 34, 1255, 273],
+             [47, -9.16, 638, 202], [47, 9.16, 820, 226], [41.5, 0, 673, 221], [32.35, 0, 547, 226],
+             [0, 34, 398, 900]]
+    # Line hints: [axis, value, x1, y1, x2, y2] = the white line roughly from (x1, y1) to (x2, y2) in the picture IS the
+    # pitch line x = value (or y = value). The calibration fits the white pixels along it exactly.
+    line_hints:
+      cam1: [[y, 34, 52, 301, 1030, 960], [x, -52.5, 52, 301, 470, 216]]
+      cam2: [[x, 0, 640, 108, 872, 777], [y, 34, 0, 852, 1280, 745]]
+      cam3: [[x, 0, 5, 395, 398, 900], [y, 34, 1255, 273, 398, 900], [x, 52.5, 1012, 237, 1255, 273]]
   teams: # studio.teams: two teams from shirt colours (k-means), learned from the first seconds of play
     learn_samples: 150 # shirts collected before the 2 teams are fixed (~3-5 s with 6 cameras)
     max_colour_distance: 45 # a shirt further than this (Lab) from both team colours = unknown (referee, keeper...)

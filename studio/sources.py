@@ -7,9 +7,10 @@ Three kinds:
                               map; answer key = which camera a human picked every 3 s
   IssiaSource(2)              6 REAL fixed stadium cameras (ISSIA-CNR), each calibrated to the pitch: one pitch
                               map from all cameras, goal cameras, kick-off check; no answer key
+  AlfheimSource("2013-11-03", 1)  a FULL half (47 min) with 3 REAL fixed cameras (Alfheim), calibrated like ISSIA
 
 Everything that differs between them lives here, so studio.live and the dashboard don't need to care.
-Names: a source's `key` is used for folders and URLs ("eval", "muvs-P19", "issia-T2").
+Names: a source's `key` is used for folders and URLs ("eval", "muvs-P19", "issia-T2", "alfheim-2013-11-03-H1").
 """
 from __future__ import annotations
 
@@ -28,12 +29,15 @@ def get_source(key: str):
         return MuvsSource(int(key[len("muvs-P"):]))
     if key.startswith("issia-T"):
         return IssiaSource(int(key[len("issia-T"):]))
+    if key.startswith("alfheim-"):
+        match, half = key[len("alfheim-"):].rsplit("-H", 1)
+        return AlfheimSource(match, int(half))
     return SoccerTrackSource(key)
 
 
 def is_folder_source(key: str) -> bool:
     """Footage that lives in its own folder with real cameras (not a SoccerTrack segment)."""
-    return key.startswith(("muvs-P", "issia-T"))
+    return key.startswith(("muvs-P", "issia-T", "alfheim-"))
 
 
 def ready_sources() -> list[str]:
@@ -50,6 +54,10 @@ def ready_sources() -> list[str]:
     for folder in sorted(issia.glob("T*")):
         if (folder / "calibration.json").exists() and (folder / "detections" / "cam6.json").exists():
             out.append(f"issia-{folder.name}")
+    alfheim = ROOT / load_config()["studio"]["alfheim"]["dir"]
+    for folder in sorted(alfheim.glob("*_H[12]")):
+        if (folder / "calibration.json").exists() and (folder / "detections" / "cam3.json").exists():
+            out.append("alfheim-" + folder.name.replace("_H", "-H"))
     return out
 
 
@@ -226,6 +234,10 @@ def source_label(key: str) -> str:
     """A friendly name for the match picker."""
     if key.startswith("issia-T"):
         return f"ISSIA Serie A · 6 stadium cameras · take {key[len('issia-T'):]}"
+    if key.startswith("alfheim-"):
+        match, half = key[len("alfheim-"):].rsplit("-H", 1)
+        teams = load_config()["studio"]["alfheim"]["matches"].get(match, match)
+        return f"Alfheim · {teams} · 3 stadium cameras · full half {half}"
     if key.startswith("muvs-P"):
         return f"MUVS MLS · 3 fans' phones · period {key[len('muvs-P'):]}"
     return f"SoccerTrack · 4K panorama · {key}"
@@ -234,20 +246,30 @@ def source_label(key: str) -> str:
 class IssiaSource:
     """ISSIA-CNR: 6 real fixed cameras around one stadium (2 per area), calibrated to the pitch, no sound."""
     kind = "issia"
+    calibrated = True                  # every camera is calibrated to the pitch: one pitch map from all of them
     goalwatch = True                   # cam1 / cam5 film the goals: the goal watcher can check them
+    layout = None                      # set below (the tiles as the cameras stand around the pitch)
+    small_suffix = "_540"              # the light copies made by studio.issia
 
     def __init__(self, take: int):
+        self._setup("issia", ROOT / load_config()["studio"]["issia"]["dir"] / f"T{take}", f"issia-T{take}",
+                    list(range(1, 7)))
+        self.take = take
+
+    def _setup(self, settings_key: str, folder: Path, key: str, cam_ids: list[int]) -> None:
+        """Everything a calibrated multi-camera match needs (ISSIA, Alfheim): settings, cameras, calibration,
+        detections."""
         from studio.prepare import work_dir
 
         self.cfg_all = load_config()["studio"]
-        s = self.settings = self.cfg_all["issia"]
-        self.take, self.key = take, f"issia-T{take}"
+        s = self.settings = self.cfg_all[settings_key]
+        self.key = key
         self.segment = self.key                         # goal-watch runs are saved under data/studio/<key>/
-        self.folder = ROOT / s["dir"] / f"T{take}"
+        self.folder = folder
         self.meta = json.loads((self.folder / "meta.json").read_text())
         info = video_info(self.folder / "cam1.mp4")
         self.fps, self.has_audio, self.frames = info["fps"], False, self.meta["frames"]
-        self.cam_ids = list(range(1, 7))
+        self.cam_ids = cam_ids
         names = s["cam_names"]
         self.cams = {"size": [info["width"], info["height"]],
                      "cams": [{"cam": c, "name": names[f"cam{c}"]["name"], "shot_type": names[f"cam{c}"]["shot_type"],
@@ -268,8 +290,8 @@ class IssiaSource:
         return self.folder / f"cam{cam}.mp4"
 
     def small_video(self, cam: int) -> Path | None:
-        """The 960x540 copy (python -m studio.issia makes it): tiles and cameras not on air. None if missing."""
-        path = self.folder / f"cam{cam}_540.mp4"
+        """The light copy (ISSIA 960x540, Alfheim 640x480): tiles and cameras not on air. None if missing."""
+        path = self.folder / f"cam{cam}{self.small_suffix}.mp4"
         return path if path.exists() else None
 
     def pipeline(self, feed):
@@ -316,6 +338,29 @@ class IssiaSource:
 
     def info(self) -> dict:
         return {"kind": self.kind, "key": self.key, "cams": self.cams, "fps": self.fps, "duration": self.frames / self.fps,
-                "on_air_cams": self.on_air, "goal_cams": self.cams["goal_cams"], "layout": LAYOUT_ISSIA,
+                "on_air_cams": self.on_air, "goal_cams": self.cams["goal_cams"], "layout": self.layout,
                 "pitch": {"coverage": self.coverage(), "close_coverage": {}, "close_cam": None},
                 "truth": [], "human": [], "credit": self.meta.get("credit", "")}
+
+
+IssiaSource.layout = LAYOUT_ISSIA
+
+
+class AlfheimSource(IssiaSource):
+    """Alfheim: a FULL half with 3 real fixed cameras, all at the halfway line in the main stand (left third,
+    middle third, right third), calibrated to the pitch, no sound. Same brain as ISSIA (CalibratedPipeline)."""
+    kind = "alfheim"
+    layout = [[1, 2, 3]]               # one row, left to right, as they look across the pitch
+    small_suffix = "_480"              # the 640x480 light copies made by studio.alfheim
+
+    def __init__(self, match: str, half: int):
+        folder = ROOT / load_config()["studio"]["alfheim"]["dir"] / f"{match}_H{half}"
+        self._setup("alfheim", folder, f"alfheim-{match}-H{half}", [1, 2, 3])
+        self.match, self.half = match, half
+
+    def coverage(self) -> dict:
+        """What each camera sees on the pitch. The top ~10% of each picture is stands; the near side is all pitch."""
+        from studio.pitchmap import Projection
+
+        w, h = self.cams["size"]
+        return {str(c): Projection(self.H[c]).coverage((0, 0.1 * h, w, h)) for c in self.cam_ids}
