@@ -451,7 +451,23 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   -> rule: a 🧤 save counts only when a follow-up look sees the keeper holding the ball. The single-look "shot"
   at 20.9 s is still shown (shots are not confirmed by follow-ups).
 
+### 2026-10-13: Alfheim = the final MVP 3 match (a full 47-min professional half, 3 real fixed cameras)
+- Searched the web for full matches with several real cameras: the only public one is Alfheim (Simula, Tromsø IL,
+  2013; non-commercial research use). SoccerTrack v2 = one stitched panorama; ISSIA / Fu et al. = 2-min clips;
+  WorldPose / SoccerNet multi-view = short clips on request. Using only the video, not the dataset's ZXY sensors.
+- Quality check (our detector, 3 x 30 s): players ~35 px tall (ISSIA ~97), ball 6-11 px (ISSIA 14-18), ball seen by
+  any camera ~50% (ISSIA 85%). The 3 cameras stand together at the halfway line, so every shot is wide. All 3 share
+  piece numbers + timestamps (frame-synced for 47 min). Night: strong green cast -> colour fix (ball 34 -> 38%).
+- `studio/alfheim.py`: download (resumable), join 3-s pieces, colour fix, 640x480 light copies, story mosaic,
+  calibration. Calibration lessons: landmarks alone put the near touchline ~3 m (100+ px) off (oblique view);
+  lens straightening looked like the fix but the raw lines are straight (< 3 px bow) and it bent them (-8 px):
+  removed. Fix = line hints ("these white pixels are the near touchline") + every pitch line pulled onto the
+  real white lines with evenly spaced points: median gap 0.6-1.2 px. Neighbouring cameras still place the
+  same player 1-1.5 m apart (+ ~2 m noise) -> merge radius 3 m for Alfheim.
+- `AlfheimSource` reuses ISSIA's calibrated brain (CalibratedPipeline, goal watcher, map); director: midfield
+  camera = main camera (+10), a goal camera in its third and in danger moments. Offline dress rehearsal on 90 s:
+  12 cuts, shortest 3.4 s, box entries seen. Detection checkpoints every 300 frames (a run takes ~4.6 h).
+
 ## Next action (MVP 3)
-ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
-(25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match
-can be prepared quickly; check team colours + possession on a second ISSIA take if one is available.
+Alfheim full half: preparation -> calibration -> detection run unattended (`data/alfheim/pipeline.log`). Then a
+full Hybrid live run (47 min; ~700 Gemini calls: may need extra keys) and a report next to ISSIA.

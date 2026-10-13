@@ -21,6 +21,25 @@ cd ~/Documents/ai-director
 
 ---
 
+## 0A. The full half (Alfheim): the final proof
+
+A whole professional half (47 min) filmed by 3 real fixed cameras (Alfheim dataset, Tromsø IL - Strømsgodset,
+2013; non-commercial research use). All three stand at the halfway line: cam1 = left third, cam2 = middle,
+cam3 = right third. A match the director was never tuned on, 20x longer than ISSIA.
+
+```bash
+venv/bin/python -m studio.alfheim              # download ~2.8 GB (resumable) + join + colour fix (~45 min)
+venv/bin/python -m studio.alfheim --calibrate  # pitch calibration (check: data/alfheim/2013-11-03_H1/calibration_check/)
+venv/bin/python -c "from pathlib import Path; from studio.intensity import detect; detect(Path('data/alfheim/2013-11-03_H1'))"
+                                               # own Terminal, ~4.6 h; saves every minute and resumes if stopped
+```
+
+Check the calibration pictures: the red lines must sit on the white pitch lines (also the near touchline at the
+bottom). Then Studio -> ● Live -> match "Alfheim · Tromsø IL - Strømsgodset · full half 1" -> Hybrid -> Go live.
+Expect: 3 tiles in one row, the director mostly on the midfield camera and switching to a goal camera when play
+goes there, the pitch map with both teams (red/white vs dark blue), box entries, goal-camera looks.
+Honest limits: players are small (~35 px), the ball is found less often than on ISSIA, all shots are wide.
+
 ## 0. The 6-camera match (ISSIA): the main demo
 
 Six REAL fixed cameras of one Serie A match (ISSIA-CNR Soccer Dataset, 2 min, no sound), two per area:
