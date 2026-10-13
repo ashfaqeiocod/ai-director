@@ -76,10 +76,15 @@ class FootballDetector:
     """Loads the Roboflow model once (GPU if onnxruntime has CUDA) and detects a batch of pictures."""
 
     def __init__(self):
-        if "ONNXRUNTIME_EXECUTION_PROVIDERS" not in os.environ:      # GPU first (Colab), Apple chip (Mac), CPU
-            import onnxruntime as ort
+        import onnxruntime as ort
 
-            have = ort.get_available_providers()
+        have = ort.get_available_providers()
+        if "CUDAExecutionProvider" in have and hasattr(ort, "preload_dlls") and os.environ.get("DETECTOR_OWN_CUDA") == "1":
+            # Colab: load the CUDA / cuDNN that came WITH this onnxruntime (pip nvidia-* packages in its own environment).
+            # torch's newer cuDNN (9.24 on the first Colab run) crashed the first convolution: CUDNN_BACKEND_API_FAILED.
+            ort.preload_dlls()
+        print("onnxruntime", ort.__version__, "providers", have, flush=True)
+        if "ONNXRUNTIME_EXECUTION_PROVIDERS" not in os.environ:      # GPU first (Colab), Apple chip (Mac), CPU
             wanted = [p for p in ("CUDAExecutionProvider", "CoreMLExecutionProvider") if p in have] + ["CPUExecutionProvider"]
             os.environ["ONNXRUNTIME_EXECUTION_PROVIDERS"] = "[" + ",".join(wanted) + "]"
         import supervision as sv
