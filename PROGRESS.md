@@ -548,16 +548,20 @@ Mac NOT free (IDE + 2 other Claude sessions running); runs were still valid. Det
 | 41:00 +5 min (20261014-015317) | 22.2 | 0.01 | 23 (3.0, 12.5 s) | 3.4 / 4.8 s | 5.1 s | 1 (4.2 s) |
 | FULL HALF 47:06 (20261014-015836) | 21.4 | 0.01 | 220 (3.0, 12.8 s) | 4.3 / 7.3 s (338 looks) | 5.6 s (340 looks) | 16 (5.3 s) |
 - New session from 23:40: first caption 23:40-23:48, first "story so far" 24:41 (start + 61 s), 0 LAG.
-- Goals (no ground truth here; checked by eye): ONE goal confirmed in the full half, 5:36 (left goal: cross, keeper
-  punch, "white/red celebrate" in the follow-up look, then both teams round the centre circle at 5:52-6:02 =
-  kick-off) -> very likely real. Goal-camera "goal" calls NOT confirmed (no kick-off line-up): 11:42, 15:31, 19:29
+- Goals: the match ended 0-0 (Tromsø-Strømsgodset 2013-11-03, en.wikipedia "2013 Strømsgodset Toppfotball season"),
+  so the half has NO goal. The ONE "confirmed" goal (5:36, left goal: cross + keeper punch, then a follow-up look
+  "white/red celebrate") is a FALSE POSITIVE: the kick-off check accepted players standing round the centre circle
+  but MIXED across both halves (checked at full resolution, 5:58). (Earlier note "very likely real" was wrong.) Goal-camera "goal" calls NOT confirmed (no kick-off line-up): 11:42, 15:31, 19:29
   (full half) and 25:16, 27:33 (23:40 run): at 25:16 and 27:33 play went on normally -> false alarms; the
   kick-off rule kept them out of the score (each only caused a ~8 s close-up). 25:16's note mentions the stadium's
-  big screen ("replay") which camera 1 sees. KICKOFF_LINEUP fired 12x in the half, mostly without a goal
-  call (harmless alone, but the rule depends on the two coming together).
-- The real goal times of this match are still needed to score goals properly (Alfheim has no event file).
+  big screen ("replay") which camera 1 sees. KICKOFF_LINEUP fired 12x in a half that had no kick-off after the
+  start -> on Alfheim's far, wide view the line-up rule is too loose (teams must stand in their OWN halves: not
+  checked yet). Goal AI on Alfheim: 6 goal calls in 47 min + 5 more in the 5-min runs, 0 real goals -> 1 false goal
+  counted. To fix: require each team in its own half at the line-up (needs reliable shirt labels: in live mode they
+  are missing on map updates of skipped frames), and ignore the stadium big screen in the goal look.
+
 
 ## Next action (MVP 3)
-Proof runs done (cached detector, Hybrid, valid). Open: the real goal times of Tromsø-Strømsgodset 2013-11-03
-(1st half) to score the goal AI; false "goal" calls (stadium big screen); Colab detector "Later tests" A-D
+Proof runs done (cached detector, Hybrid, valid). Open: the match was 0-0, so the confirmed goal at 5:36 is false:
+tighten the kick-off line-up rule (each team in its own half) and the goal look (stadium big screen); Colab detector "Later tests" A-D
 (docs/MVP3_LIVE_TEST_PLAN.md); repeat the full half with the Mac free for clean fps/delay numbers.
