@@ -60,6 +60,9 @@ Check: cameras show 23:40, the first AI caption is about ~23:40–23:49, no `LAG
 as "… from 23:40" and plays in sync (the timeline shows match time).
 Under Start at, "cached detections up to mm:ss" says how far the pre-computed detections reach.
 
+**Colab, light (cached detector):** `colab/specialist_light.ipynb` = the action model only, starts in ~5 min,
+no Roboflow key. Use it for Hybrid runs with the cached detections.
+
 **The detector on Colab (a real live test).** The Mac detects ~1 frame/s; live needs 15. On Colab:
 1. Secrets (🔑, left bar): `ROBOFLOW_API_KEY` (exactly this name), *Notebook access* on.
 2. Upload `colab/specialist_server.ipynb` → Runtime → Change runtime type → **T4 GPU** → Run all (~5–8 min).

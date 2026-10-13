@@ -207,7 +207,26 @@ def build() -> dict:
             "nbformat": 4, "nbformat_minor": 0}
 
 
+LIGHT_NOTE = """# LIGHT version: the action model only (~5 minutes)
+
+Use this when the live run reads the football detector's CACHED detections (computed on the Mac before the run):
+it skips the detector (its own environment + TensorRT engine build, ~15 extra minutes).
+For the Colab detector (the "Later tests" in docs/MVP3_LIVE_TEST_PLAN.md) use `specialist_server.ipynb`.
+No Roboflow key needed here. Steps: Runtime -> T4 GPU -> Run all -> paste the URL into Studio -> Live -> Test."""
+
+
+def light(nb: dict) -> dict:
+    """The same notebook without the detector cells (2b, 4b): starts in ~5 minutes."""
+    def is_detector(cell: dict) -> bool:
+        src = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+        return any(k in src for k in ("detenv", "detector_server.py", "detector_selftest", "## 2b.", "## 4b."))
+    cells = [markdown(LIGHT_NOTE)] + [c for c in nb["cells"] if not is_detector(c)]
+    return {**nb, "cells": cells}
+
+
 if __name__ == "__main__":
-    out = HERE / "specialist_server.ipynb"
-    out.write_text(json.dumps(build(), indent=1))
-    print(f"wrote {out}")
+    full = build()
+    for name, nb in (("specialist_server.ipynb", full), ("specialist_light.ipynb", light(full))):
+        out = HERE / name
+        out.write_text(json.dumps(nb, indent=1))
+        print(f"wrote {out} ({len(nb['cells'])} cells)")
