@@ -357,12 +357,16 @@ studio:
     max_colour_distance: 45 # a shirt further than this (Lab) from both team colours = unknown (referee, keeper...)
     possession_m: 3.0 # the nearest player within this many metres of the ball has it
   llm: # MVP 3 only: merged over story.llm for the studio's story layer and goal watcher (MVP 2 defaults unchanged)
-    # Tested 2026-10-12 with 2 keys (GEMINI_API_KEY, GEMINI_API_KEY1): 3.5-flash-lite 1.3 s; 3.5-flash 2 s
-    # (20/day); 2.5-flash 1.2 s (first key only); 3.1-flash-lite overloaded (24-111 s) -> last.
+    # Free tier: each LITE model has its own 500 requests/day (15/min) PER KEY; the big Flash models only 20/day.
+    # A 47-min live run needs ~700 calls -> Lite models first: 3 Lite models x 2 keys = up to 3000/day.
+    # Tested 2026-10-13 15:17 (6 s video, JSON, `python -m studio.gemini_check`): 3.5-flash-lite 2.2 s, 3.1-flash-lite
+    # 6.7 s (one 503), 3.1-flash-lite-preview 5.3 s, 2.5-flash 10.8 s (key 0 only); 3-flash-preview, 3.5/3.6/3.7/3.8-
+    # flash all 503 (overloaded) -> last, only if every Lite model is used up.
     # Order of use: model on every key, then each next model on every key (daily quota / 404 = skip that pair).
+    # 503 (overloaded) on one request: that request is retried on the next model in this list.
     model: "gemini-3.5-flash-lite"
-    fallback_model: "gemini-3.5-flash"
-    extra_models: ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
+    fallback_model: "gemini-3.1-flash-lite"
+    extra_models: ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.5-flash"]
   live: # studio.live: live mode (real speed)
     tile_fps: 8 # camera tiles are refreshed this many times a second (CPU budget on the M1)
     state_hz: 10 # state messages to the dashboard per second

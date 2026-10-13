@@ -170,14 +170,27 @@ class GeminiStoryLLM(StoryLLM):
                 self.key_i = k
                 return
 
+    def model_chain(self) -> list[str]:
+        """The models to use, in order: the model in use, fallback_model, extra_models."""
+        return list(dict.fromkeys(m for m in [self.model, self.cfg.get("fallback_model"),
+                                              *(self.cfg.get("extra_models") or [])] if m))
+
+    def overload_model(self, current: str) -> str | None:
+        """The next model after `current` in the chain that this key may still use today (for a 503 = Google's
+        model is overloaded right now). None when there is no other model."""
+        chain = self.model_chain()
+        start = chain.index(current) + 1 if current in chain else 0
+        for model in chain[start:] + chain[:start]:
+            if model != current and (self.key_i, model) not in self.exhausted:
+                return model
+        return None
+
     def _daily_quota_used(self, item: dict) -> None:
         """Google's free tier has a small DAILY request quota per key and model (20 for gemini-3.5-flash in
         Oct 2026). Waiting won't help today: use another key with the same model, else the next model in
         the list (model, fallback_model, extra_models), else stop calling Gemini (templates take over)."""
         self.exhausted.add((item.get("key", self.key_i), item.get("model", self.model)))
-        models = dict.fromkeys(m for m in [self.model, self.cfg.get("fallback_model"),
-                                           *(self.cfg.get("extra_models") or [])] if m)
-        for model in models:
+        for model in self.model_chain():
             for k in range(self.keys):
                 if (k, model) not in self.exhausted:
                     item.update(daily_quota=True, switched_to=f"{model} (key {k})")
@@ -288,9 +301,9 @@ class GeminiStoryLLM(StoryLLM):
             item.update(thinking_setting_dropped=True)
             self.limiter.record()
             return self._send(self.model, parts, config)
-        fallback = self.cfg.get("fallback_model")
-        if error.code == 503 and fallback and fallback != self.model:
-            # 503 = Google's model is overloaded right now: retry on the fallback model.
+        fallback = self.overload_model(self.model)
+        if error.code == 503 and fallback:
+            # 503 = Google's model is overloaded right now: retry on the next model (fallback_model first).
             item.update(model=fallback, overloaded=self.model)
             self.limiter.record()
             return self._send(fallback, parts, config)

@@ -122,15 +122,16 @@ def ask(llm, video: Path, start: float, end: float, system: str, schema, text: s
         config = types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
                                              response_schema=schema, temperature=0.2,
                                              media_resolution=getattr(types.MediaResolution, cfg["media_resolution"]))
+        model = llm.model
         for attempt in range(2):
             asked = time.time()
             if hasattr(llm, "_take_turn"):
                 llm._take_turn()                  # share the requests between the Gemini keys
-            item = {"kind": schema.__name__, "model": llm.model, "key": getattr(llm, "key_i", 0),
+            item = {"kind": schema.__name__, "model": model, "key": getattr(llm, "key_i", 0),
                     "window": [round(start, 2), round(end, 2)],
                     "requested_at": round(asked, 3)}
             try:
-                r = llm.client.models.generate_content(model=llm.model, contents=[types.Content(role="user", parts=parts)],
+                r = llm.client.models.generate_content(model=model, contents=[types.Content(role="user", parts=parts)],
                                                        config=config)
                 item.update(latency_s=round(time.time() - asked, 2), tokens=r.usage_metadata.total_token_count)
                 log(item)
@@ -140,11 +141,14 @@ def ask(llm, video: Path, start: float, end: float, system: str, schema, text: s
                 log(item)
                 if ((error.code == 429 and "PerDay" in str(error)) or error.code == 404) and hasattr(llm, "rate_limited_key"):
                     llm._daily_quota_used(item)   # this key + model is used up today: next key, then next model
+                    model = llm.model
                     if not llm.daily_quota_out:
                         continue
                 if error.code == 429 and hasattr(llm, "rate_limited_key") and llm.rate_limited_key(item):
                     continue                      # per-minute limit on this key: try the next key now
                 if error.code in (500, 503, 504) and attempt == 0:
+                    # overloaded: the retry goes to the next model in the chain (the same one is likely still busy)
+                    model = (llm.overload_model(model) if hasattr(llm, "overload_model") else None) or model
                     continue
                 raise
             except Exception as error:            # noqa: BLE001 — network timeouts: one retry

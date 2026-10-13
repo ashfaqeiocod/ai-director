@@ -34,6 +34,16 @@ venv/bin/python -c "from pathlib import Path; from studio.intensity import detec
                                                # own Terminal, ~4.6 h; saves every minute and resumes if stopped
 ```
 
+Before a long live run, check Gemini (one real request per model and key; the run needs ~700 calls):
+
+```bash
+venv/bin/python -m studio.gemini_check   # OK / 503 overloaded / 429 quota / 404 per model and key
+```
+
+The studio uses the free-tier LITE models first (each 500 requests/day per key: 3 Lite models x 2 keys = up to
+3000/day), the Flash models (20/day) only last. A request that hits an overloaded model is retried on the next one.
+More keys = more quota: add `GEMINI_API_KEY2=...`, `GEMINI_API_KEY3=...` to `.env`.
+
 Check the calibration pictures: the red lines must sit on the white pitch lines (also the near touchline at the
 bottom). Then Studio -> ● Live -> match "Alfheim · Tromsø IL - Strømsgodset · full half 1" -> Hybrid -> Go live.
 Expect: 3 tiles in one row, the director mostly on the midfield camera and switching to a goal camera when play

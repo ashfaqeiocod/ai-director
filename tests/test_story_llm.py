@@ -149,3 +149,36 @@ def test_two_keys_take_turns_and_quota_moves_to_the_other_key(monkeypatch):
     item = {"key": llm.key_i, "model": llm.model}
     llm._daily_quota_used(item)                       # this key's daily quota for the model is gone...
     assert not llm.daily_quota_out and llm.key_i != item["key"] and llm.model == item["model"]  # ...other key, same model
+
+
+class BusyModels(QuotaModels):
+    """Answers 503 (overloaded) for every model in `busy`, normally otherwise."""
+    def __init__(self, busy):
+        super().__init__(out=())
+        self.busy = set(busy)
+
+    def generate_content(self, model, contents, config):
+        from google.genai import errors
+        if model in self.busy:
+            self.models_used.append(model)
+            raise errors.APIError(503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "high demand"}})
+        return super().generate_content(model, contents, config)
+
+
+def test_overloaded_model_retries_on_the_next_in_the_chain(monkeypatch):
+    llm = fake_llm(monkeypatch, "{}")
+    llm.model = "lite-a"
+    llm.cfg = {**llm.cfg, "model": "lite-a", "fallback_model": "lite-b", "extra_models": ["lite-c", "flash"]}
+    llm.client = SimpleNamespace(models=BusyModels(busy={"lite-a"}))
+    assert llm.describe_window(ctx()).narration == "Calm."
+    assert llm.client.models.models_used == ["lite-a", "lite-b"]      # one retry, on the fallback
+    assert llm.model == "lite-a"                                       # a 503 is momentary: the main model stays
+
+
+def test_overload_skips_models_whose_daily_quota_is_used_up(monkeypatch):
+    llm = fake_llm(monkeypatch, "{}")
+    llm.model = "lite-a"
+    llm.cfg = {**llm.cfg, "model": "lite-a", "fallback_model": "lite-b", "extra_models": ["lite-c"]}
+    llm.exhausted.add((llm.key_i, "lite-b"))
+    assert llm.overload_model("lite-a") == "lite-c"
+    assert llm.overload_model("lite-c") == "lite-a"                    # wraps around the chain
