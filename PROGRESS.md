@@ -468,6 +468,31 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   camera = main camera (+10), a goal camera in its third and in danger moments. Offline dress rehearsal on 90 s:
   12 cuts, shortest 3.4 s, box entries seen. Detection checkpoints every 300 frames (a run takes ~4.6 h).
 
+### 2026-10-13 evening: live test environment (docs/MVP3_LIVE_TEST_PLAN.md), steps 1-2
+- START FROM ANYWHERE (step 1): `StoryEngine(start_s=...)` / `SpecialistClient(start_s=...)` (default 0: MVP 2
+  unchanged), `studio.live --start 23:40`, Studio "Start at" (click the whole-match timeline in the setup panel).
+  Seeks checked frame-exact (seek vs decoding up to the frame: 0 pixel difference, ISSIA + Alfheim, small + full).
+  Offline ISSIA 40 s from 0:00: director_log, map, events, cards BYTE-IDENTICAL to before. From 0:40: first story
+  window 40.0-48.0 s, 0 LAG skips, first shot measured from the start (8.6 s, not 48 s), all files in match time;
+  Replay plays program.mp4 with the start offset (tiles at match time, checked in Chrome).
+- Alfheim sources load with missing / partial cached detections (live/info reports `cached_until`; the setup
+  panel warns when "Start at" is past it). The full-half detection is running (cached up to ~2 min at 16:20).
+- COLAB DETECTOR (step 2a): `colab/detector_server.py` (Roboflow football model, same output as src/detect) in its
+  OWN uv environment on Colab (inference-gpu can't break the action model's torch), the main server relays WS
+  /detect (one tunnel URL). NOT YET RUN ON COLAB. Local check through the relay (Mac, CoreML, 3 Alfheim frames x
+  3 cams vs cached): same balls, boxes within 1 px; JPEG q85 loses 1-2 players at the 0.3 edge, q95 none.
+  Size: q85 ~0.5 MB per frame for 3 cams -> ~19 Mbit/s upload at 5/s (q95 x1.6; 960x720 q90 ~0.37 MB).
+- LIVE LOOP (2b/2c): `--detector colab`: answers applied when they arrive, oldest first, with their own frame
+  time; > 1.5 s old or missing -> cached detection of that frame (counted; `cache_fallback: false` = pure live).
+  Fake GPU (cached answers after 40 ms), Alfheim 0:30-1:30: same 7 cuts as cached mode, each 0.07-0.36 s later
+  (detections applied ~0.1 s after their frame) = honest live behaviour. 143/150 frames from the detector.
+  Mac cost: CLI 26.5 fps shown (cached 27.6). With Chrome open: reading the 3 full-HD detection frames IN the loop
+  dropped it to 8.5 fps -> now read in the sender's thread: 16.3 fps (background Alfheim detection running too).
+  OpenCV here has no hardware decoding (VideoToolbox: off). Real CoreML detector as the "Colab": 8.7 s round trip
+  -> every answer late -> all from the cache, no crash.
+- Fixes found on the way: Alfheim's 4:3 picture crashed program.mp4 recording (now letterboxed); detection boxes on
+  4:3 tiles were drawn as if 16:9 (offset).
+
 ## Next action (MVP 3)
 Live test environment: follow `docs/MVP3_LIVE_TEST_PLAN.md` (start from anywhere, detector on Colab, latency on
 the timeline). Alfheim detection runs unattended (`data/alfheim/pipeline.log`); it stalls when the Mac runs out of
