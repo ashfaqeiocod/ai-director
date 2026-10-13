@@ -379,6 +379,7 @@ studio:
       jpeg_quality: 85 # 1280x960 x 3 cams ~0.5 MB per frame = ~19 Mbit/s upload at 5/s (q95: same as cached, 1.6x more)
       send_width: 0 # 0 = full resolution (the model works at 1280); e.g. 960 if the upload or the Mac can't keep up
       lost_after_s: 5 # an answer that never comes (tunnel hiccup) stops counting as "in flight" after this
+      cache_fallback: true # a late / missing answer uses the cached detection of that frame; false = pure live (nothing)
   goalwatch: # studio.goalwatch: Gemini looks at a goal camera when play is near that goal
     near_goal_m: 27 # ball (or the main group) within this many metres of a goal line -> watch that goal
     group_radius_m: 15 # main group of players = biggest group within this radius (when the ball is not known)

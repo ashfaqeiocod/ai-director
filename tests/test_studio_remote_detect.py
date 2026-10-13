@@ -16,7 +16,7 @@ from colab.detector_server import parse
 from studio.live import LiveStudio
 
 FPS = 30.0
-CFG = {"max_age_s": 1.5, "max_in_flight": 2, "jpeg_quality": 85, "send_width": 0, "lost_after_s": 5}
+CFG = {"max_age_s": 1.5, "max_in_flight": 2, "jpeg_quality": 85, "send_width": 0, "lost_after_s": 5, "cache_fallback": True}
 
 
 # ------------------------------------------------------------------ message format
@@ -162,3 +162,12 @@ def test_client_sends_receives_and_drops_stale_frames(monkeypatch):
     finally:
         det.stop()
         server.shutdown()
+
+
+def test_pure_live_never_uses_the_cache():
+    cached = {0: {1: {"players": [{"box": [5, 5, 6, 6]}], "ball": None}}}
+    lv, remote = live(cached), FakeRemote()
+    lv.cfg = {"live": {"remote_detect": {**CFG, "cache_fallback": False}}}
+    pending = deque([(0, True)])
+    lv._apply_remote(remote, pending, {}, now=1.6, files=None)
+    assert lv.pipe.calls == [] and lv.det_counts["none"] == 1 and not pending

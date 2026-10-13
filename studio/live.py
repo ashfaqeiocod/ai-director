@@ -347,7 +347,10 @@ class LiveStudio:
                     # A skipped frame's detections are still read (cached, cheap): the pitch map keeps the ball.
                     # Before: a run that showed ~13 fps lost half the map updates (324 of 600) and ball on air fell.
                     if remote is not None and i % step == 0:
-                        pending.append((i, False))      # not sent (frame skipped): the cached detection, in turn
+                        # skipped on screen, still detected: the detector's thread reads its full pictures itself
+                        if light:
+                            remote.submit(i)
+                        pending.append((i, light))
                     elif remote is None and i % step == 0 and i != last_det:
                         last_det = i
                         skip_events = self.pipe.detections(i, i / fps, detector=self.src.detection_at(i))
@@ -476,7 +479,8 @@ class LiveStudio:
             elif sent and answer is None and now - f / self.fps <= max_age:
                 break                                 # still on its way: wait (keeps the order)
             else:
-                cached = self.src.detection_at(f)
+                # late or never sent: the cached detection of that frame, unless the run is "pure live"
+                cached = self.src.detection_at(f) if self.cfg["live"]["remote_detect"]["cache_fallback"] else {}
                 has = any(d.get("players") or d.get("ball") for d in cached.values())
                 det = cached if has else None
                 source = ("cached_late" if sent else "cached_skipped") if has else "none"
