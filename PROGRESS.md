@@ -526,6 +526,18 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - Colab interrupt (■) killed the Cloudflare tunnel (error 530): it now runs in its own session.
 - Notebook updated with all of this (Run all ~20-25 min). Not yet re-run from scratch.
 
+- STEP 2d (real Colab T4 + TensorRT through the Cloudflare tunnel, Alfheim 1:00-2:00, run 20261013-221004-live):
+  GPU 77 ms per camera frame, but round trip 580 ms at ~12 Mbit/s upload (0.5 MB per detection step):
+  93/300 detection steps from the GPU in time, 200 from the cache (late), 25 answers ignored as too late;
+  detector delay avg 1.34 s / p90 1.62 s. 4 in flight instead of 2: round trip 1,132 ms, 8.5 Mbit/s -> worse (the
+  home UPLOAD is the limit, not the GPU). Parity on the 93 GPU frames vs cached (Mac CoreML, full quality):
+  | cam | ball % Colab | ball % cached | same ball (10 px) | players Colab | players cached |
+  | 1 | 4.3 | 7.5 | 75% | 4.6 | 4.33 |
+  | 2 | 16.1 | 20.4 | 100% | 15.57 | 15.71 |
+  | 3 | 54.8 | 69.9 | 96% | 17.03 | 17.14 |
+  Players match; the ball is found ~20-25% less often (JPEG q85 + TensorRT fp16 push borderline balls under 0.3).
+  Mac shown fps 10.5 with the IDE + 2 Claude sessions + background detection running.
+
 ## Next action (MVP 3)
 Live test environment (`docs/MVP3_LIVE_TEST_PLAN.md`): steps 1-3 built. Next: the user runs the new Colab notebook
 (ROBOFLOW_API_KEY secret, T4) -> step 2d parity (60 s Alfheim, Colab vs cached: ball rate per cam, players per
