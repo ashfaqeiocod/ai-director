@@ -219,7 +219,10 @@ def light(nb: dict) -> dict:
     """The same notebook without the detector cells (2b, 4b): starts in ~5 minutes."""
     def is_detector(cell: dict) -> bool:
         src = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
-        return any(k in src for k in ("detenv", "detector_server.py", "detector_selftest", "## 2b.", "## 4b."))
+        if src.startswith("%%writefile specialist_server.py"):
+            return False                     # the main server (it only MENTIONS the detector in a comment)
+        return src.startswith(("%%writefile detector_server.py", "## 2b.", "## 4b.")) or \
+            any(k in src for k in ("detenv", "detector_selftest"))
     cells = [markdown(LIGHT_NOTE)] + [c for c in nb["cells"] if not is_detector(c)]
     return {**nb, "cells": cells}
 
