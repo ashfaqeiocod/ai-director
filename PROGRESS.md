@@ -416,6 +416,19 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   asks the goal watcher for one more look at that goal 3 s after the event, even right after a routine look.
   Unit-tested; not yet seen live (Colab was offline and Gemini reported no such event in the test run).
 
+### 2026-10-13: intensity put to work (ISSIA only; SoccerTrack/MUVS settings unchanged) + two live-mode fixes
+- Danger camera: map intensity >= 0.5 with the ball in a goal area -> that goal's cameras +30. Offline (every
+  frame): goal-area camera live in "danger moments" (21 s of the 2 min) 76% -> 89% (bonus 15: 89%, 45: 91%),
+  ball on air 79 -> 78%, cuts 12 -> 11, shortest 3.0 s.
+- Goal looks paced by intensity: near a goal, hot (>= 0.5) every 2 s, calm (<= 0.2) every 8 s, else 4 s.
+  Live test: 8 looks (12 before), spread over the attacks.
+- LIVE FIX 1: skipped frames dropped their detection steps (a 13-fps run kept 324 of 600 map updates). Now the
+  cached detections of skipped frames still update the map (600 of 600 even at 1 fps).
+- LIVE FIX 2: the 0.6 s switch wait counted decisions, not frames (1.2 s at 13 fps, 15 s at 1 fps; a starved run
+  made 0 cuts). Now counted in frames. Offline results identical (every frame is decided there).
+- A live run is now INVALID below 8 frames/s shown (a run starved by another app, the Antigravity IDE at ~300%
+  CPU, showed 0.9 fps with no lag and was called valid). Clean live re-test still to do with the CPU free.
+
 ## Next action (MVP 3)
 ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
 (25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match

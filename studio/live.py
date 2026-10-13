@@ -213,7 +213,8 @@ class LiveStudio:
             llm = self.story_engine.llm if self.story_engine and self.story_engine.llm else None
             self.watcher = LiveGoalWatcher(self.segment, self.cams, clock, self.feed.add_look, self.publish,
                                            shared_llm=llm, out_dir=work_dir(self.src.segment) / "goalwatch" / self.run_id,
-                                           snapshot=self._goal_snapshot, video_of=self._goal_video)
+                                           snapshot=self._goal_snapshot, video_of=self._goal_video,
+                                           cfg=self.src.cfg["goalwatch"] if self.src.kind != "soccertrack" else None)
 
     def _goal_video(self, cam: int) -> Path:
         """The goal camera's video: SoccerTrack renders its own goal views; other footage films them for real."""
@@ -302,6 +303,18 @@ class LiveStudio:
                         states.append(states[-1])
                         if program and last_program is not None:
                             program.write(last_program)   # keep program.mp4 in real time (Replay's clock)
+                    # A skipped frame's detections are still read (cached, cheap): the pitch map keeps the ball.
+                    # Before: a run that showed ~13 fps lost half the map updates (324 of 600) and ball on air fell.
+                    if i % step == 0 and i != last_det:
+                        last_det = i
+                        skip_events = self.pipe.detections(i, i / fps, detector=self.src.detection_at(i))
+                        if files and self.pipe.pitch_state is not None:
+                            files["map"].write(json.dumps(self.pipe.pitch_state.to_dict()) + "\n")
+                        for e in skip_events:
+                            self.publish({"type": "decision", "time": round(i / fps, 2), "kind": e["type"],
+                                          **{k: v for k, v in e.items() if k != "type"}})
+                            if files:
+                                files["events"].write(json.dumps({"frame": i, "time": round(i / fps, 2), **e}) + "\n")
                 for c, cap in caps.items():
                     ok, img = cap.read()
                     images[c] = img if ok else images.get(c, blank)
@@ -393,7 +406,9 @@ class LiveStudio:
                    "wall_seconds": round(time.time() - start, 1),
                    "confirmed_goals": sorted(v["goal_time"] for v in self.pipe.confirmed.values()),
                    # A live run that fell far behind is not a fair measurement (like an invalid story pass).
-                   "valid": (not lags) or float(np.max(lags)) <= self.cfg["live"]["max_lag_s"]}
+                   "shown_fps": round(shown / max(1e-6, time.time() - start), 1),
+                   "valid": ((not lags) or float(np.max(lags)) <= self.cfg["live"]["max_lag_s"])
+                            and (not self.realtime or shown / max(1e-6, time.time() - start) >= self.cfg["live"]["min_shown_fps"])}
         if files:
             for k in ("log_file", "cards", "map", "events"):
                 files[k].close()

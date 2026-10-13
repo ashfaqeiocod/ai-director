@@ -272,11 +272,19 @@ studio:
                 # live_bonus: where two cameras' views overlap (edge of the box) the scores swap back and forth
                 # (cam2 <-> cam4 every 3 s): the live camera keeps the shot unless another is clearly better.
                 # cam_bonus: stand A is the main side, like a real broadcast's main camera position.
-                live_bonus: 20, cam_bonus: { 1: 10, 3: 10, 5: 10 } }
+                live_bonus: 20, cam_bonus: { 1: 10, 3: 10, 5: 10 },
+                # Danger: map intensity >= danger_min_intensity with the ball in a goal area -> that goal's cameras
+                # get danger_bonus (before: goal-area camera live in 76% of the 21 s of such moments).
+                danger_min_intensity: 0.5, danger_bonus: 30,
+                danger_cams: { left_box: [5, 6], left_third: [5, 6], right_box: [1, 2], right_third: [1, 2] } }
     ball_tracker: { buffer_size: 5, max_jump_px: 250, max_predict_updates: 5, min_confidence: 0.3 }
     merge_players_m: 1.5 # the same player seen by two cameras: points closer than this on the pitch are one player
     parked_radius_m: 0.6 # parked-ball check (studio.parked_ball rules) in metres: cam1 sees the penalty spot as a ball
     goal_cams: { left: 5, right: 1 } # the goal watcher (Gemini) checks these cameras when play is near that goal
+    goalwatch: # merged over studio.goalwatch for ISSIA only (SoccerTrack settings stay frozen)
+      # Pace the routine goal-camera looks by the map intensity: hot (>= 0.5) every 2 s, calm (<= 0.2) every 8 s,
+      # otherwise interval_s (4 s). Box entries, shots and re-checks still look at once.
+      interval_by_intensity: { hot: 0.5, hot_s: 2, calm: 0.2, calm_s: 8 }
     story_sport: "soccer (an Italian Serie A match; the video is a mosaic of three FIXED cameras side by side: left goal area, midfield, right goal area; no TV graphics, no commentary, no sound)"
     # Calibration (a one-time setup measurement, like installing a real camera): pitch landmarks clicked on
     # each camera's 1920x1080 picture, [pitch x m, pitch y m, picture x px, picture y px]. Pitch x/y are
@@ -315,6 +323,8 @@ studio:
     tile_fps: 8 # camera tiles are refreshed this many times a second (CPU budget on the M1)
     state_hz: 10 # state messages to the dashboard per second
     max_lag_s: 2.0 # a live run that falls further behind than this is marked invalid
+    min_shown_fps: 8 # ...or that shows fewer frames per second than this (2026-10-13: another app took 3 CPU cores,
+                     # a run showed 0.9 fps with no lag and was still called "valid")
   goalwatch: # studio.goalwatch: Gemini looks at a goal camera when play is near that goal
     near_goal_m: 27 # ball (or the main group) within this many metres of a goal line -> watch that goal
     group_radius_m: 15 # main group of players = biggest group within this radius (when the ball is not known)

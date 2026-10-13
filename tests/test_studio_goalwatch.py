@@ -60,3 +60,14 @@ def test_keeper_holding_the_ball_after_a_shot_is_a_save():
     feed.add_goal_looks([item, rec], CFG)
     saves = [e for e in feed.events if e["type"] == "save"]
     assert len(saves) == 1 and saves[0]["event_time"] == item["shot_time"] and saves[0]["known_at"] == 75.0
+
+
+def test_looks_follow_the_map_intensity_when_enabled():
+    cfg = {**CFG, "interval_by_intensity": {"hot": 0.5, "hot_s": 2, "calm": 0.2, "calm_s": 8}}
+    hot, calm = state(48.0), state(48.0)
+    hot.intensity, calm.intensity = 0.8, 0.1
+    p = GoalPlanner(cfg)
+    p.answer(p.plan(30.0, hot), GoalLook(), 31.0)
+    assert p.plan(32.5, hot) is not None                              # hot: again after 2 s
+    assert p.plan(32.5, calm) is None and p.plan(38.5, calm) is not None   # calm: waits 8 s
+    assert GoalPlanner(CFG).interval(hot) == CFG["interval_s"]        # SoccerTrack / MUVS: unchanged

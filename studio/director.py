@@ -49,6 +49,7 @@ class DirectorV2:
         self.shot_start = 0
         self.challenger: int | None = None
         self.challenger_frames = 0
+        self.challenger_since = 0
         self.reaction_start: float | None = None
         self.reaction_reason = ""
         self.handled: set[str] = set()            # story events already reacted to
@@ -76,6 +77,10 @@ class DirectorV2:
                 bonus -= c.get("cross_line_penalty", 0)
             if card.cam == self.current:
                 bonus += c.get("live_bonus", 0)   # a challenger must be clearly better, not just a little
+            # Danger: the pitch map says play is hot near a goal -> that goal's cameras are the shot to have
+            # (config danger_cams: zone -> cameras; footage without it: no rule).
+            if card.map_intensity >= c.get("danger_min_intensity", 2.0) and card.cam in (c.get("danger_cams") or {}).get(card.zone, []):
+                bonus += c["danger_bonus"]
             if card.cam in self.follow_cams:
                 # MVP 1 scoring, on this camera's own ball status and players.
                 if card.ball:
@@ -188,10 +193,12 @@ class DirectorV2:
         if best == self.current or scores[best - 1] <= scores[self.current - 1]:
             self.challenger, self.challenger_frames = None, 0
             return Decision(self.current, self.state, scores, "live cam has the best score", events)
+        # Counted in FRAMES (time), not in calls: live mode skips frames when the Mac is busy, and counting calls
+        # made the 0.6 s wait last 1.2 s at 13 fps shown (and 15 s at 1 fps).
         if best == self.challenger:
-            self.challenger_frames += 1
+            self.challenger_frames = i - self.challenger_since + 1
         else:
-            self.challenger, self.challenger_frames = best, 1
+            self.challenger, self.challenger_frames, self.challenger_since = best, 1, i
         if self.challenger_frames < self.hysteresis:
             return Decision(self.current, self.state, scores,
                             f"cam{best} better, waiting (hysteresis {self.challenger_frames}/{self.hysteresis})", events)

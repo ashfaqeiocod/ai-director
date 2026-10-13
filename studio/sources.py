@@ -256,6 +256,7 @@ class IssiaSource:
                                    for side, cam in s["goal_cams"].items()]}
         self.cfg = copy.deepcopy(self.cfg_all)
         self.cfg["director"].update(s["director"])
+        self.cfg["goalwatch"].update(s.get("goalwatch", {}))
         self.on_air = self.cfg["director"]["on_air_cams"]
         calib = json.loads((self.folder / "calibration.json").read_text())
         self.H = {c: np.asarray(calib[f"cam{c}"]["pitch_to_image"]) for c in self.cam_ids}

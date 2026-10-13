@@ -179,6 +179,20 @@ class GoalPlanner:
         self.rechecks.append({"due": due, "side": side, "event_time": event_time, "reason": reason})
         return True
 
+    def interval(self, state) -> float:
+        """Seconds between routine looks at a goal. With interval_by_intensity (ISSIA), the map intensity decides:
+        hot play near a goal -> look often, calm -> save Gemini requests. Otherwise the fixed interval_s."""
+        cfg = self.cfg
+        by = cfg.get("interval_by_intensity")
+        if not by:
+            return cfg["interval_s"]
+        level = getattr(state, "intensity", 0.0)
+        if level >= by["hot"]:
+            return by["hot_s"]
+        if level <= by["calm"]:
+            return by["calm_s"]
+        return cfg["interval_s"]
+
     def plan(self, t: float, state) -> dict | None:
         cfg = self.cfg
         # 1. Aftermath of a shot first: what happens in the seconds after it tells a goal from a save.
@@ -206,7 +220,7 @@ class GoalPlanner:
         triggered = any(e["type"] in ("GOAL_LINE", "BOX_ENTRY") for e in state.events)
         if side is None or t < cfg["window_s"]:
             return None
-        if not triggered and t - self.last_look[side] < cfg["interval_s"]:
+        if not triggered and t - self.last_look[side] < self.interval(state):
             return None
         if any(a["due"] - t < cfg["aftermath_priority_s"] for a in self.aftermath):
             return None                    # a follow-up of a shot is due soon: keep the line free for it
@@ -333,10 +347,10 @@ class LiveGoalWatcher:
     It can share MVP 2's Gemini client (and so its requests-per-minute limiter) with the live story layer."""
 
     def __init__(self, segment: str, cams: dict, clock, on_look, publish, shared_llm=None, out_dir: Path | None = None,
-                 snapshot=None, video_of=None):
+                 snapshot=None, video_of=None, cfg: dict | None = None):
         from story.llm.gemini import GeminiStoryLLM
 
-        self.cfg = load_config()["studio"]["goalwatch"]
+        self.cfg = cfg or load_config()["studio"]["goalwatch"]   # footage may bring its own settings (ISSIA)
         self.segment, self.clock, self.on_look, self.publish = segment, clock, on_look, publish
         self.snapshot = snapshot                    # snapshot(side, video, t): show the picture the AI is checking
         # video_of(cam) -> that camera's video file (default: SoccerTrack's rendered cameras)

@@ -107,3 +107,14 @@ def test_story_feed_uses_only_what_was_known(tmp_path):
     assert feed.known_events(9) == []
     assert feed.known_events(15)[0]["confidence"] == 0.4
     assert feed.known_events(25)[0]["confidence"] == 0.9
+
+
+def test_hysteresis_is_time_not_calls_when_live_skips_frames():
+    d = DirectorV2(CFG, FPS)
+    run(d, 25 * 10, lambda i: cards(ball_cam=2))
+    assert d.current == 2
+    # Live mode on a busy Mac: only every 5th frame is decided. The challenger must still win after ~0.6 s.
+    start = 25 * 10
+    for i in range(start, start + 25 * 3, 5):
+        d.decide(i, i / FPS, cards(ball_cam=3), [], [], None)
+    assert d.current == 3
