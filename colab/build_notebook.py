@@ -33,7 +33,8 @@ dashboard on your Mac connects to.
    authtoken, then in Colab click the 🔑 *Secrets* icon (left bar) → *Add new secret* → name
    `NGROK_AUTHTOKEN`, value = your token, and switch *Notebook access* on.
    By default the notebook uses a free Cloudflare quick tunnel (no account, no data cap); ngrok only with TUNNEL = 'ngrok' in step 5.
-4. **Run everything:** menu *Runtime → Run all*. The first run takes ~5–8 minutes (installing + downloading the models).
+4. **Run everything:** menu *Runtime → Run all*. It takes ~20–25 minutes (installing, downloading the models, and
+   building the detector's TensorRT engine, which makes it 8x faster). Leave it alone until the URL box appears.
 5. **Copy the URL** printed in big letters at the end (it looks like `https://xxxx.ngrok-free.app`
    or `https://xxxx.trycloudflare.com`).
 6. **Paste it** into the dashboard: MVP 3 http://localhost:8000/studio → ● Live → *Colab URL* → *Test*
@@ -71,6 +72,9 @@ def build() -> dict:
              "!uv venv -q --seed --python 3.11 /content/detenv\n"
              "# onnxruntime-gpu[cuda,cudnn]: the CUDA + cuDNN versions this onnxruntime was built for, in its own environment\n"
              "!uv pip install -q --python /content/detenv/bin/python inference-gpu 'onnxruntime-gpu[cuda,cudnn]' fastapi uvicorn websockets\n"
+             "# TensorRT (half precision on the T4's tensor cores): plain CUDA took 535 ms per camera frame, TensorRT 70 ms.\n"
+             "# Its library files come from NVIDIA's own package index (uv can't install the tensorrt wrapper package).\n"
+             "!/content/detenv/bin/python -m pip install -q 'tensorrt-cu12-libs==10.8.0.43' --extra-index-url https://pypi.nvidia.com\n"
              "!/content/detenv/bin/python -c \"import onnxruntime as o; print('detector env OK, onnxruntime', o.__version__, o.get_available_providers())\""),
         code("%%writefile detector_server.py\n" + detector_code),
         code("import glob, os, subprocess, site, time, requests\n"
@@ -84,13 +88,17 @@ def build() -> dict:
              "else:\n"
              "    # Try 1: the CUDA/cuDNN that came with the detector's own onnxruntime. Try 2: torch's GPU libraries.\n"
              "    torch_libs = [d for sp in site.getsitepackages() for d in glob.glob(sp + '/nvidia/*/lib')]\n"
+             "    trt_libs = glob.glob('/content/detenv/lib/python3*/site-packages/tensorrt_libs')\n"
+             "    print('TensorRT libraries:', trt_libs or 'MISSING (the detector will be ~8x slower)')\n"
              "    h = None\n"
-             "    for attempt, (own, libs) in enumerate([('1', []), ('0', torch_libs)], 1):\n"
-             "        env = dict(os.environ, ROBOFLOW_API_KEY=roboflow_key, DETECTOR_OWN_CUDA=own)\n"
+             "    for attempt, (own, libs) in enumerate([('1', trt_libs), ('0', trt_libs + torch_libs)], 1):\n"
+             "        env = dict(os.environ, ROBOFLOW_API_KEY=roboflow_key, DETECTOR_OWN_CUDA=own,\n"
+             "                   ONNXRUNTIME_EXECUTION_PROVIDERS='[TensorrtExecutionProvider,CUDAExecutionProvider]')\n"
+             "        # the first start builds the TensorRT engine: ~10-15 min on a T4 (later starts reuse it)\n"
              "        env['LD_LIBRARY_PATH'] = ':'.join(libs + [os.environ.get('LD_LIBRARY_PATH', '')])\n"
              f"        detector_proc = subprocess.Popen(['/content/detenv/bin/python', 'detector_server.py', '--port', '{DETECTOR_PORT}'],\n"
              "                                         env=env, stdout=open(f'detector{attempt}.log', 'w'), stderr=subprocess.STDOUT)\n"
-             "        for _ in range(150):                                # model download + GPU warm-up: up to ~5 min\n"
+             "        for _ in range(600):                                # model + TensorRT engine build: up to ~20 min\n"
              "            time.sleep(2)\n"
              "            try:\n"
              f"                h = requests.get('http://127.0.0.1:{DETECTOR_PORT}/health', timeout=2).json(); break\n"
@@ -168,8 +176,9 @@ def build() -> dict:
              "else:\n"
              "    print('Cloudflare quick tunnel (no account needed).')\n"
              "    !wget -q -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x cloudflared\n"
+             "    # start_new_session: stopping another cell (■) must not kill the tunnel\n"
              "    tunnel = subprocess.Popen(['./cloudflared', 'tunnel', '--no-autoupdate', '--url', f'http://127.0.0.1:{PORT}'],\n"
-             "                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)\n"
+             "                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)\n"
              "    for line in tunnel.stdout:\n"
              "        found = re.search(r'https://[a-z0-9-]+\\.trycloudflare\\.com', line)\n"
              "        if found:\n"

@@ -515,6 +515,17 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   longer load the detections (only file paths). Colab notebook: Cloudflare tunnel by default (ngrok free = 1 GB/month,
   the detector sends ~7 GB per half). Not done: latency stats in report.md (they are in run.json).
 
+### 2026-10-13/14: the detector on Colab (T4), first real runs
+- Try 1: crash on the first convolution (CUDNN_BACKEND_API_FAILED, cuDNN 9.24): inference-gpu 1.7.4 brings torch for
+  CUDA 13 + nvidia-cudnn-cu13 9.24, onnxruntime-gpu 1.21.1 is built for CUDA 12. Fix: Python 3.11 env,
+  onnxruntime-gpu[cuda,cudnn] and ort.preload_dlls() BEFORE inference imports torch -> runs on the GPU.
+- Plain CUDA: 535 ms per camera frame on the T4 (= the M1 with CoreML): the model is big (273 MB, 1280 input).
+- TensorRT (fp16, engine cached; inference sets these options itself): 70 ms per camera frame (8x). Needs
+  tensorrt-cu12-libs from pypi.nvidia.com (uv could not install the tensorrt wrapper). Engine build ~10-15 min.
+  70 ms x 3 cams = 210 ms per detection step vs 200 ms needed at 5/s: just under live speed (some steps -> cache).
+- Colab interrupt (■) killed the Cloudflare tunnel (error 530): it now runs in its own session.
+- Notebook updated with all of this (Run all ~20-25 min). Not yet re-run from scratch.
+
 ## Next action (MVP 3)
 Live test environment (`docs/MVP3_LIVE_TEST_PLAN.md`): steps 1-3 built. Next: the user runs the new Colab notebook
 (ROBOFLOW_API_KEY secret, T4) -> step 2d parity (60 s Alfheim, Colab vs cached: ball rate per cam, players per
