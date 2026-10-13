@@ -109,6 +109,10 @@ def detect(folder: Path, allow_fallback: bool = False) -> dict[int, dict]:
             scale = w / s["shift_width"]                 # small-frame pixels -> full-frame pixels
             result["shift"] = [round(dx * scale, 1), round(dy * scale, 1)]
             cache["frames"][str(i)] = result
+            if len(cache["frames"]) % 300 == 0:          # checkpoint (~1 min): a long run (Alfheim: hours) resumes
+                tmp = out_dir / f"{video.stem}.json.tmp"     # write + rename: a kill mid-write never corrupts it
+                tmp.write_text(json.dumps(cache))
+                tmp.replace(out_dir / f"{video.stem}.json")
 
     try:
         list(pool.map(one_camera, videos))
