@@ -388,9 +388,10 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
     from studio.sources import get_source, is_folder_source
 
     if is_folder_source(segment):
-        src = _cached_source(segment)          # a playing video asks again and again (range requests)
-        small = getattr(src, "small_video", lambda c: None)(cam)   # tiles: the light 960x540 copy if there is one
-        path = small or src.video(cam)
+        # A playing video asks again and again (range requests): only the file path, never the loaded detections.
+        folder = get_source_folder(segment)
+        small = [folder / f"cam{cam}{suffix}.mp4" for suffix in ("_540", "_480")]   # tiles: the light copy (ISSIA, Alfheim)
+        path = next((f for f in small if f.exists()), folder / f"cam{cam}.mp4")
     else:
         aim = "oracle" if info["source"] == "oracle" else "detector"
         path = path_of(segment, cam, aim)      # cams 1-5, and 6/7 = the goal cameras

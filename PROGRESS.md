@@ -510,6 +510,10 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   files change) and Replay sends only the run's own stretch of overlays. The background detection itself uses
   ~1.1 GB and ~150% CPU: with Chrome open a live run fell to ~4 fps while it ran (CLI: Colab mode 23 fps, cached 26).
 - `python -m studio.compare_detectors --segment ... --colab-run <id> [--cached-run <id>]`: the step 2d table.
+- Final checks: offline ISSIA 40 s from 0:00 still byte-identical after all changes; ISSIA from 0:30 (template
+  story): first window 30.0-38.1 s, first "story so far" at 90.2 s (start + 60 s), 0 LAG. Replay tile videos no
+  longer load the detections (only file paths). Colab notebook: Cloudflare tunnel by default (ngrok free = 1 GB/month,
+  the detector sends ~7 GB per half). Not done: latency stats in report.md (they are in run.json).
 
 ## Next action (MVP 3)
 Live test environment (`docs/MVP3_LIVE_TEST_PLAN.md`): steps 1-3 built. Next: the user runs the new Colab notebook
