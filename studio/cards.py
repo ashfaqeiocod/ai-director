@@ -214,6 +214,11 @@ class StoryFeed:
                 self.events.append(event)
             if lk["shot"]:
                 self.events.append({"id": f"gs{n}", "type": "shot", "event_time": lk["shot_time"], "confidence": 0.7, **src})
+            if lk.get("save") and not lk["goal"]:
+                # the keeper stopped it (a look saw the save, or the follow-up look saw the keeper holding the ball)
+                when = lk.get("save_time", lk["shot_time"]) or lk["t"]
+                if not any(e["type"] == "save" and abs(e["event_time"] - when) < 4 for e in self.events):
+                    self.events.append({"id": f"gv{n}", "type": "save", "event_time": when, "confidence": 0.7, **src})
             if lk["goal"] or lk["celebration"]:
                 self.updates.append({"window_end": lk["t"], "logged_at": lk["logged_at"], "window_start": lk["t"] - 6,
                                      "phase": "goal" if lk["goal"] else "celebration", "sentiment": "excited",

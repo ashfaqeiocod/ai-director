@@ -43,7 +43,8 @@ You get the last few seconds of video (no sound). You cannot see the future.
 Say only what you can see:
 - goal: true only if the ball clearly ends up in THIS goal's net (crossing the line between the posts),
   or players clearly celebrate a goal right at this goal. A shot that misses or is saved is NOT a goal.
-- shot: a shot or header towards this goal. save: the goalkeeper stops a shot.
+- shot: a shot or header towards this goal. save: the goalkeeper stops a shot, or catches / punches away a
+  cross or header into the box (shot_at_s = when).
 - celebration: players clearly celebrating (arms up, running together, hugging).
 - goal_at_s / shot_at_s: seconds from the START of the clip.
 Be strict: when unsure, goal=false and a low confidence. Answer only with JSON matching the schema."""
@@ -54,6 +55,7 @@ You see the few seconds AFTER the shot. Decide from what happens now whether it 
 - goal signs: the ball is in the net, the goalkeeper picks the ball out of the net or kicks it away in
   frustration, attackers turn away / celebrate / run back to their own half together, defenders stand still.
 - not a goal: the keeper holds the ball and plays on, a goal kick or corner is taken, play simply continues.
+- keeper_holds_ball: the goalkeeper has the ball in his hands (he caught or picked it up).
 Be honest about uncertainty. Answer only with JSON matching the schema."""
 
 
@@ -63,6 +65,7 @@ class AfterLook(BaseModel):
     keeper_takes_ball_from_net: bool = False
     attackers_celebrate: bool = False
     restart_from_goal_kick_or_corner: bool = False
+    keeper_holds_ball: bool = False
     note: str = ""
 
 
@@ -164,6 +167,17 @@ class GoalPlanner:
         self.cfg = cfg
         self.last_look = {"left": -999.0, "right": -999.0}
         self.aftermath: list[dict] = []            # looks to do after a shot: [{due, side, shot_time}]
+        self.rechecks: list[dict] = []             # looks asked for by a story event: [{due, side, event_time, reason}]
+
+    def request(self, side: str, event_time: float, reason: str, now: float) -> bool:
+        """A story layer (Colab model / Gemini) reported a cross, header, shot... near a goal: look at that goal
+        camera again once the outcome can be seen (event + recheck_after_s), even if a look ran a moment ago.
+        A keeper claiming a cross right after the last routine look was missed without this (ISSIA 66 s)."""
+        due = max(now, event_time + self.cfg["recheck_after_s"])
+        if any(r["side"] == side and abs(r["due"] - due) < self.cfg["recheck_merge_s"] for r in self.rechecks):
+            return False
+        self.rechecks.append({"due": due, "side": side, "event_time": event_time, "reason": reason})
+        return True
 
     def plan(self, t: float, state) -> dict | None:
         cfg = self.cfg
@@ -177,7 +191,17 @@ class GoalPlanner:
                     "zone": state.zone, "system": AFTER, "schema": AfterLook,
                     "text": f"The shot was about {max(0.0, start - a['shot_time']):.0f} s before this clip starts. "
                             "What happens now?"}
-        # 2. Normal look when play is near a goal.
+        # 2. A re-check a story event asked for (cross, header, shot... reported by the Colab model or Gemini).
+        due = [r for r in self.rechecks if r["due"] <= t]
+        if due:
+            r = due[0]
+            self.rechecks.remove(r)
+            start = max(0.0, min(r["event_time"] - 1.0, t - cfg["window_s"]))
+            return {"kind": "look", "side": r["side"], "start": start, "end": t, "zone": state.zone,
+                    "trigger": f"re-check after {r['reason']} at {r['event_time']:.1f}s", "system": SYSTEM,
+                    "schema": GoalLook, "text": f"Goal camera: the {r['side']} goal. A {r['reason']} was reported about "
+                                                f"{max(0.0, r['event_time'] - start):.0f} s into this clip: what happened?"}
+        # 3. Normal look when play is near a goal.
         side = near_goal_side(state, cfg)
         triggered = any(e["type"] in ("GOAL_LINE", "BOX_ENTRY") for e in state.events)
         if side is None or t < cfg["window_s"]:
@@ -196,7 +220,8 @@ class GoalPlanner:
             return {"t": round(t, 2), "logged_at": logged_at, "side": side, "zone": job["zone"], "kind": "after",
                     "trigger": f"after the shot at {job['shot_time']:.1f}s", "goal": result.goal_scored,
                     "goal_confidence": result.confidence, "goal_time": job["shot_time"], "shot": False,
-                    "shot_time": 0, "save": False, "celebration": result.attackers_celebrate,
+                    "shot_time": 0, "save": not result.goal_scored and result.keeper_holds_ball,
+                    "save_time": job["shot_time"], "celebration": result.attackers_celebrate,
                     "ball_visible": False, "note": result.note}
         self.last_look[side] = t
         start = job["start"]
@@ -330,6 +355,20 @@ class LiveGoalWatcher:
             out_dir.mkdir(parents=True, exist_ok=True)
         self.run_id = out_dir.name if out_dir else datetime.now().strftime("%Y%m%d-%H%M%S")
         self.calls = open(out_dir / "calls.jsonl", "w") if out_dir else None
+
+    def request(self, kind: str, event_time: float, state) -> None:
+        """A story event (cross, header, shot...) arrived: if it happened near a goal, re-check that goal camera."""
+        if self.stopped or len(self.goal_cams) < 2 or state is None:
+            return
+        side = near_goal_side(state, self.cfg)
+        if side is None and state.ball is not None and abs(state.ball[0]) >= self.cfg["recheck_min_x_m"]:
+            side = "left" if state.ball[0] < 0 else "right"     # the ball is in that half, toward the goal
+        if side is None:
+            return
+        with self.lock:
+            added = self.planner.request(side, event_time, kind.replace("_", " "), self.clock())
+        if added:
+            self.publish({"type": "goal_recheck", "side": side, "reason": kind, "event_time": round(event_time, 2)})
 
     def consider(self, t: float, state) -> None:
         if self.stopped or len(self.goal_cams) < 2:

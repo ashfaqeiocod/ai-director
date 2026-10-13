@@ -271,6 +271,7 @@ const HEADLINE = new Set(["goal", "shot", "save", "chance", "foul", "card_yellow
 const COLAB_ICONS = {PASS: "➡️", DRIVE: "🏃", "HIGH PASS": "⤴️", "BALL PLAYER BLOCK": "🧱", HEADER: "🗣️", CROSS: "↗️",
                      "THROW IN": "🙌", SHOT: "🎯", OUT: "↩️", "PLAYER SUCCESSFUL TACKLE": "🛡️", "FREE KICK": "🦶", GOAL: "⚽",
                      shot: "🎯", goal: "⚽", cross: "↗️", header: "🗣️", tackle: "🛡️", free_kick: "🦶", throw_in: "🙌", out: "↩️"};
+const RANK = {goal: 5, save: 4, card_red: 4, penalty: 4, shot: 3, chance: 2};   // which news wins a tie
 const MAP_ICONS = {BOX_ENTRY: "📦", BOX_EXIT: "📤", BALL_OUT: "↩️", GOAL_LINE: "🥅", KICKOFF_LINEUP: "▶️", GOAL_CONFIRMED: "✅"};
 const MAP_EVENTS = {BOX_ENTRY: "ball into the box", BOX_EXIT: "ball out of the box", BALL_OUT: "ball out of play",
                     GOAL_LINE: "ball over the goal line between the posts", KICKOFF_LINEUP: "players lined up for a kick-off"};
@@ -294,7 +295,7 @@ function emptyModel() {
   return {cams: null, onAir: [], goalCams: [], fps: 25, duration: 1, truth: [], pitch: null, timeline: [], mapRows: [],
           decisions: [], updates: [], events: [], looks: [], intensity: [], overlays: null, cards: {}, cardsBySecond: {},
           cur: null, info: null, lights: {}, asking: null, report: null, human: [], kind: "soccertrack", layout: null,
-          scores: {}, credit: "", memory: [], signals: [], teams: null, liveTeams: null};
+          scores: {}, credit: "", memory: [], signals: [], teams: null, liveTeams: null, rechecks: []};
 }
 const camName = (c) => (M.cams.cams.find(x => x.cam === c) || {name: "cam" + c}).name;
 const shown = () => M.cams.cams.filter(c => M.onAir.includes(c.cam));
@@ -394,7 +395,14 @@ function onLive(m) {
                                 confidence: m.goal_confidence, sources: ["goalcam"]});
     else if (m.shot) M.events.push({id: "gs" + M.looks.length, type: "shot", event_time: m.shot_time, known_at: m.logged_at,
                                      confidence: 0.7, sources: ["goalcam"]});
+    if (m.save && !m.goal) {           // the keeper stopped it (or held the ball in the follow-up look)
+      const when = m.save_time || m.shot_time || m.t;
+      if (!M.events.some(e => e.type === "save" && Math.abs(e.event_time - when) < 4))
+        M.events.push({id: "gv" + M.looks.length, type: "save", event_time: when, known_at: m.logged_at, confidence: 0.7, sources: ["goalcam"]});
+    }
     M.lights.goal = null;
+  } else if (m.type === "goal_recheck") {
+    M.rechecks.push({...m, t: now});
   } else if (m.type === "goal_look_error") {
     M.lights.goal = {state: "error", message: m.message};
   } else if (m.type === "live_started") {
@@ -700,7 +708,7 @@ function drawPitch(t, liveCam, teams) {
   [-52.5, 52.5].forEach(x => { g.beginPath(); g.moveTo(px(x), py(-3.66)); g.lineTo(px(x), py(3.66)); g.stroke(); });
   // banner: the newest event the system knows (Colab model, Gemini, goal camera), shown for 5 s after it arrived
   const recent = M.events.filter(e => e.type !== "none" && e.type !== "whistle" && e.known_at <= t && t - e.known_at < 5)
-    .sort((a, b) => b.known_at - a.known_at)[0];
+    .sort((a, b) => (b.known_at - a.known_at) || (RANK[b.type] || 0) - (RANK[a.type] || 0))[0];   // same moment: the bigger news
   if (recent) {
     const who = (recent.sources || []).map(x => ({specialist: "Colab", gemini: "Gemini", goalcam: "goal cam"}[x] || x)).join(" + ");
     const text = `${ICONS[recent.type] || "•"} ${recent.type.replace("_", " ").toUpperCase()} · ${who}`;
@@ -878,7 +886,9 @@ function feedItems(t) {
       `<span class="text-sky-300">🧠 ${PHASES[u.phase] || u.phase}</span> ${esc(u.narration)}`}));
     M.looks.filter(l => l.logged_at <= t).forEach(l => out.push({at: l.logged_at, html:
       `<span class="text-slate-500 mono">${fmt(l.t)} +${(l.logged_at - l.t).toFixed(1)}s</span> <b class="text-yellow-200">🥅 ${l.side} goal:</b> ` +
-      `${l.goal ? "⚽ GOAL" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal"} <span class="text-slate-400">${esc(l.note || "")}</span>`}));
+      `${lookVerdict(l)}${/re-check/.test(l.trigger || "") ? ` <span class="chip text-sky-300">🔁 ${esc(l.trigger)}</span>` : ""} <span class="text-slate-400">${esc(l.note || "")}</span>`}));
+    M.rechecks.filter(r => r.t <= t).forEach(r => out.push({at: r.t, html:
+      `<span class="text-slate-500 mono">${fmt(r.event_time)}</span> <span class="text-sky-300">🔁 ${esc(r.reason.replace("_", " "))} near the ${r.side} goal → re-checking that goal camera</span>`}));
   }
   // Colab: its real events always (highlighted); passes / runs only under the 🤖 Colab filter (there are ~50 a match)
   M.signals.filter(s => s.t <= t && isColab(s)).map(colabItem).forEach(c => {
@@ -897,6 +907,9 @@ function feedItems(t) {
   });
   return out;
 }
+function lookVerdict(l) {
+  return l.goal ? "⚽ GOAL" : l.save ? "🧤 save" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal";
+}
 function logItems(t) {
   if (tab === "feed") return feedItems(t);
   if (tab === "story") return M.updates.filter(u => u.logged_at <= t).map(u => ({at: u.logged_at, html:
@@ -905,7 +918,7 @@ function logItems(t) {
   if (tab === "goalai") return M.looks.filter(l => l.logged_at <= t).map(l => ({at: l.logged_at, html:
     `<span class="text-slate-500 mono">${fmt(l.t)} +${(l.logged_at - l.t).toFixed(1)}s</span> ` +
     `<b class="${l.goal ? "text-yellow-300" : l.celebration || l.shot ? "text-amber-200" : "text-slate-400"}">` +
-    `${l.goal ? "⚽ GOAL" : l.celebration ? "🎉 celebration" : l.shot ? "🎯 shot" : "no goal"}</b> ${l.side} goal · ${esc(l.note || "")}`}));
+    `${lookVerdict(l)}</b> ${l.side} goal · <span class="text-slate-500">${esc(l.trigger || "")}</span> · ${esc(l.note || "")}`}));
   return M.decisions.filter(e => e.time <= t && !(e.kind in MAP_ICONS)).map(e => ({at: e.time, html:
     `<span class="text-slate-500 mono">${fmt(e.time)}</span> <b>${e.kind}</b> ${esc((e.message || "").replace(/cam(\d)/g, (_, c) => camName(+c)))}`}));
 }

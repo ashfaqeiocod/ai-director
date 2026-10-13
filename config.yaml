@@ -328,6 +328,12 @@ studio:
     error_pause_s: 5
     min_goal_confidence: 0.6 # a look saying "goal" counts only above this
     merge_s: 30 # goal looks within this many seconds are one goal
+    # Re-check: a story event of these types (Colab model / Gemini) near a goal asks for one more goal-camera look
+    # recheck_after_s after it (ISSIA: the keeper claimed a cross 3 s after a routine look and nobody saw it).
+    recheck_events: [cross, header, shot, chance, corner, free_kick]
+    recheck_after_s: 3
+    recheck_merge_s: 4 # one re-check per goal per this many seconds
+    recheck_min_x_m: 25 # ball not near a goal: still re-check if it is this far into one half
     use_in_run: true # studio.run gives the newest goal-watch run to the director
   map: # the pitch map (studio.pitchmap): ball + players on the pitch, zone triggers, map intensity
     drive_ball: true # the map's ball (seen, or remembered for a moment) is the ball for every camera

@@ -223,8 +223,9 @@ def goal_looks(segment: str, info: dict) -> list[dict]:
         return []
     from studio.goalwatch import load_looks
 
-    keep = ("t", "logged_at", "side", "goal", "goal_confidence", "goal_time", "shot", "celebration", "save", "note")
-    return [{k: x[k] for k in keep} for x in load_looks(segment, info.get("goalwatch_run"))]
+    keep = ("t", "logged_at", "side", "goal", "goal_confidence", "goal_time", "shot", "shot_time", "celebration", "save",
+            "save_time", "kind", "trigger", "note")
+    return [{k: x.get(k) for k in keep} for x in load_looks(segment, info.get("goalwatch_run"))]
 
 
 def pitch_data(folder: Path, segment: str, source: str, cams: dict) -> dict:

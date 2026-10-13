@@ -401,6 +401,21 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
 - Live checks in the browser (Playwright + Chrome): setup -> Test Colab -> Go live -> all six lights green,
   lag 0.02 s, ~13-19 fps shown (6 x 1080p decode + 7 MJPEG streams), run valid, appears in Replay.
 
+### 2026-10-13: saves + goal-camera re-checks; what the Colab model really reported
+- Checked against the footage (cam1, 52-76 s): ball out ~55 s, throw-in ~60 s (purple), cross ~63 s, keeper
+  claims ~66 s, holds + throws out ~74 s. Colab model (program feed): OUT 55.3 s and THROW IN 60.9 s CORRECT,
+  HEADER 24.4 s matches Gemini's header duel; it missed the cross and has NO "save" class. Gemini: throw-in right
+  but credited to white (thrower is purple); team words unreliable. Goal-camera AI varies run to run (one false
+  "goal" at ~70 s, stopped by the kick-off rule; one false "save" at 56 s).
+- The page hid Colab events among ~50 PASS/DRIVE lines and left throw-in / out off the timeline: now big icons
+  at event time, highlighted feed lines, a pitch-map banner; passes/runs only under the Colab filter.
+- SAVE events: a goal look saying "save", or a follow-up look where the keeper holds the ball (new AfterLook
+  field keeper_holds_ball), becomes a 🧤 event (goal cam). Live test (Gemini only, Colab offline): look at
+  72.8 s "shot saved ~65.5 s", follow-up 84.2 s "keeper catches the ball" -> 🧤 at 65.5 s (true ~66 s).
+- RE-CHECK: a story event cross / header / shot / chance / corner / free kick near a goal (or 25+ m into a half)
+  asks the goal watcher for one more look at that goal 3 s after the event, even right after a routine look.
+  Unit-tested; not yet seen live (Colab was offline and Gemini reported no such event in the test run).
+
 ## Next action (MVP 3)
 ISSIA live demo is ready (Studio -> Live -> ISSIA, hybrid with a Colab URL). Next: the detector is the slow part
 (25 min for 2 min of 6 cameras on the M1) -> run detection on Colab's GPU too (same server pattern) so a new match

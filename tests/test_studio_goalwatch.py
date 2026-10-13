@@ -34,3 +34,29 @@ def test_shot_schedules_two_aftermath_looks():
     assert after["kind"] == "after" and after["side"] == "right"
     rec = p.answer(after, AfterLook(goal_scored=True, confidence=0.9), shot + 12)
     assert rec["goal"] and rec["goal_time"] == shot
+
+
+def test_story_event_asks_for_a_recheck_even_right_after_a_look():
+    p = GoalPlanner(CFG)
+    job = p.plan(63.0, state(48.0))
+    p.answer(job, GoalLook(), 64.0)                                  # routine look just done at 63 s
+    assert p.plan(64.0, state(48.0)) is None                         # interval: no new routine look
+    assert p.request("right", 63.5, "cross", now=64.0)               # the Colab model reports a cross at 63.5 s
+    assert not p.request("right", 64.0, "header", now=64.5)          # same moment: one re-check only
+    assert p.plan(65.0, state(48.0)) is None                         # not due yet (outcome not visible)
+    re = p.plan(63.5 + CFG["recheck_after_s"], state(0.0))           # due even if play moved away
+    assert re["side"] == "right" and "re-check" in re["trigger"] and re["start"] <= 62.5
+
+
+def test_keeper_holding_the_ball_after_a_shot_is_a_save():
+    from studio.cards import StoryFeed
+
+    p = GoalPlanner(CFG)
+    item = p.answer(p.plan(66.0, state(48.0)), GoalLook(shot=True, shot_at_s=4.0), 67.0)
+    after = p.plan(item["shot_time"] + CFG["aftermath_s"][0], state(48.0))
+    rec = p.answer(after, AfterLook(keeper_holds_ball=True), 75.0)
+    assert rec["save"] and not rec["goal"]
+    feed = StoryFeed(None)
+    feed.add_goal_looks([item, rec], CFG)
+    saves = [e for e in feed.events if e["type"] == "save"]
+    assert len(saves) == 1 and saves[0]["event_time"] == item["shot_time"] and saves[0]["known_at"] == 75.0

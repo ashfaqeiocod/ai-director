@@ -193,6 +193,10 @@ class LiveStudio:
                 kind = message.get("type")
                 if kind == "event":
                     self.feed.add_story_event(message, clock())
+                    # a cross / header / shot near a goal: the goal watcher looks at that goal again
+                    if self.watcher and message.get("event_type") in self.cfg["goalwatch"]["recheck_events"] \
+                            and not message.get("rejected"):
+                        self.watcher.request(message["event_type"], message["event_time"], self.pipe.pitch_state)
                 elif kind == "story":
                     self.feed.add_update({k: message.get(k) for k in ("window_start", "window_end", "logged_at", "phase",
                                                                       "sentiment", "narration", "intensity", "source",
