@@ -17,6 +17,8 @@ API:
                 Every `stride_s` the server runs the model on the latest window (PAST frames only:
                 it only has what was sent) and replies:
                 {"type": "events", "events": [{"class", "event_time", "confidence"}], "infer_ms", "rtf", ...}
+  WS  /detect   relayed to the football DETECTOR (colab/detector_server.py, its own Python environment on port
+                DETECTOR_PORT, default 8766), so one tunnel URL serves both. /health shows it under "detector".
 
 Live detail: the model's GRU looks both ways in time, so the newest frames (no "future" yet) are
 unreliable. A frame is only reported once it is `report_delay_s` old (default 2 s): a small,
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import struct
 import time
@@ -35,6 +38,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+DETECTOR_PORT = int(os.environ.get("DETECTOR_PORT", "8766"))
 MODEL_REPO = "OpenSportsLab/OSL-loc-snbas-2025-e2e"
 CLASSES = ["PASS", "DRIVE", "HEADER", "HIGH PASS", "OUT", "CROSS", "THROW IN", "SHOT",
            "BALL PLAYER BLOCK", "PLAYER SUCCESSFUL TACKLE", "FREE KICK", "GOAL"]
@@ -145,12 +149,47 @@ class Session:
                 "frames": len(times), "reported_until": round(until, 2)}
 
 
-def make_app(spotter: Spotter):
+def detector_health() -> dict:
+    """The detector process's /health ({"ready": False} while it is not running or still loading)."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{DETECTOR_PORT}/health", timeout=1) as r:
+            return json.loads(r.read())
+    except Exception as error:                       # noqa: BLE001 — shown on the dashboard
+        return {"ready": False, "error": type(error).__name__}
+
+
+def make_app(spotter: Spotter | None):
     app = FastAPI(title="Story Reader specialist")
 
     @app.get("/health")
     def health() -> dict:
-        return spotter.health()
+        return {**(spotter.health() if spotter else {"model": "none", "fps": 0}), "detector": detector_health()}
+
+    @app.websocket("/detect")
+    async def detect(ws: WebSocket) -> None:
+        """Relay to the detector process: frames in, detections back (both directions at once)."""
+        import websockets
+
+        await ws.accept()
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{DETECTOR_PORT}/detect", max_size=2 ** 24) as inner:
+                async def back() -> None:
+                    async for reply in inner:
+                        await ws.send_text(reply if isinstance(reply, str) else reply.decode())
+
+                task = asyncio.create_task(back())
+                try:
+                    while True:
+                        await inner.send(await ws.receive_bytes())
+                finally:
+                    task.cancel()
+        except WebSocketDisconnect:
+            pass
+        except Exception as error:                   # noqa: BLE001 — the detector is not running
+            await ws.send_json({"type": "error", "message": f"detector: {type(error).__name__}: {error}"})
+            await ws.close()
 
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
@@ -163,7 +202,6 @@ def make_app(spotter: Spotter):
                 if message.get("type") == "websocket.disconnect":
                     break
                 if message.get("text"):          # settings: {"min_confidence": .., "stride_s": .., ...}
-                    import json
                     session = Session(spotter, json.loads(message["text"]))
                     await ws.send_json({"type": "ready", **spotter.health()})
                     continue
@@ -196,9 +234,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--weights-dir", default=None, help="folder with config.yaml + model.pt (default: download)")
+    parser.add_argument("--detector-only", action="store_true", help="no action model (test the /detect relay)")
     args = parser.parse_args()
     import uvicorn
 
-    spotter = Spotter(args.weights_dir)
-    print("warm-up:", round(spotter.warm_up(), 2), "s |", spotter.health())
+    spotter = None if args.detector_only else Spotter(args.weights_dir)
+    if spotter:
+        print("warm-up:", round(spotter.warm_up(), 2), "s |", spotter.health())
     uvicorn.run(make_app(spotter), host="127.0.0.1", port=args.port, log_level="warning")

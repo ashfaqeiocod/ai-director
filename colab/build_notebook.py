@@ -11,10 +11,14 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 PORT = 8765
+DETECTOR_PORT = 8766
 
 HOW_TO = """# Story Reader — specialist server (Colab GPU)
 
-This notebook runs the **ball action spotting** model
+This notebook runs TWO models on a free Colab GPU behind ONE public URL:
+- the **football detector** (Roboflow `football-players-detection-3zvbc/11`: players, goalkeepers, referees, ball)
+  for MVP 3's real live test: 3 cameras x 5 frames per second while the match plays (the Mac is too slow for that);
+- the **ball action spotting** model
 [`OpenSportsLab/OSL-loc-snbas-2025-e2e`](https://huggingface.co/OpenSportsLab/OSL-loc-snbas-2025-e2e)
 (12 classes: PASS, DRIVE, HEADER, HIGH PASS, OUT, CROSS, THROW IN, SHOT, BALL PLAYER BLOCK,
 PLAYER SUCCESSFUL TACKLE, FREE KICK, GOAL) on a free Colab GPU, and gives you a public URL that the
@@ -22,15 +26,18 @@ dashboard on your Mac connects to.
 
 ## How to run (5 steps)
 1. **Turn on the GPU:** menu *Runtime → Change runtime type → T4 GPU → Save*.
-2. *(Optional, recommended)* **ngrok token:** make a free account at https://dashboard.ngrok.com, copy your
+2. **Roboflow key (for the detector):** click the 🔑 *Secrets* icon (left bar) → *Add new secret* → name
+   `ROBOFLOW_API_KEY` (exactly), value = your Roboflow API key, switch *Notebook access* on. Without it the
+   action model still runs, only the detector is off.
+3. *(Optional, recommended)* **ngrok token:** make a free account at https://dashboard.ngrok.com, copy your
    authtoken, then in Colab click the 🔑 *Secrets* icon (left bar) → *Add new secret* → name
    `NGROK_AUTHTOKEN`, value = your token, and switch *Notebook access* on.
    Without it, the notebook uses a free Cloudflare tunnel instead (no account needed).
-3. **Run everything:** menu *Runtime → Run all*. The first run takes ~3–5 minutes (installing + downloading the model).
-4. **Copy the URL** printed in big letters at the end (it looks like `https://xxxx.ngrok-free.app`
+4. **Run everything:** menu *Runtime → Run all*. The first run takes ~5–8 minutes (installing + downloading the models).
+5. **Copy the URL** printed in big letters at the end (it looks like `https://xxxx.ngrok-free.app`
    or `https://xxxx.trycloudflare.com`).
-5. **Paste it** into the dashboard (http://localhost:8000/story → *Colab specialist* box → *Connect*),
-   pick mode *fast + specialist* or *hybrid*, and press **Go Live**.
+6. **Paste it** into the dashboard: MVP 3 http://localhost:8000/studio → ● Live → *Colab URL* → *Test*
+   (both the action model and the detector should show), or MVP 2 http://localhost:8000/story → *Connect*.
 
 Keep this tab open while you use the dashboard. Colab stops the server after ~90 minutes of no activity
 (free tier); then just *Run all* again and paste the new URL.
@@ -48,6 +55,7 @@ def markdown(source: str) -> dict:
 
 def build() -> dict:
     server_code = (HERE / "specialist_server.py").read_text()
+    detector_code = (HERE / "detector_server.py").read_text()
     cells = [
         markdown(HOW_TO),
         markdown("## 1. Check the GPU and install packages"),
@@ -56,6 +64,43 @@ def build() -> dict:
              "import torch; print('CUDA available:', torch.cuda.is_available())"),
         markdown("## 2. The server code (same as `colab/specialist_server.py` in the project)"),
         code("%%writefile specialist_server.py\n" + server_code),
+        markdown("## 2b. The football detector in its own Python environment\n"
+                 "Roboflow's `inference-gpu` pins many packages; in its own environment it can't break the action "
+                 "model's torch. It runs as a second local server (port 8766); the main server relays `/detect` to it."),
+        code("!pip install -q uv\n"
+             "!uv venv -q --seed /content/detenv\n"
+             "!uv pip install -q --python /content/detenv/bin/python inference-gpu fastapi uvicorn websockets\n"
+             "!/content/detenv/bin/python -c \"import onnxruntime as o; print('detector env OK, onnxruntime', o.__version__, o.get_available_providers())\""),
+        code("%%writefile detector_server.py\n" + detector_code),
+        code("import glob, os, subprocess, site, time, requests\n"
+             "try:\n"
+             "    from google.colab import userdata\n"
+             "    roboflow_key = userdata.get('ROBOFLOW_API_KEY')      # never printed\n"
+             "except Exception:\n"
+             "    roboflow_key = None\n"
+             "if not roboflow_key:\n"
+             "    print('No ROBOFLOW_API_KEY secret (name it exactly so, Notebook access on): the detector stays off.')\n"
+             "else:\n"
+             "    env = dict(os.environ, ROBOFLOW_API_KEY=roboflow_key)\n"
+             "    # The GPU libraries (cuDNN, cuBLAS...) that came with torch: onnxruntime-gpu needs them too\n"
+             "    libs = [d for sp in site.getsitepackages() for d in glob.glob(sp + '/nvidia/*/lib')]\n"
+             "    env['LD_LIBRARY_PATH'] = ':'.join(libs + [env.get('LD_LIBRARY_PATH', '')])\n"
+             f"    detector_proc = subprocess.Popen(['/content/detenv/bin/python', 'detector_server.py', '--port', '{DETECTOR_PORT}'],\n"
+             "                                     env=env, stdout=open('detector.log', 'w'), stderr=subprocess.STDOUT)\n"
+             "    for _ in range(120):                                    # model download + GPU warm-up: up to ~4 min\n"
+             "        time.sleep(2)\n"
+             "        try:\n"
+             f"            h = requests.get('http://127.0.0.1:{DETECTOR_PORT}/health', timeout=2).json(); break\n"
+             "        except Exception:\n"
+             "            if detector_proc.poll() is not None: break\n"
+             "    else:\n"
+             "        h = None\n"
+             "    if detector_proc.poll() is not None or not h:\n"
+             "        print('DETECTOR FAILED. Last lines of detector.log:'); print(''.join(open('detector.log').readlines()[-25:]))\n"
+             "    else:\n"
+             "        print('detector ready:', h)\n"
+             "        if 'CUDAExecutionProvider' not in h.get('providers', []):\n"
+             "            print('WARNING: no CUDA for onnxruntime: the detector runs on the CPU (too slow for live). See detector.log')"),
         markdown("## 3. Load the model, warm it up, and self-test\n"
                  "Downloads `config.yaml` + `model.pt` (150 MB) from Hugging Face. The self-test runs the model on "
                  "fake frames and checks the speed: the **real-time factor** (inference time ÷ 2 s stride) must be < 1."),
@@ -81,6 +126,25 @@ def build() -> dict:
              "threading.Thread(target=server.run, daemon=True).start()\n"
              "time.sleep(3)\n"
              "print('local /health:', requests.get(f'http://127.0.0.1:{PORT}/health').json()['model'])"),
+        markdown("## 4b. Detector self-test (through the main server, like the Mac will use it)\n"
+                 "30 frames x 3 cameras at 1280x960, sent as the Mac sends them. Live needs 15 camera frames per "
+                 "second, so the GPU time must be **well under 66 ms per camera frame**."),
+        code("import json, struct, asyncio, numpy as np, cv2, websockets\n"
+             "async def detector_selftest(n=30, cams=3):\n"
+             f"    async with websockets.connect('ws://127.0.0.1:{PORT}/detect', max_size=2**24) as ws:\n"
+             "        ok, jpg = cv2.imencode('.jpg', np.random.randint(0, 255, (960, 1280, 3), np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 85])\n"
+             "        jpg = jpg.tobytes(); gpu = []; t0 = time.time()\n"
+             "        for i in range(n):\n"
+             "            head = json.dumps({'frame': i, 'sent': time.time(), 'items': [{'cam': c, 'size': len(jpg)} for c in range(1, cams + 1)]}).encode()\n"
+             "            await ws.send(struct.pack('<I', len(head)) + head + jpg * cams)\n"
+             "            r = json.loads(await ws.recv())\n"
+             "            if r.get('type') == 'error': print(r); return\n"
+             "            gpu.append(r['infer_ms'] / cams)\n"
+             "        wall = (time.time() - t0) * 1000 / (n * cams)\n"
+             "        print(f'detector: {np.mean(gpu[3:]):.0f} ms per camera frame on the GPU, {wall:.0f} ms including JPEG decode '\n"
+             "              f'-> {\"OK for live\" if wall < 66 else \"TOO SLOW for 15 frames/s\"}')\n"
+             "if roboflow_key: await detector_selftest()\n"
+             "else: print('detector off (no ROBOFLOW_API_KEY secret)')"),
         markdown("## 5. Open a public tunnel and print the URL\n"
                  "Uses ngrok if the `NGROK_AUTHTOKEN` secret exists, otherwise a free Cloudflare quick tunnel."),
         code("import re, subprocess\n"
