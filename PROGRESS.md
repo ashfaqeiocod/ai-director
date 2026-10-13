@@ -469,5 +469,6 @@ Spec: `docs/MVP3_SPEC.md`. Plan: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Last updated: 
   12 cuts, shortest 3.4 s, box entries seen. Detection checkpoints every 300 frames (a run takes ~4.6 h).
 
 ## Next action (MVP 3)
-Alfheim full half: preparation -> calibration -> detection run unattended (`data/alfheim/pipeline.log`). Then a
-full Hybrid live run (47 min; ~700 Gemini calls: may need extra keys) and a report next to ISSIA.
+Live test environment: follow `docs/MVP3_LIVE_TEST_PLAN.md` (start from anywhere, detector on Colab, latency on
+the timeline). Alfheim detection runs unattended (`data/alfheim/pipeline.log`); it stalls when the Mac runs out of
+memory (8 GB): close other apps.
