@@ -23,23 +23,28 @@ CFG = {"max_age_s": 1.5, "max_in_flight": 2, "jpeg_quality": 85, "send_width": 0
 # ------------------------------------------------------------------ message format
 def test_encode_matches_the_server_parser():
     images = {1: np.zeros((96, 128, 3), np.uint8), 3: np.full((96, 128, 3), 200, np.uint8)}
-    message, scale = rd.encode(42, 123.5, images, 85)
+    message, scales = rd.encode(42, 123.5, images, 85)
     header, items = parse(message)
-    assert scale == 1.0 and header["frame"] == 42 and header["sent"] == 123.5
+    assert scales == {1: 1.0, 3: 1.0} and header["frame"] == 42 and header["sent"] == 123.5
     assert [c for c, _ in items] == [1, 3] and all(j[:2] == b"\xff\xd8" for _, j in items)   # two JPEGs
 
 
 def test_smaller_pictures_come_back_in_original_pixels():
-    _, scale = rd.encode(0, 0.0, {1: np.zeros((960, 1280, 3), np.uint8)}, 85, width=640)
-    assert scale == 2.0
-    det = rd.rescale({"players": [{"box": [10, 20, 30, 40]}], "ball": {"box": [1, 2, 3, 4], "conf": 0.5}}, scale)
+    # each camera keeps its own scale (a camera already small enough is not resized)
+    _, scales = rd.encode(0, 0.0, {1: np.zeros((960, 1280, 3), np.uint8), 2: np.zeros((300, 400, 3), np.uint8)}, 85, width=640)
+    assert scales == {1: 2.0, 2: 1.0}
+    det = rd.rescale({"players": [{"box": [10, 20, 30, 40]}], "ball": {"box": [1, 2, 3, 4], "conf": 0.5}}, scales[1])
     assert det["players"][0]["box"] == [20, 40, 60, 80] and det["ball"]["box"] == [2, 4, 6, 8]
 
 
 # ------------------------------------------------------------------ the live loop's rules
 class FakeRemote:
-    def __init__(self):
+    def __init__(self, on_its_way: bool = True):
         self.items = []
+        self.way = on_its_way
+
+    def on_its_way(self, frame):
+        return self.way
 
     def results(self):
         out, self.items = self.items, []
@@ -59,6 +64,7 @@ class FakePipe:
 
 class FakeSource:
     shown_dets = None
+    cam_ids = [1]
 
     def __init__(self, cached: dict):
         self.cached = cached
@@ -110,7 +116,8 @@ def test_skipped_frame_uses_the_cache_at_once_and_none_when_there_is_none():
     lv, remote = live({12: {1: {"players": [{"box": [1, 1, 2, 2]}], "ball": None}}}), FakeRemote()
     pending = deque([(12, False), (18, False)])
     lv._apply_remote(remote, pending, {}, now=0.7, files=None)
-    assert [f for f, _ in lv.pipe.calls] == [12]                         # 18 has no cached detection: nothing
+    # 18 has no cached detection: an EMPTY step still reaches the map (the ball can age to "lost")
+    assert lv.pipe.calls == [(12, lv.src.cached[12]), (18, {1: {"players": [], "ball": None}})]
     assert lv.det_counts["cached_skipped"] == 1 and lv.det_counts["none"] == 1
 
 
@@ -172,4 +179,13 @@ def test_pure_live_never_uses_the_cache():
     lv.cfg = {"live": {"remote_detect": {**CFG, "cache_fallback": False}}}
     pending = deque([(0, True)])
     lv._apply_remote(remote, pending, {}, now=1.6, files=None)
-    assert lv.pipe.calls == [] and lv.det_counts["none"] == 1 and not pending
+    assert lv.pipe.calls == [(0, {1: {"players": [], "ball": None}})] and lv.det_counts["none"] == 1 and not pending
+
+
+def test_a_frame_dropped_before_sending_does_not_hold_up_the_queue():
+    cached = {0: {1: {"players": [{"box": [5, 5, 6, 6]}], "ball": None}}}
+    lv, remote = live(cached), FakeRemote(on_its_way=False)          # replaced while waiting / link down
+    remote.items = [answer(6, 0.2)]
+    lv._apply_remote(remote, deque([(0, True), (6, True)]), {}, now=0.25, files=None)
+    assert [f for f, _ in lv.pipe.calls] == [0, 6]                      # no 1.5 s wait for frame 0
+    assert lv.det_counts["cached_late"] == 1 and lv.det_counts["colab"] == 1

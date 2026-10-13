@@ -166,7 +166,8 @@ def derive(updates: list[dict], events: list[dict], looks: list[dict]) -> list[d
                         "delay": round(e["known_at"] - e["event_time"], 2), "what": f"event: {e['type'].replace('_', ' ')}",
                         "kind": "event"})
     for x in looks:
-        verdict = "goal" if x.get("goal") else "save" if x.get("save") else "shot" if x.get("shot") else "no goal"
+        verdict = "goal" if x.get("goal") else "save" if x.get("save") else "celebration" \
+            if x.get("celebration") else "shot" if x.get("shot") else "no goal"
         out.append({"source": "goal_ai", "happened": x["t"], "known": x["logged_at"],
                     "delay": round(x["logged_at"] - x["t"], 2), "what": f"{x.get('side')} goal: {verdict}",
                     "kind": x.get("kind")})

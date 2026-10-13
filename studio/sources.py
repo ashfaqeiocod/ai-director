@@ -35,6 +35,28 @@ def get_source(key: str):
     return SoccerTrackSource(key)
 
 
+def folder_of(key: str) -> Path | None:
+    """The footage folder of a folder source, WITHOUT loading it (no detections read). None for SoccerTrack."""
+    cfg = load_config()["studio"]
+    if key.startswith("muvs-P"):
+        return ROOT / cfg["muvs"]["dir"] / key[len("muvs-"):]
+    if key.startswith("issia-T"):
+        return ROOT / cfg["issia"]["dir"] / key[len("issia-"):]
+    if key.startswith("alfheim-"):
+        match, half = key[len("alfheim-"):].rsplit("-H", 1)
+        return ROOT / cfg["alfheim"]["dir"] / f"{match}_H{half}"
+    return None
+
+
+def camera_file(key: str, cam: int) -> Path:
+    """A folder source's camera video for the page's tiles: its light copy if there is one (no detections read)."""
+    cls = MuvsSource if key.startswith("muvs-P") else AlfheimSource if key.startswith("alfheim-") else IssiaSource
+    folder = folder_of(key)
+    suffix = getattr(cls, "small_suffix", None)
+    small = folder / f"cam{cam}{suffix}.mp4" if suffix else None
+    return small if small is not None and small.exists() else folder / f"cam{cam}.mp4"
+
+
 def is_folder_source(key: str) -> bool:
     """Footage that lives in its own folder with real cameras (not a SoccerTrack segment)."""
     return key.startswith(("muvs-P", "issia-T", "alfheim-"))

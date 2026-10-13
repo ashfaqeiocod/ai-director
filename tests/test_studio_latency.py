@@ -41,3 +41,8 @@ def test_older_runs_get_the_same_bars():
                    [{"type": "shot", "event_time": 30.0, "known_at": 33.0, "sources": ["specialist"]}],
                    [{"t": 40.0, "logged_at": 44.5, "side": "left", "goal": False}])
     assert [(i["source"], i["delay"]) for i in items] == [("gemini", 4.0), ("colab", 3.0), ("goal_ai", 4.5)]
+
+
+def test_older_runs_name_celebrations_like_live_runs():
+    items = derive([], [], [{"t": 40.0, "logged_at": 44.0, "side": "left", "goal": False, "celebration": True}])
+    assert items[0]["what"] == "left goal: celebration"

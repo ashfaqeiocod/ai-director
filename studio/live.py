@@ -182,6 +182,7 @@ class LiveStudio:
 
     # ------------------------------------------------------------------ control
     def start(self) -> None:
+        self.status["state"] = "starting"            # busy from the first moment (a second Start is refused)
         self.thread = threading.Thread(target=self._run, daemon=True, name="studio-live")
         self.thread.start()
 
@@ -470,10 +471,8 @@ class LiveStudio:
         """Frame i of the on-air camera in full HD. The capture of each camera is kept; after a cut it jumps
         (keyframe every second, so a seek costs at most ~1 s of decoding once)."""
         if cam not in full:
-            full[cam] = [cv2.VideoCapture(str(self.src.video(cam))), 0, None]
-        cap, pos, last = full[cam]
-        if i == pos - 1:
-            return last                               # already read (the Colab detector and the program share it)
+            full[cam] = [cv2.VideoCapture(str(self.src.video(cam))), 0]
+        cap, pos = full[cam]
         if i < pos or i - pos > round(self.fps):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             pos = i
@@ -481,13 +480,14 @@ class LiveStudio:
             cap.grab()
             pos += 1
         ok, img = cap.read()
-        full[cam][1], full[cam][2] = pos + 1, img if ok else None
+        full[cam][1] = pos + 1
         return img if ok else None
 
     def _apply_remote(self, remote, pending: deque, ring: dict, now: float, files: dict | None) -> list[dict]:
         """Colab detector: apply the detection frames whose turn has come, OLDEST FIRST (the pitch map only moves
         forward in time). A frame is applied when its answer has arrived, or with the cached detection once it is
-        max_age_s old without one (or right away if it was never sent). Answers for frames already done are ignored."""
+        max_age_s old without one (right away if it was never sent, was dropped before sending, or the link is down).
+        No cached detection: an empty step. Answers for frames already done are ignored."""
         for r in remote.results():
             self.colab_answers[r["frame"]] = r
         max_age = self.cfg["live"]["remote_detect"]["max_age_s"]
@@ -497,26 +497,26 @@ class LiveStudio:
             answer = self.colab_answers.pop(f, None)
             if answer is not None and answer["age_s"] <= max_age:
                 det, source = answer["cams"], "colab"
-            elif sent and answer is None and now - f / self.fps <= max_age:
+            elif sent and answer is None and now - f / self.fps <= max_age and remote.on_its_way(f):
                 break                                 # still on its way: wait (keeps the order)
             else:
                 # late or never sent: the cached detection of that frame, unless the run is "pure live"
                 cached = self.src.detection_at(f) if self.cfg["live"]["remote_detect"]["cache_fallback"] else {}
                 has = any(d.get("players") or d.get("ball") for d in cached.values())
-                det = cached if has else None
+                # nothing known: an EMPTY detection step still goes to the map (the ball ages to "lost", as in cached mode)
+                det = cached if has else {c: {"players": [], "ball": None} for c in getattr(self.src, "cam_ids", [])}
                 source = ("cached_late" if sent else "cached_skipped") if has else "none"
                 if answer is not None:
                     self.det_counts["ignored_late"] += 1
             pending.popleft()
             self.det_counts[source] += 1
             self.latency.detection(f / self.fps, now, source, answer["rtt_ms"] if answer and source == "colab" else None)
-            if det is not None:
-                events += self.pipe.detections(f, f / self.fps, detector=det, images=ring.get(f))
-                self.src.shown_dets = det
-                if self.watcher:
-                    self.watcher.consider(now, self.pipe.pitch_state)
-                if files and self.pipe.pitch_state is not None:
-                    files["map"].write(json.dumps(self.pipe.pitch_state.to_dict()) + "\n")
+            events += self.pipe.detections(f, f / self.fps, detector=det, images=ring.get(f))
+            self.src.shown_dets = det
+            if self.watcher:
+                self.watcher.consider(now, self.pipe.pitch_state)
+            if files and self.pipe.pitch_state is not None:
+                files["map"].write(json.dumps(self.pipe.pitch_state.to_dict()) + "\n")
             if files:
                 files["dets"].write(json.dumps({"frame": f, "time": round(f / self.fps, 3), "source": source,
                     "applied_at": round(now, 3), **({k: answer[k] for k in ("sent", "received", "rtt_ms", "infer_ms", "age_s")}

@@ -561,6 +561,20 @@ Mac NOT free (IDE + 2 other Claude sessions running); runs were still valid. Det
   are missing on map updates of skipped frames), and ignore the stadium big screen in the goal look.
 
 
+### 2026-10-14: code review of the live-test work (8b386b9..), fixes
+- Colab detector: a frame dropped before sending (or with the link down) no longer holds the ordered queue for
+  1.5 s: it uses the cache at once (fake GPU 30 s: 129 GPU / 21 cache, 27 fps). A step with nothing known is applied
+  as an EMPTY detection (the ball ages to lost, as in cached mode; before, pure-live kept a stale ball).
+  Box scaling per camera (send_width), also for answers that arrive after "lost".
+- Dashboard: a second Start while a run is starting / preparing is refused (409; before: two runs, one orphaned).
+  ONE loaded copy per folder match (replaced when the detection files change; before: up to ~3 x 0.5 GB).
+  Tile video paths from studio.sources.camera_file (no duplicated folder logic). Older runs' latency items name
+  "celebration" looks like live runs. Dead code removed.
+- Not changed: the detector's frame reader decodes the full-HD streams between detection frames (needed to reach
+  them; seeking would decode more).
+- Checks: pytest 94 passed; offline ISSIA from 0:00 byte-identical; MVP 1 quick check unchanged; API + Replay in
+  Chrome OK.
+
 ## Next action (MVP 3)
 Proof runs done (cached detector, Hybrid, valid). Open: the match was 0-0, so the confirmed goal at 5:36 is false:
 tighten the kick-off line-up rule (each team in its own half) and the goal look (stadium big screen); Colab detector "Later tests" A-D

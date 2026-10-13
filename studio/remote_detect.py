@@ -34,18 +34,20 @@ import numpy as np
 from story.specialist_client import HEADERS, check_health, normalize_url
 
 
-def encode(frame: int, sent: float, images: dict[int, np.ndarray], quality: int, width: int = 0) -> tuple[bytes, float]:
-    """One message: 4-byte header length + JSON header + the JPEGs one after another. Returns (message, scale):
-    scale = original width / sent width, to turn the answer's boxes back into original pixels."""
-    jpegs, scale = {}, 1.0
+def encode(frame: int, sent: float, images: dict[int, np.ndarray], quality: int,
+           width: int = 0) -> tuple[bytes, dict[int, float]]:
+    """One message: 4-byte header length + JSON header + the JPEGs one after another. Returns (message, scales):
+    scales[cam] = original width / sent width, to turn that camera's boxes back into original pixels."""
+    jpegs, scales = {}, {}
     for cam, img in images.items():
+        scales[cam] = 1.0
         if width and img.shape[1] > width:
-            scale = img.shape[1] / width
-            img = cv2.resize(img, (width, round(img.shape[0] / scale)), interpolation=cv2.INTER_AREA)
+            scales[cam] = img.shape[1] / width
+            img = cv2.resize(img, (width, round(img.shape[0] / scales[cam])), interpolation=cv2.INTER_AREA)
         jpegs[cam] = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes()
     header = json.dumps({"frame": frame, "sent": sent,
                          "items": [{"cam": c, "size": len(j)} for c, j in jpegs.items()]}).encode()
-    return struct.pack("<I", len(header)) + header + b"".join(jpegs.values()), scale
+    return struct.pack("<I", len(header)) + header + b"".join(jpegs.values()), scales
 
 
 def rescale(det: dict, scale: float) -> dict:
@@ -97,7 +99,8 @@ class RemoteDetector:
         self.wake = threading.Event()
         self.stop_flag = threading.Event()
         self.waiting: tuple[int, dict] | None = None          # the newest frame not sent yet
-        self.in_flight: dict[int, tuple[float, float]] = {}   # frame -> (wall time sent, scale)
+        self.in_flight: dict[int, float] = {}                 # frame -> wall time sent
+        self.scales: dict[int, dict[int, float]] = {}         # frame -> {cam: scale} (kept after "lost": late answers)
         self.arrived: list[dict] = []
         self.rtts: deque[float] = deque(maxlen=50)
         self.gpu_ms: deque[float] = deque(maxlen=50)
@@ -129,6 +132,13 @@ class RemoteDetector:
 
     def connected(self) -> bool:
         return self.state == "connected"
+
+    def on_its_way(self, frame: int) -> bool:
+        """Is an answer for this frame still possible? False if it was dropped before sending or the link is down
+        (the live loop then uses the cache at once instead of waiting max_age_s)."""
+        with self.lock:
+            waiting = self.waiting is not None and self.waiting[0] == frame
+            return self.state == "connected" and (frame in self.in_flight or waiting)
 
     def status(self) -> dict:
         with self.lock:
@@ -188,10 +198,13 @@ class RemoteDetector:
                     self.waiting = None
                 if images is None:
                     images = self.reader.read(frame)
-                message, scale = encode(frame, round(time.time(), 3), images, self.cfg["jpeg_quality"],
-                                        self.cfg.get("send_width") or 0)
+                message, scales = encode(frame, round(time.time(), 3), images, self.cfg["jpeg_quality"],
+                                         self.cfg.get("send_width") or 0)
                 with self.lock:
-                    self.in_flight[frame] = (time.time(), scale)
+                    self.in_flight[frame] = time.time()
+                    self.scales[frame] = scales
+                    for old in [k for k in self.scales if k < frame - 3000]:
+                        del self.scales[old]
                     self.counts["sent"] += 1
                     self.sent_bytes.append((time.time(), len(message)))
                 ws.send(message)
@@ -202,7 +215,7 @@ class RemoteDetector:
         """An answer that never came (tunnel hiccup) must not block the in-flight slots forever."""
         now = time.time()
         with self.lock:
-            for frame, (sent, _) in list(self.in_flight.items()):
+            for frame, sent in list(self.in_flight.items()):
                 if now - sent > self.cfg["lost_after_s"]:
                     del self.in_flight[frame]
                     self.counts["lost"] += 1
@@ -221,7 +234,8 @@ class RemoteDetector:
                 received = time.time()
                 frame = int(message["frame"])
                 with self.lock:
-                    sent, scale = self.in_flight.pop(frame, (message.get("sent") or received, 1.0))
+                    sent = self.in_flight.pop(frame, message.get("sent") or received)
+                    scales = self.scales.pop(frame, {})
                     rtt = (received - sent) * 1000
                     self.rtts.append(rtt)
                     cams = len(message["cams"]) or 1
@@ -230,7 +244,8 @@ class RemoteDetector:
                     self.arrived.append({"frame": frame, "time": frame / self.fps, "sent": sent, "received": received,
                                          "rtt_ms": round(rtt, 1), "infer_ms": message.get("infer_ms"),
                                          "age_s": round(self.clock() - frame / self.fps, 3),
-                                         "cams": {int(c): rescale(d, scale) for c, d in message["cams"].items()}})
+                                         "cams": {int(c): rescale(d, scales.get(int(c), 1.0))
+                                                  for c, d in message["cams"].items()}})
                 self.wake.set()                        # a slot is free: send the next frame
         except Exception:                              # noqa: BLE001 — the connection closed; _run reconnects
             pass

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
-from functools import lru_cache
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -344,40 +344,29 @@ def run_video(segment: str, run_id: str, name: str) -> FileResponse:
     return FileResponse(_run_dir(segment, run_id) / name, media_type="video/mp4")
 
 
+_SOURCES: dict[str, tuple[float, object]] = {}       # match key -> (detection files' time stamp, loaded source)
+_SOURCES_LOCK = threading.Lock()
+
+
 def _cached_source(key: str):
-    """One loaded copy per match, shared by Replay, the camera videos and live runs. A full Alfheim half's
-    detections take ~0.5 GB in memory: several copies at once could fill the 8 GB Mac. Loaded again only when the
-    detection files changed (a detection run still going), and never while a live run uses the old copy."""
-    from studio.sources import get_source, is_folder_source
+    """ONE loaded copy per folder match (ISSIA, Alfheim, MUVS), shared by Replay and live runs. A full Alfheim
+    half's detections take ~0.5 GB in memory: several copies could fill the 8 GB Mac. Loaded again only when the
+    detection files changed (a detection run still going); the old copy is dropped then. A live run keeps its own
+    reference, so it is never swapped under it. SoccerTrack segments are loaded fresh (small)."""
+    from studio.sources import folder_of, get_source, is_folder_source
 
-    stamp = 0.0
-    if is_folder_source(key):
-        lv = live_ctl.live
-        if lv and lv.status["state"] in ("live", "preparing") and lv.segment == key:
-            return lv.src
-        folder = get_source_folder(key)
-        stamp = max((f.stat().st_mtime for f in folder.glob("detections/cam*.json")), default=0.0) if folder else 0.0
-    return _load_source(key, stamp)
-
-
-@lru_cache(maxsize=2)
-def _load_source(key: str, stamp: float):
-    from studio.sources import get_source
-
-    return get_source(key)
-
-
-def get_source_folder(key: str) -> Path | None:
-    """The footage folder of a folder source (without loading it)."""
-    cfg = load_config()["studio"]
-    if key.startswith("alfheim-"):
-        match, half = key[len("alfheim-"):].rsplit("-H", 1)
-        return ROOT / cfg["alfheim"]["dir"] / f"{match}_H{half}"
-    if key.startswith("issia-T"):
-        return ROOT / cfg["issia"]["dir"] / key[len("issia-"):]
-    if key.startswith("muvs-P"):
-        return ROOT / cfg["muvs"]["dir"] / key[len("muvs-"):]
-    return None
+    if not is_folder_source(key):
+        return get_source(key)
+    lv = live_ctl.live
+    if lv and lv.status["state"] in BUSY and lv.segment == key:
+        return lv.src
+    folder = folder_of(key)
+    stamp = max((f.stat().st_mtime for f in folder.glob("detections/cam*.json")), default=0.0)
+    with _SOURCES_LOCK:
+        cached = _SOURCES.get(key)
+        if cached is None or cached[0] != stamp:
+            _SOURCES[key] = (stamp, get_source(key))
+        return _SOURCES[key][1]
 
 
 @router.get("/cam/{segment}/{run_id}/{cam}")
@@ -389,9 +378,9 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
 
     if is_folder_source(segment):
         # A playing video asks again and again (range requests): only the file path, never the loaded detections.
-        folder = get_source_folder(segment)
-        small = [folder / f"cam{cam}{suffix}.mp4" for suffix in ("_540", "_480")]   # tiles: the light copy (ISSIA, Alfheim)
-        path = next((f for f in small if f.exists()), folder / f"cam{cam}.mp4")
+        from studio.sources import camera_file
+
+        path = camera_file(segment, cam)
     else:
         aim = "oracle" if info["source"] == "oracle" else "detector"
         path = path_of(segment, cam, aim)      # cams 1-5, and 6/7 = the goal cameras
@@ -404,11 +393,13 @@ def cam_video(segment: str, run_id: str, cam: int) -> FileResponse:
 # The page starts a live run; studio.live plays the match at real speed and pushes its state here.
 # Browsers get: a WebSocket with state (~10/s) + every decision / story line / goal look, and MJPEG pictures.
 import asyncio
-import threading
 import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+
+
+BUSY = ("starting", "preparing", "live")      # a live run is going (or getting ready)
 
 
 class LiveController:
@@ -433,7 +424,7 @@ class LiveController:
 
     def status(self) -> dict:
         lv = self.live
-        return {"type": "live_status", "running": bool(lv and lv.status["state"] == "live"),
+        return {"type": "live_status", "running": bool(lv and lv.status["state"] in BUSY),
                 "segment": lv.segment if lv else None, "run_id": lv.run_id if lv else None,
                 "status": dict(lv.status) if lv else None}
 
@@ -508,12 +499,13 @@ def live_start(body: dict) -> dict:
     from studio.live import LiveStudio
 
     with live_ctl.lock:
-        if live_ctl.live and live_ctl.live.status["state"] == "live":
-            raise HTTPException(409, "a live run is already going: stop it first")
+        if live_ctl.live and live_ctl.live.status["state"] in BUSY:
+            raise HTTPException(409, "a live run is already going (or getting ready): stop it first")
         segment = body.get("segment")
         if segment not in _ready_segments():
             raise HTTPException(400, f"segment '{segment}' is not ready")
-        duration = _cached_source(segment).frames / _cached_source(segment).fps
+        src = _cached_source(segment)
+        duration = src.frames / src.fps
         try:
             start_s = float(body.get("start_s") or 0.0)
         except (TypeError, ValueError):
@@ -526,7 +518,7 @@ def live_start(body: dict) -> dict:
         live_ctl.history, live_ctl.last_state = [], None
         from studio.sources import is_folder_source
 
-        source = _cached_source(segment) if is_folder_source(segment) else segment   # share the loaded copy
+        source = src if is_folder_source(segment) else segment   # share the loaded copy
         try:
             live_ctl.live = LiveStudio(source, live_ctl.publish, story=body.get("story", "off"),
                                        specialist_url=body.get("specialist_url", "").strip(),
