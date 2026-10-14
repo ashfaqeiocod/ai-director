@@ -549,6 +549,7 @@ studio:
       attack_exit_s: 1.0 # ball out of the box this long -> back to MAIN
       attack_max_s: 6 # a GOAL / BOX shot lasts at most this long (TV keeps goal angles short; MAIN covers play)
       attack_cooldown_s: 10 # after an attack shot, no new one for this long
+      attack_min_players: 2 # ... and at least this many players in that box (a false ball alone put an empty goal on air)
       stoppage_lost_s: 4.0 # no ball seen for this long = play has stopped -> CLOSE (2.5 s: the detector's gaps in open play made 23% stoppages)
       close_min_s: 2.0 # CLOSE after a stoppage: at least this long ...
       close_max_s: 3.5 # ... at most this long
@@ -576,3 +577,42 @@ studio:
       program_width: 1280
       jpeg_quality: 70
       state_hz: 10 # state messages per second over the WebSocket
+
+# ---------------------------------------------------------------------------------------------------------------
+# MVP 5: AI director on REAL footage — a home-made arm-wrestling match filmed by 5 phones.
+# Code: arm/ (only USES src/, story/, studio/). Spec: docs/MVP5_ARM_SPEC.md. Files: data/arm/ (never committed).
+arm:
+  raw_dir: data/arm/raw # the 5 phone videos as recorded
+  work_dir: data/arm # synced videos, caches and outputs go below this folder
+  # One letter per phone. `side` = which side of the table the camera films from (for the 180-degree rule):
+  # A and D look at the table from opposite sides; B, C, E are "neutral" (behind one athlete / wide).
+  cameras:
+    A: {file: "20261014_155121.mp4", phone: "Samsung", label: "SIDE 1", side: "south"}
+    B: {file: "IMG_5457 2.MOV", phone: "iPhone 13", label: "LOW WIDE", side: "neutral"}
+    C: {file: "IMG_5644.MOV", phone: "iPhone 15 Pro", label: "OVER SHOULDER", side: "neutral"}
+    D: {file: "IMG_8125.MOV", phone: "iPhone 15", label: "SIDE 2", side: "north"}
+    E: {file: "IMG_8658.MOV", phone: "iPhone 17 Pro", label: "CROWD WIDE", side: "neutral"}
+  sync:
+    sample_rate: 8000 # audio is compared at 8 kHz mono (plenty for claps, cheers, table knocks)
+    search_s: 4.0 # look for the audio match this far around the offset the metadata suggests
+    fps: 30 # every synced camera is re-timed to this constant frame rate
+    width: 1920 # synced working copies (the 4K phone also keeps a full-size copy for clean zoom)
+    height: 1080
+    keep_full_res: ["A"] # cameras whose full-resolution copy is kept (digital zoom without softness)
+    crf: 18 # quality of the synced copies (lower = better, bigger files)
+    max_pair_error_ms: 34 # pairwise offsets must agree within ~1 frame, else the sync is reported as unsure
+  perceive:
+    analysis_fps: 10 # looks per second per camera (every 3rd frame at 30 fps)
+    pose_model: models_cache/arm/yolo26s-pose.pt # Ultralytics YOLO26 small pose model (17 body points per person)
+    pose_imgsz: 960 # the pose model works on a 960-wide copy (1080p sources)
+    person_conf: 0.3
+    face_model: models_cache/arm/face_landmarker.task # MediaPipe Face Landmarker (478 points + 52 blendshapes)
+    face_min_conf: 0.3
+  crowd:
+    sound_step_s: 0.5 # YAMNet hears the room every 0.5 s ...
+    sound_window_s: 1.0 # ... the last 1 s of every phone's microphone
+    sound_classes: [Cheering, Applause, Clapping, Laughter, Giggle, Chuckle, chortle, Belly laugh, Crowd, Shout, Yell, Whoop, Screaming, Children shouting, Hubbub, speech noise, speech babble]
+    sound_gain: 2.0 # the summed class scores are multiplied by this (then capped at 1)
+    cheer_weight: 0.6 # sound = cheer_weight x YAMNet + (1 - cheer_weight) x "louder than the last seconds"
+    loudness_memory_s: 10
+    weights: {sound: 0.45, smile: 0.25, clap: 0.15, arms_up: 0.15} # crowd = weighted mix (missing parts are skipped)

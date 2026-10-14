@@ -593,7 +593,7 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 4. 3D scene (behind-goal cams) | done | dashboard/static/stadium.html (Three.js r128): GOAL L/R + free view, frame-exact recording |
 | 5. Director: robotic cameras + TV rules | done | DirectorV2 mode tv + TVOperators; 5 min: MAIN 69%, 0 shots < 2 s (Step 7 numbers below) |
 | 6. Playground page | done | /static/stadium.html + studio.stadium_live: program, 7-monitor wall, map with cones, log |
-| 7. Test runs | not started | |
+| 7. Test runs | in progress | 5 min done (all 8 videos 9000 frames, MAIN 69%, 0 < 2 s, ball in MAIN 91.5%); full half running |
 
 ## Key results (MVP 4)
 - Step 1 panorama (`venv/bin/python -m studio.panorama --check`): the 3 cameras share one spot, fitted at
@@ -625,6 +625,16 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 - Step 6 live (`/static/stadium.html` -> Go live): on its own the live loop shows ~6.3 fps and stays within 0.1-1.6 s
   of real time (frames skipped, never delayed); with headless Chrome drawing the 3D views on the same Mac the lag
   grew to a few seconds.
+- Step 7, 5 minutes from 23:40 (outputs/stadium/alfheim-2013-11-03-H1/20261014-181053-director, 19.6 min + 3.7 min
+  3D): all 7 feeds + program.mp4 = 9000 frames 1280x720. Airtime MAIN 69.0%, GOAL R 10.9%, GOAL L 9.4%, CLOSE 8.3%,
+  BOX R 1.8%, BOX L 0.7%; 49 cuts, average shot 6.0 s, shots < 2 s: 0; ball in MAIN 91.5% of 613 sightings; fastest
+  moves = motor limits. 3D parts: 1 of 6 parts had 3597/3600 frames (last 0.1 s of that part repeats a frame).
+- After that run: an attack also needs >= 2 players in that box (a false map ball put an empty GOAL R on air).
+  Dry run of the same 5 min: MAIN 78.3% (a bit above the 60-75% target), GOAL L/R 12.3%, CLOSE 8.8%, 37 cuts,
+  avg 7.9 s, 0 < 2 s. The full-half run started before this rule.
+- Picture quality, honestly: MAIN at 40 m looks like a real TV wide shot but soft; CLOSE (12 m) is very soft
+  (1280x960 sources, ~6x magnified); the 3D goal cameras look like a video game; mixing them in one program looks
+  inconsistent (user feedback 2026-10-14 -> MVP 5 plan: fully virtual broadcast).
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.

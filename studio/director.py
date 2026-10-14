@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from src.ball_tracker import BallState
 from src.director import score_camera
 from studio.cards import CamCard
+from studio.pitchmap import zone_of
 
 IN_PLAY, REACTION = "IN_PLAY", "REACTION"
 PLAY, ATTACK, STOPPAGE, RESTART = "PLAY", "ATTACK", "STOPPAGE", "RESTART"     # tv mode (MVP 4)
@@ -291,8 +292,11 @@ class DirectorV2:
             self.stoppage_kind = "lost"
             self._tv_enter(STOPPAGE, t, f"no ball for {c['stoppage_lost_s']}s")
         in_box = seen and pitch.zone in ("left_box", "right_box")
+        # An attack needs players in that box too: a false ball there (the detector sees one now and then) alone
+        # would put an empty goal on air.
+        crowd = sum(1 for p in pitch.players if zone_of(*p) == pitch.zone) if in_box else 0
         if (self.state == PLAY and in_box and pitch.intensity >= c["attack_min_intensity"]
-                and t - self.attack_over_t >= c["attack_cooldown_s"]):
+                and crowd >= c.get("attack_min_players", 0) and t - self.attack_over_t >= c["attack_cooldown_s"]):
             self.attack_side = "left" if pitch.zone == "left_box" else "right"
             self.out_of_box_since = None
             self._tv_enter(ATTACK, t, f"attack in the {self.attack_side} box")
