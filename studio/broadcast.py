@@ -376,12 +376,18 @@ def add_sound(video: Path, wav: Path, fps: float = 30) -> None:
 # 5. Rendering the 1080p program (headless Chrome renders the page; the dashboard server stores the video)
 # ---------------------------------------------------------------------------------------------------------------
 def render(segment: str, run_id: str, server: str, seconds: float) -> bool:
+    """program.mp4 in segments of `segment_s`, each rendered by headless Chrome in a FRESH tab (one tab rendering a
+    whole half ran out of memory on the 8 GB Mac after ~20 min). A segment whose tab dies or stalls is rendered
+    again; at the end the segments are joined (not re-encoded)."""
     import shutil
     import subprocess
     import tempfile
     import urllib.request
 
+    from src.common import ffmpeg_exe
+
     cfg = settings()
+    rc = cfg["render"]
     out = ROOT / cfg["outputs_dir"] / segment / run_id
     try:
         urllib.request.urlopen(f"{server}/studio/broadcast/runs", timeout=10).read()
@@ -390,23 +396,55 @@ def render(segment: str, run_id: str, server: str, seconds: float) -> bool:
         return False
     chrome = load_config()["studio"]["stadium"]["program"]["chrome"]
     flags = load_config()["studio"]["stadium"]["program"]["chrome_flags"]
-    profile = tempfile.mkdtemp(prefix="broadcast-chrome-")
-    mbps = cfg["render"]["mbps_short"] if seconds <= cfg["render"]["short_s"] else cfg["render"]["mbps_long"]
-    url = f"{server}/studio/broadcast?segment={segment}&run={run_id}&render=1&mbps={mbps}"
-    print(f"[broadcast] rendering program.mp4 (1080p) in headless Chrome...", flush=True)
-    proc = subprocess.Popen([chrome, "--headless=new", *flags, "--window-size=1700,1200", f"--user-data-dir={profile}",
-                             "--remote-debugging-port=0", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fps = cfg["fps"]
+    frames = round(seconds * fps)
+    seg = round(rc["segment_s"] * fps)
+    mbps = rc["mbps_short"] if seconds <= rc["short_s"] else rc["mbps_long"]
+    parts = [(k, a, min(frames, a + seg)) for k, a in enumerate(range(0, frames, seg))]
+    print(f"[broadcast] rendering program.mp4 (1080p) in {len(parts)} segment(s), headless Chrome...", flush=True)
     t0 = time.time()
-    try:
-        while time.time() - t0 < 300 + seconds * 20 and not (out / "program.mp4").exists():
-            time.sleep(3)
-    finally:
-        proc.kill()
-        shutil.rmtree(profile, ignore_errors=True)
-    ok = (out / "program.mp4").exists()
-    print(f"[broadcast] program.mp4 {'rendered' if ok else 'NOT rendered (timeout)'} in {(time.time() - t0) / 60:.1f} min",
-          flush=True)
-    return ok
+    for k, a, b in parts:
+        done = out / f"program_part{k:03d}.mp4"
+        for attempt in range(rc["retries"] + 1):
+            if done.exists():
+                break
+            raw = out / f"program_part{k:03d}.h264"
+            raw.unlink(missing_ok=True)
+            profile = tempfile.mkdtemp(prefix="broadcast-chrome-")
+            url = (f"{server}/studio/broadcast?segment={segment}&run={run_id}&render=1&mbps={mbps}"
+                   f"&from={a}&to={b}&part={k}")
+            proc = subprocess.Popen([chrome, "--headless=new", *flags, "--window-size=1700,1200",
+                                     f"--user-data-dir={profile}", "--remote-debugging-port=0", url],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            last_size, last_change = -1, time.time()
+            try:
+                while not done.exists():
+                    time.sleep(3)
+                    size = raw.stat().st_size if raw.exists() else 0
+                    if size != last_size:
+                        last_size, last_change = size, time.time()
+                    if proc.poll() is not None or time.time() - last_change > rc["stall_s"]:
+                        print(f"  segment {k}: the tab died or stalled (try {attempt + 1})", flush=True)
+                        break
+            finally:
+                proc.kill()
+                shutil.rmtree(profile, ignore_errors=True)
+        if not done.exists():
+            print(f"[broadcast] segment {k} failed {rc['retries'] + 1} times: stopping", flush=True)
+            return False
+        print(f"  segment {k + 1}/{len(parts)} done ({(time.time() - t0) / 60:.1f} min)", flush=True)
+    # join the segments (same encoder settings: copied, not re-encoded), then delete them
+    listing = out / "program_parts.txt"
+    listing.write_text("".join(f"file 'program_part{k:03d}.mp4'\n" for k, _, _ in parts))
+    joined = out / "program.join.mp4"
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+                    "-c", "copy", "-movflags", "+faststart", str(joined)], check=True)
+    for k, _, _ in parts:
+        (out / f"program_part{k:03d}.mp4").unlink()
+    listing.unlink()
+    joined.replace(out / "program.mp4")
+    print(f"[broadcast] program.mp4 rendered in {(time.time() - t0) / 60:.1f} min", flush=True)
+    return True
 
 
 def enforce_min_shot(on_air: list[int], src: list[float], min_frames: int) -> None:

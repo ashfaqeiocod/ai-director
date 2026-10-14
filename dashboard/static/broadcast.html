@@ -499,12 +499,15 @@ async function record() {
   S.recording = true; S.playing = false; $('play').textContent = 'Play'; $('rec').disabled = true;
   setSize(1920, 1080);
   flood.shadow.mapSize.set(4096, 4096); flood.shadow.map?.dispose(); flood.shadow.map = null;   // sharper shadows
-  const fps = S.B.fps, total = S.B.frames, base = `${S.segment}/${S.run}`;
+  const fps = S.B.fps, base = `${S.segment}/${S.run}`;
+  // a segment of a long render (?from=&to=&part=, frames): each segment runs in a fresh tab (memory stays low)
+  const from = Number(q.get('from') || 0), to = Number(q.get('to') || S.B.frames), part = q.get('part');
+  const total = to - from, partQ = part != null ? `&part=${part}` : '';
   let pending = [], bytes = 0, first = true, failed = null;
   const send = async () => {
     if (!pending.length) return;
     const blob = new Blob(pending); pending = []; bytes = 0;
-    const res = await fetch(`/studio/broadcast/stream/${base}?reset=${first ? 1 : 0}`, { method: 'POST', body: blob });
+    const res = await fetch(`/studio/broadcast/stream/${base}?reset=${first ? 1 : 0}${partQ}`, { method: 'POST', body: blob });
     if (!res.ok) throw new Error('upload failed');
     first = false;
   };
@@ -516,24 +519,30 @@ async function record() {
                   hardwareAcceleration: 'prefer-hardware', avc: { format: 'annexb' } });
   const t0 = performance.now();
   try {
-    for (let k = 0; k < total; k++) {
+    // warm-up: 1 s before the segment, not recorded (players' walking and facing settle, so joins don't show)
+    for (let k = Math.max(0, from - fps); k < from; k++) {
+      const src = S.B.src ? S.B.src[k] : k;
+      await ensure(S.B.start_s + src / fps); await ensure(S.B.start_s + src / fps + STEP);
+      renderFrame(k / fps, 1 / fps, false);
+    }
+    for (let k = from; k < to; k++) {
       const c = k / fps;
       const src = S.B.src ? S.B.src[k] : k;
       await ensure(S.B.start_s + src / fps); await ensure(S.B.start_s + src / fps + STEP);
       renderFrame(c, k === 0 ? 0 : 1 / fps, false);
-      const frame = new VideoFrame(prog, { timestamp: Math.round(k * 1e6 / fps) });
-      enc.encode(frame, { keyFrame: k % (2 * fps) === 0 });
+      const frame = new VideoFrame(prog, { timestamp: Math.round((k - from) * 1e6 / fps) });
+      enc.encode(frame, { keyFrame: (k - from) % (2 * fps) === 0 });
       frame.close();
       while (enc.encodeQueueSize > 3) await new Promise(r => setTimeout(r, 2));   // the encoder is busy: wait
       if (failed) throw failed;
       if (bytes > 4e6) await send();
       if (k % fps === 0) {
-        const rate = k / ((performance.now() - t0) / 1000);
-        $('recstatus').textContent = `rendering ${fmt(S.B.start_s + c)} · ${Math.round(100 * k / total)}% · ${rate.toFixed(1)} fps`;
+        const rate = (k - from) / ((performance.now() - t0) / 1000);
+        $('recstatus').textContent = `rendering ${fmt(S.B.start_s + c)} · ${Math.round(100 * (k - from) / total)}% · ${rate.toFixed(1)} fps`;
       }
     }
     await enc.flush(); await send(); enc.close();
-    const res = await fetch(`/studio/broadcast/finish/${base}?frames=${total}&fps=${fps}`, { method: 'POST' });
+    const res = await fetch(`/studio/broadcast/finish/${base}?frames=${total}&fps=${fps}${partQ}`, { method: 'POST' });
     const out = await res.json();
     if (!res.ok) throw new Error(out.detail);
     $('recstatus').textContent = `saved ${out.file} (${out.frames} of ${out.expected} frames)`;

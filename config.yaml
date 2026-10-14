@@ -663,6 +663,9 @@ studio:
       short_s: 600 # clips up to this long ...
       mbps_short: 16 # ... at this many Mbit/s (5 min = 0.6 GB)
       mbps_long: 6 # longer ones (a half = ~2.1 GB; the disk was nearly full)
+      segment_s: 300 # rendered in segments of this long, each in a fresh browser tab (a whole half in one tab ran out of memory)
+      retries: 2 # a segment whose tab dies is rendered again this many times
+      stall_s: 90 # no new video for this long = the tab is stuck
     director: # DirectorV2 tv mode (studio.director._tv), same rules as MVP 4 with this camera set's roles
       mode: tv
       start_cam: 1
