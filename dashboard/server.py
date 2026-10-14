@@ -42,6 +42,7 @@ from src.prepare import is_up_to_date
 from src.render import Renderer
 from dashboard.story_api import router as story_router   # MVP 2: the Story tab (/story)
 from dashboard.studio_api import router as studio_router  # MVP 3: the Studio tab (/studio)
+from dashboard.arm_api import router as arm_router        # Arm MVP: the Arm tab (/arm)
 
 STATIC = Path(__file__).parent / "static"
 STREAMS = ["program", "cam1", "cam2", "cam3"]
@@ -316,6 +317,7 @@ class RunStats:
 app = FastAPI(title="AI Sports Director")
 app.include_router(story_router)
 app.include_router(studio_router)
+app.include_router(arm_router)
 # MVP 4: plain files of dashboard/static (e.g. /static/stadium.html, the 3D behind-goal cameras)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 ctl = Controller()

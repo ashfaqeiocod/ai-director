@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blind Vote</title>
+<!--
+  arm_vote.html — the human proof: two versions of the same match side by side, without names.
+  Viewers watch both and pick the one they would rather watch on TV. Votes go to data/arm/votes.jsonl.
+  The pair (AI live / AI editor / random cuts / MVP 1-style motion / one phone) is drawn at random by the server.
+-->
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --text:#e8eaed; --muted:#9aa3ad; --accent:#e5484d; --line:#2c333c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--muted); }
+  main { padding:12px 16px; max-width:1500px; margin:0 auto; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width: 800px) { .pair { grid-template-columns:1fr; } }
+  .side { background:var(--panel); border-radius:8px; padding:8px; }
+  .side h2 { margin:0 0 6px; font-size:15px; }
+  video { width:100%; display:block; background:#000; aspect-ratio:16/9; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+  button, input { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px 12px; font:inherit; }
+  button { cursor:pointer; }
+  button.pick { background:var(--accent); border-color:var(--accent); font-weight:600; }
+  input { flex:1; min-width:200px; }
+  #status, .muted { color:var(--muted); }
+  table { border-collapse:collapse; margin-top:10px; }
+  td, th { padding:4px 10px; border-bottom:1px solid var(--line); text-align:left; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Which broadcast would you rather watch?</h1>
+  <a href="/arm">viewer</a>
+  <span id="status"></span>
+</header>
+<main>
+  <p class="muted">Two versions of the same 31-second match. Watch both (the play button plays them together),
+    then pick the one you would rather watch on TV. You don't know which one is the AI.</p>
+  <div class="controls">
+    <button id="both">Play both together</button>
+    <button id="sound-left">Sound: left</button>
+    <input id="voter" placeholder="your name (optional)">
+  </div>
+  <div class="pair">
+    <div class="side"><h2>Version 1</h2><video id="left" controls playsinline preload="auto"></video></div>
+    <div class="side"><h2>Version 2</h2><video id="right" controls playsinline preload="auto" muted></video></div>
+  </div>
+  <div class="controls">
+    <button class="pick" data-pick="left">Version 1 is better</button>
+    <button class="pick" data-pick="right">Version 2 is better</button>
+    <input id="why" placeholder="why? (optional)">
+    <button id="next">Skip / next pair</button>
+  </div>
+  <h2 style="font-size:15px">Results so far</h2>
+  <div id="results" class="muted"></div>
+</main>
+<script>
+let pair = null;
+const left = document.getElementById("left"), right = document.getElementById("right");
+
+async function load() {
+  const r = await fetch("/arm/votes/pair");
+  if (!r.ok) { document.getElementById("status").textContent = "No programs yet: run venv/bin/python -m arm.main"; return; }
+  pair = await r.json();
+  left.src = `/arm/media/${pair.left.file}`;
+  right.src = `/arm/media/${pair.right.file}`;
+  document.getElementById("why").value = "";
+  results();
+}
+
+async function vote(side) {
+  if (!pair) return;
+  const winner = side === "left" ? pair.left.key : pair.right.key;
+  await fetch("/arm/votes", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ left: pair.left.key, right: pair.right.key, winner,
+      why: document.getElementById("why").value, voter: document.getElementById("voter").value }) });
+  document.getElementById("status").textContent = "Thanks! Here is the next pair.";
+  load();
+}
+
+async function results() {
+  const d = await (await fetch("/arm/votes")).json();
+  const rows = Object.entries(d.table).sort((a, b) => b[1].won / b[1].shown - a[1].won / a[1].shown);
+  document.getElementById("results").innerHTML = rows.length ? `<table><tr><th>version</th><th>shown</th><th>won</th><th>win rate</th></tr>` +
+    rows.map(([k, v]) => `<tr><td>${k}</td><td>${v.shown}</td><td>${v.won}</td><td>${Math.round(100 * v.won / v.shown)}%</td></tr>`).join("") +
+    `</table><p>${d.votes.length} votes. (Names are shown here only after voting.)</p>` : "no votes yet";
+}
+
+document.getElementById("both").onclick = () => {
+  left.currentTime = 0; right.currentTime = 0; left.play(); right.play();
+};
+document.getElementById("sound-left").onclick = e => {
+  const toRight = !left.muted;
+  left.muted = toRight; right.muted = !toRight;
+  e.target.textContent = toRight ? "Sound: right" : "Sound: left";
+};
+document.querySelectorAll("button[data-pick]").forEach(b => b.onclick = () => vote(b.dataset.pick));
+document.getElementById("next").onclick = load;
+load();
+</script>
+</body>
+</html>

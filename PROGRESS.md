@@ -689,3 +689,70 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
 Step 7: the 5-minute run (23:40) and the full half are running; report airtime / cuts / shot lengths / ball in MAIN.
+
+# Arm MVP — AI director on real footage (a 5-phone arm-wrestling match)
+Last updated: 2026-10-14. Spec: `docs/ARM_MVP_SPEC.md`. Testing: `TESTING_ARM.md`. Code: `arm/`.
+(Not called "MVP 5": `docs/MVP5_VIRTUAL_BROADCAST_PLAN.md` is a separate football plan.)
+
+## Status
+| Step | Status | Notes |
+|---|---|---|
+| 0. Setup | done | footage moved to `data/arm/raw/` (gitignored), config `arm:` |
+| 1. Sync | done | audio GCC-PHAT, 10 pairs agree within 2.6 ms; re-measured on the synced copies <= 3 ms |
+| 2. Labels | built, waiting | `/arm/label` — the user labels the real moments (independent test) |
+| 3. Perception | done | YOLO26s-pose + MediaPipe face blendshapes on head crops, 10 looks/s/camera (~5 min for all) |
+| 4. Crowd | done | YAMNet on all 5 mics + audience smiles / clapping / arms up |
+| 5. Match | done | camera setup (Gemini, first frame, 5 calls) -> athletes found 100% (A,B,D,E), 78% (C) |
+| 6-7. Shots + live director | done | 6 virtual shot kinds per phone, TV rules, 180-degree line chosen once |
+| 8. Editor | done | dynamic programming over the whole match, events known 0.6 s early |
+| 9. Gemini judge | done | 16 stills (one 5-camera sheet every 2 s), cached; 31 / 200 calls used in total |
+| 10. Render | done | one decode pass writes 8 videos (~2.5 min) |
+| 11. Proof | done (labels + votes pending) | `data/arm/out/report.md`, blind vote page `/arm/vote` |
+| 12. Dashboard | done | `/arm` viewer, `/arm/label`, `/arm/vote` |
+
+## Key results (Arm MVP)
+- Sync: metadata start times only to the second (Samsung writes its STOP time); the sound gives offsets
+  A 0 / B -88 / C -108 / D +128 / E +1010 ms; worst pair disagreement 2.6 ms (< 1/10 frame). Common window 31.5 s.
+- The match (from the local signals): long struggle with tan's head down, tan looks up 16.3 / 21.4 / 26.4 s, black
+  close to a pin 23-26 s and 30 s, PIN black at 31.1 s (tan's hand flat on the table in camera A at 31.4 s).
+  Gemini agrees: black leads all match; tan "smiling" at 16.5 / 22.5 / 28.5 s.
+- Scorecard (moments = the AI's own detected moments, NOT independent until the labels exist):
+  | program | shots | avg s | 180 breaks | athlete face % | crowd joy % | moments |
+  |---|---|---|---|---|---|---|
+  | AI live | 16 | 1.97 | 0 | 52.4 | 21.3 | 12/14 |
+  | AI editor | 16 | 1.97 | 0 | 57.1 | 18.7 | 11/14 |
+  | one phone A (best single for faces) | 1 | 31.5 | 0 | 86.7 | 42.9 | 8/14 |
+  | one phone E (best single for crowd) | 1 | 31.5 | 0 | 22.5 | 100 | 11/14 |
+  | random 3 s | 11 | 2.86 | 2 | 52.4 | 44.1 | 8/14 |
+  | motion (MVP 1 style) | 13 | 2.42 | 5 | 40.6 | 38.1 | 9/14 |
+  The AI wins on moments, variety (5 kinds of content) and rules (0 breaks, no shot < 1 s). A single fixed phone
+  shows more of ONE kind of content (A: faces, E: crowd); the AI mixes them.
+- Gemini judge latency on the free tier: 3-27 s per still (most answers too late for live use).
+
+## Decisions made (Arm MVP)
+- Separate package `arm/` (like `studio/`); config `arm:`; outputs in `data/arm/` (real colleagues: never committed).
+- Sync by sound, not metadata (metadata = +-1 s; Samsung's `creation_time` is the end of recording).
+- Face expression: MediaPipe's face detector only finds selfie-size faces (0 found on full frames), so the face
+  landmarker runs on a crop around each head (nose-centred, a tighter retry); profile faces read fine.
+- Athletes: shirt colour and size failed (photographers in black right behind the grip; standing audience looks bigger
+  than seated athletes). Camera setup: Gemini boxes the athletes once on each camera's FIRST frame (5 calls); then
+  local overlap tracking. Fair for live (nothing later than frame 0 is used).
+- Who is winning: the pin goes ACROSS the table, so side cameras (A, D) can't see it; only the forearm tilt in the
+  cameras behind an athlete (B, C, E), signed by which athlete is nearest. Side cameras give "upright" (grip height).
+- Gestures count if ONE camera sees a raised free hand clearly (others are often blocked).
+- Shot value = (fit to phase + emotion + event + angle) x clarity. Profile faces count fully up to ~60 degrees.
+  Cut-aways (crowd 2 s, face 2.5 s, grip 3 s) get old sooner than the main two-shot.
+- 180-degree line: chosen once (after 3 s live; whole match for the editor) = the side whose two-shot shows more
+  face emotion (A here); the other side's camera is not used again.
+- Gemini only with stills, flash-lite first (Flash 20/day on the free tier), out-of-quota models skipped.
+- Sound: one continuous track (phone E), never switched.
+
+## Problems / open issues (Arm MVP)
+- No independent ground truth yet: label the match at `/arm/label`, then rerun `venv/bin/python -m arm.main --no-render`.
+- No human votes yet (`/arm/vote`).
+- The lean (who wins) is a weak 2D signal; the PIN at 31.1 s comes 0.4 s before the recordings end (no celebration).
+- C finds both athletes only 78% of the time (tan hides behind black).
+- No debug mosaic video yet (the dashboard viewer shows the 5 cameras + on-air border instead).
+
+## Next action (Arm MVP)
+User: label the match (`/arm/label`) and collect a few blind votes (`/arm/vote`); then re-run the report.

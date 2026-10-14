@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arm Labels</title>
+<!--
+  arm_label.html — Arm MVP Step 2: mark what REALLY happened in the arm-wrestling match.
+  The labels are used only to SCORE the AI (arm/evaluate.py); the director never reads them.
+  Camera A plays with sound and is the clock; the other 4 follow it.
+  Keys: space = play/pause, arrows = +-1 s (shift: +-0.1 s), G/S/N/P/R/H/E = add a label at the playhead.
+-->
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --text:#e8eaed; --muted:#9aa3ad; --accent:#e5484d; --line:#2c333c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 360px; gap:12px; padding:12px 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:6px; }
+  .tile { position:relative; background:#000; }
+  .tile video { width:100%; display:block; aspect-ratio:16/9; }
+  .tile span { position:absolute; left:6px; top:4px; font-weight:600; text-shadow:0 0 4px #000; }
+  .controls { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; align-items:center; }
+  button, select, input { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; }
+  button:hover { border-color:var(--muted); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); }
+  #clock { font-variant-numeric: tabular-nums; font-size:18px; min-width:90px; }
+  #bar { position:relative; height:28px; background:var(--panel); border-radius:6px; cursor:pointer; margin-top:6px; }
+  #bar .head { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); }
+  #bar .mark { position:absolute; top:4px; bottom:4px; width:4px; border-radius:2px; }
+  aside { background:var(--panel); border-radius:8px; padding:12px; }
+  aside h2 { font-size:14px; margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:4px 2px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  td.t { cursor:pointer; color:#7cc4ff; font-variant-numeric: tabular-nums; }
+  .help { color:var(--muted); font-size:12px; margin-top:10px; }
+  #status { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arm wrestling: what really happened</h1>
+  <a href="/arm">viewer</a>
+  <span id="status"></span>
+</header>
+<main>
+  <section>
+    <div class="grid" id="grid"></div>
+    <div id="bar"><div class="head" id="head"></div></div>
+    <div class="controls">
+      <button id="play">Play / pause</button>
+      <span id="clock">0.00 s</span>
+      <select id="who" title="who this label is about">
+        <option value="">who: -</option>
+        <option value="black">black shirt</option>
+        <option value="tan">tan shirt</option>
+      </select>
+      <button data-kind="GO">G: GO (start)</button>
+      <button data-kind="SURGE">S: surge (who pushes)</button>
+      <button data-kind="NEAR_PIN">N: near pin (who almost wins)</button>
+      <button data-kind="PIN">P: PIN (winner)</button>
+      <button data-kind="REACTION">R: reaction / celebration</button>
+      <button data-kind="HIGHLIGHT">H: great moment</button>
+      <button data-kind="END">E: end</button>
+    </div>
+  </section>
+  <aside>
+    <h2>Labels</h2>
+    <div class="controls">
+      <label>Winner
+        <select id="winner">
+          <option value="">not set</option>
+          <option value="black">black shirt</option>
+          <option value="tan">tan shirt</option>
+          <option value="none">no winner (draw / stopped)</option>
+        </select>
+      </label>
+      <button class="primary" id="save">Save</button>
+    </div>
+    <table id="list"></table>
+    <p class="help">Play the match and press a key (or a button) at the moment it happens. Pick "who" first for
+      surges, near pins and the pin. Click a time to jump there. Drag-free: use the arrow keys (shift = 0.1 s)
+      to fine-tune, then delete and re-add. Labels are only used to score the AI.</p>
+  </aside>
+</main>
+<script>
+const CAMS = ["A", "B", "C", "D", "E"];
+const COLORS = { GO:"#3fb950", SURGE:"#f0b72f", NEAR_PIN:"#ff8c42", PIN:"#e5484d", REACTION:"#bc8cff", HIGHLIGHT:"#7cc4ff", END:"#9aa3ad" };
+const KEYS = { g:"GO", s:"SURGE", n:"NEAR_PIN", p:"PIN", r:"REACTION", h:"HIGHLIGHT", e:"END" };
+let labels = [];
+const videos = {};
+
+// Five synced videos: A is the clock (with sound), the others follow it.
+const grid = document.getElementById("grid");
+for (const cam of CAMS) {
+  const tile = document.createElement("div");
+  tile.className = "tile";
+  const v = document.createElement("video");
+  v.src = `/arm/media/cam${cam}.mp4`;
+  v.preload = "auto";
+  v.playsInline = true;
+  v.muted = cam !== "A";
+  tile.append(v);
+  const tag = document.createElement("span");
+  tag.textContent = `CAM ${cam}`;
+  tile.append(tag);
+  grid.append(tile);
+  videos[cam] = v;
+}
+const master = videos.A;
+
+function follow() {
+  for (const cam of CAMS.slice(1)) {
+    const v = videos[cam];
+    if (Math.abs(v.currentTime - master.currentTime) > 0.08) v.currentTime = master.currentTime;
+    if (master.paused !== v.paused) master.paused ? v.pause() : v.play().catch(() => {});
+  }
+  document.getElementById("clock").textContent = master.currentTime.toFixed(2) + " s";
+  const d = master.duration || 1;
+  document.getElementById("head").style.left = (100 * master.currentTime / d) + "%";
+  requestAnimationFrame(follow);
+}
+requestAnimationFrame(follow);
+
+function seek(t) {
+  master.currentTime = Math.max(0, Math.min(master.duration || 0, t));
+  for (const cam of CAMS.slice(1)) videos[cam].currentTime = master.currentTime;
+}
+
+function add(kind) {
+  labels.push({ t: +master.currentTime.toFixed(2), kind, who: document.getElementById("who").value, note: "" });
+  labels.sort((a, b) => a.t - b.t);
+  draw();
+}
+
+function draw() {
+  const table = document.getElementById("list");
+  table.innerHTML = "";
+  labels.forEach((l, i) => {
+    const row = table.insertRow();
+    const t = row.insertCell(); t.className = "t"; t.textContent = l.t.toFixed(2);
+    t.onclick = () => seek(l.t);
+    const k = row.insertCell(); k.textContent = l.kind; k.style.color = COLORS[l.kind];
+    row.insertCell().textContent = l.who || "";
+    const note = document.createElement("input");
+    note.value = l.note || ""; note.placeholder = "note"; note.style.width = "100%";
+    note.oninput = () => { l.note = note.value; };
+    row.insertCell().append(note);
+    const del = document.createElement("button"); del.textContent = "x";
+    del.onclick = () => { labels.splice(i, 1); draw(); };
+    row.insertCell().append(del);
+  });
+  const bar = document.getElementById("bar");
+  bar.querySelectorAll(".mark").forEach(m => m.remove());
+  const d = master.duration || 1;
+  for (const l of labels) {
+    const m = document.createElement("div");
+    m.className = "mark"; m.style.left = (100 * l.t / d) + "%"; m.style.background = COLORS[l.kind];
+    m.title = `${l.kind} ${l.who} ${l.t}s`;
+    bar.append(m);
+  }
+}
+
+document.getElementById("bar").onclick = e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  seek((e.clientX - r.left) / r.width * (master.duration || 0));
+};
+document.getElementById("play").onclick = () => master.paused ? master.play() : master.pause();
+document.querySelectorAll("button[data-kind]").forEach(b => b.onclick = () => add(b.dataset.kind));
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === " ") { e.preventDefault(); master.paused ? master.play() : master.pause(); }
+  else if (e.key === "ArrowRight") seek(master.currentTime + (e.shiftKey ? 0.1 : 1));
+  else if (e.key === "ArrowLeft") seek(master.currentTime - (e.shiftKey ? 0.1 : 1));
+  else if (KEYS[e.key.toLowerCase()]) add(KEYS[e.key.toLowerCase()]);
+});
+document.getElementById("save").onclick = async () => {
+  const res = await fetch("/arm/labels", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ labels, winner: document.getElementById("winner").value }) });
+  document.getElementById("status").textContent = res.ok ? `saved ${labels.length} labels` : "save failed";
+};
+master.addEventListener("loadedmetadata", draw);
+fetch("/arm/labels").then(r => r.json()).then(d => {
+  labels = d.labels || [];
+  document.getElementById("winner").value = d.winner || "";
+  draw();
+});
+</script>
+</body>
+</html>

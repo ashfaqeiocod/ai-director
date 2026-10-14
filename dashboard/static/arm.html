@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arm Director</title>
+<!--
+  arm.html — the Arm MVP viewer (real footage: a 5-phone arm-wrestling match).
+  The program video is the clock. The 5 synced cameras follow it; the one on air has a red border.
+  Everything else comes from /arm/run (written by `python -m arm.main`) and is drawn for the current time.
+-->
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --text:#e8eaed; --muted:#9aa3ad; --accent:#e5484d; --line:#2c333c;
+          --A:#4e9af1; --B:#f0b72f; --C:#3fb950; --D:#bc8cff; --E:#ff8c42; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header a { color:var(--muted); }
+  button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button.on { background:var(--accent); border-color:var(--accent); }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:12px; padding:12px 16px; }
+  @media (max-width: 1000px) { main { grid-template-columns:1fr; } }
+  #program { width:100%; background:#000; display:block; aspect-ratio:16/9; }
+  .cams { display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:6px; margin-top:8px; }
+  @media (max-width: 700px) { .cams { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+  .tile { position:relative; border:3px solid transparent; border-radius:4px; background:#000; }
+  .tile.live { border-color:var(--accent); }
+  .tile video { width:100%; display:block; aspect-ratio:16/9; }
+  .tile span { position:absolute; left:6px; top:3px; font-size:12px; font-weight:600; text-shadow:0 0 4px #000; }
+  .timeline { margin-top:10px; background:var(--panel); border-radius:8px; padding:8px; }
+  .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  .row label { width:70px; color:var(--muted); font-size:12px; flex:none; }
+  .bar { position:relative; flex:1; height:20px; background:#0c0f12; border-radius:4px; overflow:hidden; cursor:pointer; }
+  .seg { position:absolute; top:0; bottom:0; border-right:1px solid #0c0f12; font-size:10px; color:#111; padding-left:2px; overflow:hidden; white-space:nowrap; }
+  .head { position:absolute; top:0; bottom:0; width:2px; background:#fff; pointer-events:none; }
+  canvas { width:100%; height:60px; display:block; }
+  aside { background:var(--panel); border-radius:8px; padding:12px; max-height:calc(100vh - 90px); overflow:auto; }
+  aside h2 { font-size:14px; margin:12px 0 6px; }
+  .now { font-size:13px; }
+  .now b { color:#fff; }
+  .log div { padding:4px 6px; border-left:3px solid transparent; font-size:12px; cursor:pointer; }
+  .log div.cur { background:#232a33; border-left-color:var(--accent); }
+  .muted { color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  td, th { padding:3px 4px; border-bottom:1px solid var(--line); text-align:right; }
+  td:first-child, th:first-child { text-align:left; }
+  .legend span { display:inline-block; margin-right:10px; font-size:12px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI director: arm wrestling, 5 phones</h1>
+  <button id="btn-live" class="on">AI live (past only)</button>
+  <button id="btn-edit">AI editor (whole match)</button>
+  <a href="/arm/label">label the match</a>
+  <a href="/arm/vote">blind vote</a>
+  <span class="legend" id="legend"></span>
+</header>
+<main>
+  <section>
+    <video id="program" controls playsinline preload="auto"></video>
+    <div class="cams" id="cams"></div>
+    <div class="timeline">
+      <div class="row"><label>AI live</label><div class="bar" id="bar-live"></div></div>
+      <div class="row"><label>AI editor</label><div class="bar" id="bar-edit"></div></div>
+      <div class="row"><label>phase</label><div class="bar" id="bar-phase"></div></div>
+      <div class="row"><label>tension<br>crowd</label><div style="flex:1;position:relative"><canvas id="curve"></canvas></div></div>
+      <div class="row"><label>moments</label><div class="bar" id="bar-events"></div></div>
+      <div class="row"><label>Gemini</label><div class="bar" id="bar-judge"></div></div>
+    </div>
+  </section>
+  <aside>
+    <div class="now" id="now">Loading... (run <code>venv/bin/python -m arm.main</code> first)</div>
+    <h2>Cuts and why</h2>
+    <div class="log" id="log"></div>
+    <h2>Gemini (one still of the 5 cameras every 2 s)</h2>
+    <div id="judge" class="muted"></div>
+    <h2>Scorecard</h2>
+    <div id="metrics"></div>
+  </aside>
+</main>
+<script>
+const PHASE_COLORS = { SETUP:"#555", STRUGGLE:"#2f6f9f", SURGE:"#f0b72f", NEAR_PIN:"#ff8c42", PIN:"#e5484d", REACTION:"#bc8cff" };
+let run = null, mode = "live";
+const camVideos = {};
+const program = document.getElementById("program");
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function pct(t) { return (100 * t / run.duration) + "%"; }
+
+function drawBar(id, items, colorOf, labelOf) {
+  const bar = document.getElementById(id);
+  bar.innerHTML = "";
+  for (const it of items) {
+    const d = document.createElement("div");
+    d.className = "seg";
+    d.style.left = pct(it.start);
+    d.style.width = `calc(${pct(it.end - it.start)} + 1px)`;
+    d.style.background = colorOf(it);
+    d.textContent = labelOf ? labelOf(it) : "";
+    d.title = it.title || "";
+    bar.append(d);
+  }
+  const head = document.createElement("div"); head.className = "head"; bar.append(head);
+  bar.onclick = e => { const r = bar.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * run.duration); };
+}
+
+function phases() {
+  const out = [];
+  for (const s of run.states) {
+    if (!out.length || out[out.length - 1].phase !== s.phase) out.push({ phase: s.phase, start: s.t, end: s.t + 0.1, title: s.phase });
+    else out[out.length - 1].end = s.t + 0.1;
+  }
+  return out;
+}
+
+function drawCurve() {
+  const c = document.getElementById("curve");
+  c.width = c.clientWidth * devicePixelRatio; c.height = 60 * devicePixelRatio;
+  const g = c.getContext("2d"), W = c.width, H = c.height;
+  g.fillStyle = "#0c0f12"; g.fillRect(0, 0, W, H);
+  for (const [key, color] of [["tension", "#e5484d"], ["crowd", "#3fb950"]]) {
+    g.strokeStyle = color; g.lineWidth = 2 * devicePixelRatio; g.beginPath();
+    run.states.forEach((s, i) => { const x = W * s.t / run.duration, y = H - H * s[key];
+      i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.stroke();
+  }
+}
+
+function build() {
+  const legend = document.getElementById("legend");
+  legend.innerHTML = run.cams.map(c => `<span><i style="background:${css("--" + c)}"></i>${c} ${run.labels[c]}</span>`).join("");
+  const cams = document.getElementById("cams");
+  for (const cam of run.cams) {
+    const tile = document.createElement("div"); tile.className = "tile"; tile.id = "tile-" + cam;
+    const v = document.createElement("video"); v.src = `/arm/media/cam${cam}.mp4`; v.muted = true; v.playsInline = true; v.preload = "auto";
+    const tag = document.createElement("span"); tag.textContent = `${cam} ${run.labels[cam]}`;
+    tile.append(v, tag); cams.append(tile); camVideos[cam] = v;
+  }
+  for (const m of ["live", "edit"])
+    drawBar("bar-" + m, run.programs[m].shots.map(s => ({ ...s, title: `${s.cam} ${s.kind} — ${s.reason}` })),
+            s => css("--" + s.cam), s => `${s.cam} ${s.kind.replace("FACE_", "").toLowerCase()}`);
+  drawBar("bar-phase", phases(), p => PHASE_COLORS[p.phase] || "#555", p => p.phase.toLowerCase());
+  const events = run.states.flatMap(s => s.events.filter(e => !["STRUGGLE", "SETUP"].includes(e))
+    .map(e => ({ start: s.t, end: s.t + 0.35, title: `${s.t.toFixed(1)} s ${e}`, e })));
+  drawBar("bar-events", events, ev => ev.e.startsWith("CHEER") ? "#3fb950" : ev.e.startsWith("LOOK") ? "#4e9af1" :
+          ev.e.startsWith("GESTURE") ? "#bc8cff" : "#e5484d");
+  drawBar("bar-judge", run.judge.map(a => ({ start: a.event_time, end: Math.min(run.duration, a.logged_at),
+          title: `asked at ${a.event_time} s, answer known at ${a.logged_at} s: ${a.phase}, best ${a.best_camera}` })),
+          () => "#3a4350", () => "");
+  drawCurve();
+  const m = run.metrics.results;
+  document.getElementById("metrics").innerHTML = `<p class="muted">${run.metrics.source}</p><table><tr><th>program</th>
+    <th>shots</th><th>180°</th><th>faces %</th><th>crowd %</th><th>moments</th></tr>` +
+    Object.entries(m).map(([k, r]) => `<tr><td>${k}</td><td>${r.shots}</td><td>${r.breaks_180}</td><td>${r.faces_pct}</td>
+    <td>${r.crowd_pct}</td><td>${r.moments ? r.moments_caught + "/" + r.moments : "-"}</td></tr>`).join("") + "</table>";
+  setMode("live");
+}
+
+function setMode(m) {
+  mode = m;
+  document.getElementById("btn-live").classList.toggle("on", m === "live");
+  document.getElementById("btn-edit").classList.toggle("on", m === "edit");
+  const t = program.currentTime || 0;
+  program.src = `/arm/media/${run.programs[m].file}`;
+  program.addEventListener("loadedmetadata", () => { program.currentTime = t; }, { once: true });
+  const log = document.getElementById("log");
+  log.innerHTML = "";
+  run.programs[m].shots.forEach((s, i) => {
+    const d = document.createElement("div"); d.id = `log-${i}`;
+    d.innerHTML = `<b>${s.start.toFixed(1)} s</b> ${s.change} → <b>${s.cam} ${s.kind}</b><br><span class="muted">${s.reason}</span>`;
+    d.onclick = () => seek(s.start);
+    log.append(d);
+  });
+}
+
+function seek(t) { program.currentTime = t; for (const v of Object.values(camVideos)) v.currentTime = t; }
+
+function tick() {
+  if (run) {
+    const t = program.currentTime;
+    for (const v of Object.values(camVideos)) {
+      if (Math.abs(v.currentTime - t) > 0.15) v.currentTime = t;
+      if (program.paused !== v.paused) program.paused ? v.pause() : v.play().catch(() => {});
+    }
+    document.querySelectorAll(".head").forEach(h => h.style.left = pct(t));
+    const shots = run.programs[mode].shots;
+    const i = shots.findIndex(s => t >= s.start && t < s.end);
+    const s = shots[i];
+    for (const cam of run.cams) document.getElementById("tile-" + cam).classList.toggle("live", s && s.cam === cam);
+    document.querySelectorAll(".log div").forEach((d, k) => d.classList.toggle("cur", k === i));
+    const st = run.states[Math.min(run.states.length - 1, Math.floor(t * 10))];
+    // Gemini: in the live view an answer is shown only once it has arrived (logged_at).
+    const known = run.judge.filter(a => (mode === "live" ? a.logged_at : a.event_time) <= t).pop();
+    document.getElementById("now").innerHTML = s ? `<b>${t.toFixed(1)} s</b> — on air: <b>${s.cam} ${s.kind}</b><br>
+      phase <b>${st.phase}</b>, tension ${st.tension.toFixed(2)}, crowd ${st.crowd.toFixed(2)}, lean ${st.lean >= 0 ? "+" : ""}${st.lean.toFixed(2)}
+      (${st.lean > 0.15 ? "black leads" : st.lean < -0.15 ? "tan leads" : "even"})` : "";
+    document.getElementById("judge").innerHTML = known ? `as of ${known.event_time} s (known ${known.logged_at} s):
+      ${known.phase}, leader ${known.leader}; black ${known.black_emotion}, tan ${known.tan_emotion}; crowd ${known.crowd_mood};
+      drama ${known.drama}/10; would show ${known.best_camera}: “${known.caption}”` : "no answer yet";
+  }
+  requestAnimationFrame(tick);
+}
+
+document.getElementById("btn-live").onclick = () => setMode("live");
+document.getElementById("btn-edit").onclick = () => setMode("edit");
+window.addEventListener("resize", () => run && drawCurve());
+fetch("/arm/run").then(r => r.ok ? r.json() : Promise.reject(r.statusText)).then(d => { run = d; build(); })
+  .catch(e => { document.getElementById("now").textContent = "No run yet: venv/bin/python -m arm.main (" + e + ")"; });
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

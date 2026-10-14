@@ -22,3 +22,6 @@ clips/*
 # MVP 2: audio files and the YAMNet audio model
 *.wav
 *.tflite
+# Arm MVP: the raw arm-wrestling footage (real colleagues). It now lives in data/arm/raw/.
+real-video/
+.DS_Store

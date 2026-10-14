@@ -19,6 +19,10 @@
   MVP 4). Simulates a T2 camera setup on the Alfheim half (real panorama cameras + 3D behind-goal cameras, robotic
   MAIN/CLOSE steered by the director). Code in `studio/` and the dashboard; `src/` and `story/` defaults unchanged.
   Progress: "MVP 4" section of `PROGRESS.md`.
+- **Arm MVP (real footage, arm wrestling): BUILT** (labels + votes pending). Spec: `docs/ARM_MVP_SPEC.md`. A home-made
+  arm-wrestling match filmed by 5 phones (`data/arm/raw/`, real colleagues: never commit, never upload except the
+  capped Gemini stills: hard cap 200 requests, counted in `data/arm/cache/gemini_calls.json`). Code in `arm/` (+ the
+  `/arm` dashboard pages); only USES `src/`, `story/`, `studio/`. Progress: "Arm MVP" section of `PROGRESS.md`.
 
 The rest of this file is the MVP 1 brief; the Working mode, Hardware rules and Coding style sections apply to MVP 2 and MVP 3 too.
 

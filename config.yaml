@@ -579,8 +579,8 @@ studio:
       state_hz: 10 # state messages per second over the WebSocket
 
 # ---------------------------------------------------------------------------------------------------------------
-# MVP 5: AI director on REAL footage — a home-made arm-wrestling match filmed by 5 phones.
-# Code: arm/ (only USES src/, story/, studio/). Spec: docs/MVP5_ARM_SPEC.md. Files: data/arm/ (never committed).
+# Arm MVP: AI director on REAL footage — a home-made arm-wrestling match filmed by 5 phones.
+# Code: arm/ (only USES src/, story/, studio/). Spec: docs/ARM_MVP_SPEC.md. Files: data/arm/ (never committed).
 arm:
   raw_dir: data/arm/raw # the 5 phone videos as recorded
   work_dir: data/arm # synced videos, caches and outputs go below this folder
@@ -616,3 +616,121 @@ arm:
     cheer_weight: 0.6 # sound = cheer_weight x YAMNet + (1 - cheer_weight) x "louder than the last seconds"
     loudness_memory_s: 10
     weights: {sound: 0.45, smile: 0.25, clap: 0.15, arms_up: 0.15} # crowd = weighted mix (missing parts are skipped)
+  match:
+    seat_min_iou: 0.3 # a person is an athlete if their box overlaps the athlete's seat (camera setup) this much
+    seat_follow: 0.2 # every look the seat moves this share of the way to where the athlete is now
+    grip_max_gap: 0.2 # the two athletes' closest wrists must be closer than this x the smaller athlete's box height
+    hand: right # which hand they wrestle with (decides which forearm tilt means who is winning)
+    smooth_s: 0.5 # lean / upright are smoothed over about this much past
+    lead_min: 0.15 # |lean| above this = someone is leading
+    surge_momentum: 0.6 # the grip moving faster than this per second (lean or upright) = a SURGE
+    surge_min_s: 1.0 # SURGE / NEAR_PIN last at least this long
+    near_pin_lean: 0.55
+    near_pin_upright: 0.35
+    pin_lean: 0.85
+    pin_upright: 0.15 # the grip this low above the elbows = a hand is (nearly) on the table = PIN
+    pin_confirm_s: 0.3 # ... for at least this long after NEAR_PIN
+    pin_hold_s: 1.0 # PIN phase, then REACTION
+    reaction_min_s: 3.0 # a new grip after a pin is a new round only after this long
+    release_s: 1.0 # no grip seen for this long = back to SETUP
+    long_struggle_s: 15 # a struggle this long counts fully in the tension
+    vote_looks: 5 # body signals (head down, hand raised) are voted over this many looks (0.5 s)
+    event_gap_s: 3.0 # the same kind of event at most once per this many seconds
+    cheer_jump: 0.2 # the crowd value this much above its recent average = CHEER
+    crowd_baseline_s: 3.0
+    tension_weights: {strain: 0.3, duration: 0.2, closeness: 0.25, crowd: 0.15, surge: 0.1}
+  gemini:
+    max_total_calls: 200 # HARD cap on requests ever sent for this footage (counted on disk, cached answers are free)
+    models: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"] # first that answers (quota / overload -> next). Free tier: Lite 500/day, Flash 20/day
+    temperature: 0.2
+    timeout_s: 60
+  shots:
+    max_zoom: {default: 2.0, A: 3.0} # tightest digital zoom per camera (A is the 4K phone: 3x is still sharp)
+    two_pad: 0.06
+    two_max_share: 0.85 # a TWO shot taller than this share of the picture is just the WIDE
+    grip_size: 2.6 # GRIP height = this x the forearm length
+    grip_unmeasured: 0.6 # clarity when the grip is only "where it was" (wrists not seen now)
+    face_size: 3.6 # FACE height = this x the face height (head and shoulders)
+    face_min_frontal: 0.35 # a face turned further away than ~70 degrees is not a face shot
+    profile_frontal: 0.5 # faces up to ~60 degrees from the camera count fully (a profile reads well on TV)
+    crowd_min_faces: 3
+    crowd_pad: 0.15
+    head_down_emotion: 0.5 # an athlete straining over the table (seen by this camera) counts as this much emotion
+    grip_emotion: 0.6 # a GRIP close-up shows this share of the match tension as emotion (faces show more)
+    min_sharp: 0.6 # sharpness below this share of the camera's usual = blurry
+    max_shake: 6.0 # the picture moved more than this (pixels of 480) since the last look = shaking
+    angle_bonus: 0.5
+    event_window_s: 2.5 # an event boosts its shot for this long (fading)
+    weights: {fit: 0.4, emotion: 0.35, event: 0.35, angle: 0.15}
+    # What each phase wants to see (0..1).
+    fit:
+      SETUP: {WIDE: 1.0, TWO: 0.7, CROWD: 0.5, GRIP: 0.3, FACE_BLACK: 0.4, FACE_TAN: 0.4}
+      STRUGGLE: {TWO: 1.0, GRIP: 0.5, FACE_BLACK: 0.85, FACE_TAN: 0.85, WIDE: 0.4, CROWD: 0.4}
+      SURGE: {GRIP: 1.0, TWO: 0.9, FACE_BLACK: 0.6, FACE_TAN: 0.6, WIDE: 0.3, CROWD: 0.1}
+      NEAR_PIN: {GRIP: 1.0, TWO: 0.9, FACE_BLACK: 0.7, FACE_TAN: 0.7, WIDE: 0.3, CROWD: 0.1}
+      PIN: {TWO: 1.0, GRIP: 1.0, WIDE: 0.6, FACE_BLACK: 0.3, FACE_TAN: 0.3, CROWD: 0.2}
+      REACTION: {FACE_BLACK: 0.9, FACE_TAN: 0.9, CROWD: 0.9, WIDE: 0.8, TWO: 0.7, GRIP: 0.2}
+    # A fresh event boosts the shot that shows it (WHO = the athlete in the event).
+    event_boost:
+      LOOK_UP: {FACE_WHO: 1.0, TWO: 0.3}
+      GESTURE: {FACE_WHO: 0.6, TWO: 0.7, WIDE: 0.5}
+      CHEER: {CROWD: 1.0, WIDE: 0.5}
+      SURGE: {GRIP: 0.8, TWO: 0.6}
+      NEAR_PIN: {GRIP: 0.9, TWO: 0.7}
+      PIN: {GRIP: 1.0, TWO: 1.0, WIDE: 0.5}
+      REACTION: {FACE_WHO: 1.0, CROWD: 0.8, WIDE: 0.5}
+    # Some views are simply better for some shots (C and E look over black's shoulder at tan's face).
+    view_bonus:
+      behind_black: {FACE_TAN: 0.3, CROWD: 0.2}
+      behind_tan: {FACE_BLACK: 0.3}
+      side: {TWO: 0.3, FACE_BLACK: 0.1, FACE_TAN: 0.1} # the side two-shot is arm wrestling's main shot (both faces + the grip)
+  director:
+    min_shot_s: {default: 2.0, SETUP: 3.0, STRUGGLE: 2.5, SURGE: 1.2, NEAR_PIN: 1.2, PIN: 1.0, REACTION: 1.5}
+    max_shot_s: {default: 5.0, STRUGGLE: 5.0, SURGE: 3.0, NEAR_PIN: 3.0, PIN: 3.0, REACTION: 3.5} # then the shot starts losing value
+    cutaway_max_s: {CROWD: 2.0, FACE_BLACK: 2.5, FACE_TAN: 2.5, GRIP: 3.0} # cut-aways get old sooner: back to the main shot
+    stale_per_s: 0.12 # value lost per second beyond max_shot_s ...
+    stale_floor: 0.4 # ... down to at most this share
+    repeat_window_s: 5.0 # a shot that was on air this recently ...
+    repeat_factor: 0.8 # ... is worth this share
+    margin: 0.12 # the challenger must be this much better (12%) ...
+    hysteresis_s: 0.5 # ... for this long in a row
+    event_cut_boost: 0.5 # a challenger boosted this much by a fresh event may cut early ...
+    event_min_shot_s: 1.0 # ... once the shot on air has lasted this long
+    min_clarity: 0.35 # shots below this clarity are never put on air
+    lost_grace_s: 1.2 # the shot on air disappears (face turned away for a moment): keep it this long before leaving
+    min_zoom_change: 0.4 # same camera: the new framing must be >= 40% bigger/smaller, else it is a jump cut
+    cut_phases: [SURGE, NEAR_PIN, PIN] # hard cuts here; calm phases use a short dissolve
+    line_choice_s: 3.0 # the 180-degree line: after this long, keep the better side of the table for good
+  editor:
+    anticipate_s: 0.6 # the editor knows an event is coming: its shot is boosted from this long before
+    missing_penalty: 60 # value per look of a shot that can't be shown at that moment (face turned away...)
+    stale_factor: 0.6 # beyond max_shot_s a shot's value counts only this share
+    cut_cost: 8 # every cut costs this much value (fewer, better-placed cuts)
+    gap_factor: 0.85 # a shot bridged over a short gap (face turned away) keeps this share of its value per look
+    longest_shot_s: 8.0
+  render:
+    width: 1920
+    height: 1080
+    crf: 20
+    threads: 4
+    audio_cam: E # the one phone whose sound is used for the whole program (sound never jumps between phones)
+    follow_ease: 0.08 # the operator closes this share of the gap to its target every frame (smooth following)
+    move_ease: 0.18 # ... while reframing (MOVE)
+    max_px_per_frame: 14 # ... but never faster than this (1080p pixels per frame)
+    move_s: 0.8
+    dissolve_s: 0.4
+    push_in: 0.08 # at full tension the framing is 8% tighter (slow push-in)
+    caption_s: 2.0 # a moment's caption stays this long
+  judge:
+    interval_s: 2.0 # one Gemini look every 2 s (~16 per run, cached)
+    first_s: 0.5
+    sheet_width: 1920 # the 5-camera contact sheet sent (3x2 tiles of 640x360)
+    assumed_latency_s: 4.0
+    fresh_s: 3.0 # an answer older than this (from its moment) is no longer used
+    best_camera_bonus: 0.15 # the camera Gemini would put on air gets this much extra value (fit units)
+  evaluate:
+    face_min_share: 0.06 # a face counts as "on screen" if it is at least this share of the picture height
+    emotion_min: 0.3 # ... and shows this much strain or joy
+    moment_window_s: 1.5 # a moment is "caught" if its content is on screen within this long after it starts
+    crowd_face_share: 0.035 # an audience face is readable if at least this share of the picture height
+    grip_share: 0.15 # the grip is readable if the forearm is at least this share of the picture height
