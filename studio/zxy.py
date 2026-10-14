@@ -51,6 +51,7 @@ ZXY_FILES = {("2013-11-03", 1): "2013-11-03_tromso_stromsgodset_first.csv",
              ("2013-11-07", 1): "2013-11-07_tromso_anji_first.csv",
              ("2013-11-07", 2): "2013-11-07_tromso_anji_second.csv"}
 ZXY_HZ = 20
+HALF_X_M = 52.5
 PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 
 
@@ -311,6 +312,164 @@ def ball_track(sightings: list[tuple[float, tuple[float, float]]], cfg: dict):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# 4b. Teams from shirt colours (twin v2)
+# ---------------------------------------------------------------------------------------------------------------
+def learn_kits(src, z: Zxy, al: dict, shirts: dict, cfg: dict) -> dict[str, list[float]]:
+    """The 3 shirt colours (Lab) of this match, learned from the data itself:
+      home  = detections standing on a ZXY home player (the sensors say who they are),
+      ref   = what the detector calls "referee",
+      away  = the other detections that look like neither.
+    Then a few rounds of "every shirt to its nearest colour, colours = the middle of their shirts" (k-means)."""
+    fx, fy, off, corr = al["flip_x"], al["flip_y"], al["offset_s"], al["correction"]
+    samples, first = [], {"home": [], "ref": [], "other": []}
+    for frame in range(0, src.frames, src.step * cfg["kit_sample_every"]):
+        _, xy, _ = z.at(frame / src.fps + off)
+        home = apply_correction(to_centre(xy, fx, fy), corr) if len(xy) else np.zeros((0, 2))
+        for c, det in src.detection_at(frame).items():
+            labs = shirts.get(str(frame), {}).get(str(c), [])
+            spots = to_pitch(np.linalg.inv(src.H[c]), feet(det))
+            for p, spot, lab in zip(det.get("players", []), spots, labs):
+                if lab is None or abs(spot[0]) > 55 or abs(spot[1]) > 37:
+                    continue
+                samples.append(lab)
+                if p.get("cls") == "referee":
+                    first["ref"].append(lab)
+                elif len(home) and np.linalg.norm(home - spot, axis=1).min() < 1.0:
+                    first["home"].append(lab)
+                else:
+                    first["other"].append(lab)
+    centres = {k: np.median(np.array(first[k]), axis=0) for k in ("home", "ref")}
+    other = np.array(first["other"])
+    far = (np.linalg.norm(other - centres["home"], axis=1) > 25) & (np.linalg.norm(other - centres["ref"], axis=1) > 25)
+    centres["away"] = np.median(other[far], axis=0)
+    data = np.array(samples)
+    names = ["home", "away", "ref"]
+    for _ in range(5):
+        c = np.array([centres[n] for n in names])
+        nearest = np.linalg.norm(data[:, None] - c[None], axis=2).argmin(axis=1)
+        for k, n in enumerate(names):
+            if (nearest == k).sum() > 20:
+                centres[n] = np.median(data[nearest == k], axis=0)
+    return {n: [round(float(v), 1) for v in centres[n]] for n in names}
+
+
+def kit_of(lab, kits: dict, max_distance: float) -> str | None:
+    if lab is None:
+        return None
+    d = {n: float(np.linalg.norm(np.array(lab) - c)) for n, c in kits.items()}
+    best = min(d, key=d.get)
+    return best if d[best] <= max_distance else None
+
+
+def labelled_people(src, frame: int, merge_m: float, shirts: dict, kits: dict, cfg: dict) -> list[tuple]:
+    """(x, y, label) of everyone the 3 cameras detected, label = home / away / ref (shirt colour; the detector's
+    "referee" class counts as ref) or None; the same person seen by two cameras = one point (majority label)."""
+    per_cam = {}
+    for c, det in src.detection_at(frame).items():
+        labs = shirts.get(str(frame), {}).get(str(c), [])
+        spots = to_pitch(np.linalg.inv(src.H[c]), feet(det))
+        pts = []
+        for k, ((x, y), p) in enumerate(zip(spots, det.get("players", []))):
+            if abs(x) > 55 or abs(y) > 37:
+                continue
+            label = "ref" if p.get("cls") == "referee" else kit_of(labs[k] if k < len(labs) else None, kits,
+                                                                       cfg["kit_max_distance"])
+            if label == "ref" and p.get("cls") != "referee":
+                label = "home"          # a bright white shirt the detector doesn't call a referee: a Tromsø shirt
+            pts.append((x, y, label))
+        per_cam[c] = pts
+    return list(merge_points(per_cam, merge_m))
+
+
+def polish_tracks(rows: list[dict], group: str, cfg: dict) -> None:
+    """Away players / referees from the detector, cleaned for drawing (offline, within the broadcast delay):
+    tracks shorter than `min_track_s` are dropped (one-moment ghosts), the rest are smoothed over +-`smooth_s`."""
+    step = rows[1]["t"] - rows[0]["t"]
+    tracks: dict[int, list[tuple[int, float, float]]] = {}
+    for k, row in enumerate(rows):
+        for p in row[group]:
+            tracks.setdefault(p["id"], []).append((k, p["x"], p["y"]))
+    half = max(1, round(cfg["smooth_s"] / step))
+    new: dict[int, list[dict]] = {}
+    for tid, pts in tracks.items():
+        if len(pts) * step < cfg["min_track_s"]:
+            continue
+        a = np.array(pts, np.float64)
+        for j in range(len(a)):
+            near = a[max(0, j - half):j + half + 1]
+            near = near[np.abs(near[:, 0] - a[j, 0]) <= half]          # only rows that are really close in time
+            new.setdefault(int(a[j, 0]), []).append({"id": tid, "x": round(float(near[:, 1].mean()), 2),
+                                                     "y": round(float(near[:, 2].mean()), 2)})
+    life = {tid: len(pts) for tid, pts in tracks.items()}
+    for k, row in enumerate(rows):
+        kept: list[dict] = []
+        # the same player tracked twice (two dots close together): keep the longer-lived track
+        for p in sorted(new.get(k, []), key=lambda p: -life[p["id"]]):
+            if all(math.hypot(p["x"] - q["x"], p["y"] - q["y"]) > cfg["duplicate_m"] for q in kept):
+                kept.append(p)
+        row[group] = kept
+
+
+def drop_hotspots(sightings: list, cfg: dict) -> tuple[list, list]:
+    """Places where the detector sees "the ball" far more often than a real ball ever stays: painted spots (on
+    Alfheim the right penalty spot was 13% of all sightings). Cells of 1 m with more than `hotspot_min` sightings
+    over the half; every sighting within `hotspot_radius_m` of one is dropped."""
+    from collections import Counter
+
+    cells = Counter((round(p[0]), round(p[1])) for _, p in sightings)
+    hot = [c for c, n in cells.items() if n >= cfg["hotspot_min"]]
+    # one centre per cluster of hot cells
+    centres: list[list[float]] = []
+    for c in sorted(hot, key=lambda c: -cells[c]):
+        if all(math.dist(c, q) > 2.5 for q in centres):
+            centres.append([float(c[0]), float(c[1])])
+    keep = [(t, p) for t, p in sightings if all(math.dist(p, c) > cfg["hotspot_radius_m"] for c in centres)]
+    return keep, centres
+
+
+def carry_ball(rows: list[dict], cfg: dict) -> int:
+    """Ball gaps longer than the straight-line fill: the ball stays at the feet of the player nearest its last
+    sighting (dribbling), and in the last `carry_blend_s` glides to where it is seen next. Returns rows filled."""
+    step = rows[1]["t"] - rows[0]["t"]
+    filled, k, n = 0, 0, len(rows)
+    while k < n:
+        if rows[k]["ball"] is not None:
+            k += 1
+            continue
+        a = k
+        while k < n and rows[k]["ball"] is None:
+            k += 1
+        if a == 0 or (k - a) * step > cfg["carry_max_s"]:
+            continue
+        nxt = rows[k]["ball"] if k < n else None
+        carrier = None
+        # who had it: the player nearest its last sighting, else the one nearest its next sighting (the receiver)
+        for ref_row, spot in ((rows[a - 1], rows[a - 1]["ball"]), (rows[k] if k < n else None, nxt)):
+            if ref_row is None or spot is None:
+                continue
+            players = [(p["x"], p["y"], g, p["id"]) for g in ("home", "away") for p in ref_row[g]]
+            if players:
+                best = min(players, key=lambda p: math.hypot(p[0] - spot["x"], p[1] - spot["y"]))
+                if math.hypot(best[0] - spot["x"], best[1] - spot["y"]) <= cfg["carrier_m"]:
+                    carrier = best
+                    break
+        if carrier is None:
+            continue                                    # nobody near it at either end: leave the gap
+        blend = round(cfg["carry_blend_s"] / step)
+        for j in range(a, k):
+            me = next((p for p in rows[j][carrier[2]] if p["id"] == carrier[3]), None)
+            if me is None:
+                break
+            x, y = me["x"], me["y"]
+            if nxt is not None and k - j <= blend:
+                s = 1 - (k - j) / blend
+                x, y = x + (nxt["x"] - x) * s, y + (nxt["y"] - y) * s
+            rows[j]["ball"] = {"x": round(x, 2), "y": round(y, 2), "z": 0.0}
+            filled += 1
+    return filled
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # 5. Build twin.jsonl
 # ---------------------------------------------------------------------------------------------------------------
 def build(match: str, half: int) -> Path:
@@ -327,6 +486,13 @@ def build(match: str, half: int) -> Path:
     al = align(src, z, nominal, cfg)
     print(f"  alignment: {al}", flush=True)
     fx, fy, off, corr = al["flip_x"], al["flip_y"], al["offset_s"], al["correction"]
+    shirts_file = folder / "shirts.json"
+    shirts = json.loads(shirts_file.read_text()) if shirts_file.exists() else None
+    kits = learn_kits(src, z, al, shirts, cfg) if shirts else None
+    if kits:
+        print(f"  shirt colours (Lab): {kits}", flush=True)
+    else:
+        print("  no shirts.json (run --shirts first): away players = everyone the sensors don't explain", flush=True)
 
     # the pitch map over the whole half (the director's ball), and the away/referee trackers
     pipe = src.pipeline(NoStory())
@@ -350,13 +516,26 @@ def build(match: str, half: int) -> Path:
                 td = upcoming / src.fps
                 pipe.detections(upcoming, td, detector=src.detection_at(upcoming))
                 st = pipe.pitch_state
-                if st.ball is not None and st.ball_status == "seen":
-                    sightings.append((td, st.ball))
                 tags, xy, _ = z.at(td + off)
                 home = apply_correction(to_centre(xy, fx, fy), corr) if len(xy) else np.zeros((0, 2))
+                if st.ball is not None and st.ball_status == "seen":
+                    # a "ball" far from every player is a painted spot or a spare ball (the right penalty spot came
+                    # back as the ball again and again); a real ball in flight is only far for a moment, and the
+                    # straight-line fill covers that moment
+                    everyone = [*map(tuple, home), *(p[:2] for p in pipe.pitch_state.players)]
+                    if everyone and min(math.dist(st.ball, q) for q in everyone) <= cfg["ball_max_from_player_m"]:
+                        sightings.append((td, st.ball))
                 rest, ref = [], []
-                for x, y, cls in claim(home, detected_people(src, upcoming, merge_m), cfg["home_match_m"]):
-                    (ref if cls == "referee" else rest).append((x, y))
+                if kits:
+                    for x, y, label in claim(home, labelled_people(src, upcoming, merge_m, shirts, kits, cfg),
+                                             cfg["home_match_m"]):
+                        if label == "ref":
+                            ref.append((x, y))
+                        elif label == "away" or (label is None and abs(x) > HALF_X_M - 16.5 and abs(y) < 20.16):
+                            rest.append((x, y))     # an away player, or a keeper (other colours) in a box
+                else:
+                    for x, y, cls in claim(home, detected_people(src, upcoming, merge_m), cfg["home_match_m"]):
+                        (ref if cls == "referee" else rest).append((x, y))
                 away.update(td, rest)
                 refs.update(td, ref)
                 upcoming = next(next_det, None)
@@ -371,19 +550,79 @@ def build(match: str, half: int) -> Path:
             f.write(json.dumps(row) + "\n")
             rows += 1
             k += 1
-    # second pass: the ball (gaps need the sighting AFTER them: allowed within the broadcast delay, see above)
+    # second pass (needs what comes AFTER a moment: allowed within the broadcast delay, see above): the ball,
+    # cleaned away / referee tracks, the ball carried by a player through longer gaps
+    sightings, hotspots = drop_hotspots(sightings, cfg)
+    print(f"  ball: {len(sightings)} sightings kept; fixed false 'balls' (painted spots) at {hotspots}", flush=True)
     ball = ball_track(sightings, cfg)
-    lines = out.read_text().splitlines()
+    all_rows = [json.loads(line) for line in out.read_text().splitlines()]
+    for row in all_rows:
+        b = ball(row["t"])
+        row["ball"] = None if b is None else {"x": round(b[0], 2), "y": round(b[1], 2), "z": b[2]}
+    for group in ("away", "ref"):
+        polish_tracks(all_rows, group, cfg)
+    carried = carry_ball(all_rows, cfg)
     with open(out, "w") as f:
-        for line in lines:
-            row = json.loads(line)
-            b = ball(row["t"])
-            row["ball"] = None if b is None else {"x": round(b[0], 2), "y": round(b[1], 2), "z": b[2]}
+        for row in all_rows:
             f.write(json.dumps(row, separators=(",", ":")) + "\n")
     info = {**al, "rows": rows, "step_s": step_s, "zxy_tags": z.tags, "ball_sightings": len(sightings),
+            "kits_lab": kits, "ball_carried_rows": carried,
+            "away_per_row_median": float(np.median([len(r["away"]) for r in all_rows])),
             "ball_rows": sum(1 for line in out.read_text().splitlines() if '"ball":{' in line)}
     (folder / "twin.json").write_text(json.dumps(info, indent=1))
     print(f"  wrote {out.relative_to(ROOT)}: {rows} rows; ball in {info['ball_rows']} of them", flush=True)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 5b. Shirt colours of every detected player (which team is a detection?)
+# ---------------------------------------------------------------------------------------------------------------
+def measure_shirts(match: str, half: int) -> Path:
+    """The shirt colour (Lab) of every detected player at every detection step, from the 3 camera videos: decided
+    once, saved to shirts.json ({frame: {cam: [[L, a, b] or null per player box]}}), so the twin can tell the
+    away team (Strømsgodset, dark blue) from home players seen twice and from the referees (yellow).
+    Reads every frame (decoding can't skip) but measures only the detection frames (~20 min for a half)."""
+    import threading
+
+    from studio.sources import get_source
+    from studio.teams import TeamClassifier, shirt_colour
+
+    src = get_source(f"alfheim-{match}-H{half}")
+    out = src.folder / "shirts.json"
+    result: dict[str, dict] = {}
+
+    def one(cam: int, store: dict) -> None:
+        cap = cv2.VideoCapture(str(src.video(cam)))
+        frames = src.dets[cam]["frames"]
+        i = 0
+        while True:
+            if i % src.step == 0 and str(i) in frames:
+                ok, image = cap.read()
+                if not ok:
+                    break
+                labs = []
+                for p in frames[str(i)].get("players", []):
+                    c = shirt_colour(image, p["box"])
+                    labs.append(None if c is None else [round(float(v), 1) for v in TeamClassifier._lab(c)])
+                store[str(i)] = labs
+            elif not cap.grab():
+                break
+            i += 1
+        cap.release()
+
+    stores = {c: {} for c in src.cam_ids}
+    threads = [threading.Thread(target=one, args=(c, stores[c])) for c in src.cam_ids]
+    t0 = __import__("time").time()
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    for c, store in stores.items():
+        for frame, labs in store.items():
+            result.setdefault(frame, {})[str(c)] = labs
+    out.write_text(json.dumps(result, separators=(",", ":")))
+    print(f"  shirts: {len(result)} detection frames in {(__import__('time').time() - t0) / 60:.1f} min -> "
+          f"{out.relative_to(ROOT)}", flush=True)
     return out
 
 
@@ -450,7 +689,11 @@ def main() -> None:
     ap.add_argument("--match", default=alf["match"])
     ap.add_argument("--half", type=int, default=alf["half"])
     ap.add_argument("--check-only", action="store_true", help="only the check pictures (twin.jsonl exists)")
+    ap.add_argument("--shirts", action="store_true", help="measure every detected player's shirt colour (~20 min)")
     args = ap.parse_args()
+    if args.shirts:
+        measure_shirts(args.match, args.half)
+        return
     if not args.check_only:
         build(args.match, args.half)
     check(args.match, args.half)

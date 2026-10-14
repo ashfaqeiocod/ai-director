@@ -1,4 +1,4 @@
-# MVP 5 — Virtual Broadcast (a full TV camera plan, rendered in 3D) — plan
+# Virtual Broadcast (MVP 4, part 2: a full TV camera plan, rendered in 3D) — plan
 
 Status: PLAN, waiting for the user's go (written 2026-10-14 after MVP 4's first test runs).
 

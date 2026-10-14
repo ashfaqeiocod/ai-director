@@ -690,6 +690,57 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 ## Next action (MVP 4)
 Step 7: the 5-minute run (23:40) and the full half are running; report airtime / cuts / shot lengths / ball in MAIN.
 
+# Virtual Broadcast — every camera virtual (MVP 4 part 2)
+Plan: `docs/VIRTUAL_BROADCAST_PLAN.md`. User feedback on MVP 4 (2026-10-14): the real clip's framing and cuts are what
+we want, but the real pictures are not clear (no sharp zoom) and the 3D cameras don't match them -> render EVERY
+camera in 3D from the twin, like a real TV crew; a short clip first, then the full half; make the preview fast.
+Decisions (the plan's recommendations, user: "do all you recommended"): Three.js upgraded (not Unreal), offline
+1080p rendering + a smooth GPU preview, a 5-minute clip first (23:40), the T2 camera set first.
+
+## Status
+| Step | Status | Notes |
+|---|---|---|
+| VB1. Camera plan + camera paths | done | studio/broadcast.py: T2 set (MAIN, TIGHT, WIDE, HIGH 18 L/R, GOAL L/R), fluid-head motion |
+| VB2. 3D renderer page | in progress | dashboard/static/broadcast.html: rigged animated players in kits, stadium, shadows; preview ~60 fps |
+| VB3. Twin v2 (data) | done | teams from shirt colours, cleaned tracks, painted-spot balls removed, ball carried through gaps |
+| VB4. Operators v2 | in progress | MAIN framing with lead room + nearest players, TIGHT on the ball carrier (sticky) |
+| VB5. Intensity (crowd sound, replays, graphics) | not started | |
+| VB6. 1080p render: 5 min, then the half | not started | |
+
+## Key results
+- Preview: the browser renders the program + 7-camera wall from precomputed camera paths at ~60 fps (MVP 4's live
+  page: ~6 fps, Python drew every picture). Camera paths + director for 60 s compute in < 1 s.
+- Twin v2 (23:40-28:40): away players per moment median 12 (was 21: home players seen twice + ghosts), referees ~3
+  (was 4-7), ball median 1.4 m from the nearest player (was 2.3 m; > 8 m away 3.7%, was 11%), ball present 70% of the
+  clip (the rest mostly stoppages). Home players still 1.58 m median from the detector.
+- The detector's "ball" was a PAINTED SPOT in 21% of all sightings: right penalty spot 698x, left 446x (a real ball
+  stays in a 1 m cell at most ~15x per half). Learned as hotspots and dropped in the twin.
+
+## Decisions made
+- Every camera is a level-horizon pinhole at a TV position (config studio.broadcast.cameras): MAIN / TIGHT at
+  halfway 18 m high in the main stand, HIGH 18 at the box edges, GOAL L/R 21 m behind the goals 12 m high, WIDE.
+  Heads have acceleration limits too (PTZHead `max_accel_deg_s2`, `max_zoom_accel`; 0 = MVP 4 behaviour): moves
+  ease in and out like a fluid head.
+- Python decides (studio.broadcast: map from the twin -> operators -> DirectorV2 tv mode) and writes
+  broadcast.json (pan / tilt / FOV per camera per frame + who is on air); the page only renders: the preview is smooth
+  and the 1080p render is frame-exact. Any engine could render the same paths later.
+- Players: the three.js example figure "Xbot" (Mixamo rig: idle / walk / run, blended by speed), kept in data/models/
+  (not in git), kits painted by body zone in a shader (Tromsø red-white stripes, Strømsgodset blue, keepers, referee).
+- Twin v2: shirt colour (Lab) of every detection (`studio.zxy --shirts`, 2.6 min); the 3 kit colours learned from
+  the data (home = detections on a sensor position, referee = detector class, away = the rest), k-means refined;
+  only the detector's "referee" class makes a referee (bright white Tromsø shirts matched the referee colour).
+  Away / referee tracks: shorter than 1.5 s dropped, smoothed +-0.5 s, duplicates within 1.5 m merged. Ball: sightings
+  > 7 m from every player or on a hotspot dropped; gaps <= 2 s straight line, <= 12 s carried by the player who had
+  (or next gets) it.
+
+## Problems / open issues
+- The live MVP 3/4 pitch map still takes painted spots for the ball (false attacks in MVP 4); the hotspot idea could
+  be learned live in the first minutes.
+- Up close the players are mannequins (free rigged figure); real-looking footballers need better models.
+
+## Next action
+VB4 operators tuning + VB5 intensity, then render the 5-minute clip (VB6).
+
 # Arm MVP — AI director on real footage (a 5-phone arm-wrestling match)
 Last updated: 2026-10-14. Spec: `docs/ARM_MVP_SPEC.md`. Testing: `TESTING_ARM.md`. Code: `arm/`.
 (Not called "MVP 5": `docs/MVP5_VIRTUAL_BROADCAST_PLAN.md` is a separate football plan.)

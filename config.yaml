@@ -540,6 +540,18 @@ studio:
       lofted_min_m: 20 # ... and longer than this was in the air: give it a parabola
       lofted_max_m: 15 # highest a lofted ball goes in the drawing
       check_minutes: [1, 10, 23.7, 35, 45]
+      # twin v2 (Virtual Broadcast): teams from shirt colours, cleaned tracks, the ball carried through gaps
+      kit_sample_every: 10 # learn the 3 shirt colours from every 10th detection step
+      kit_max_distance: 40 # a shirt further than this (Lab) from all 3 colours = unknown
+      min_track_s: 1.5 # away / referee tracks shorter than this are dropped (ghosts)
+      smooth_s: 0.5 # ... the rest are smoothed over +- this
+      duplicate_m: 1.5 # two away dots closer than this at the same moment = one player tracked twice: the shorter track goes
+      carry_max_s: 12 # a ball gap up to this long: the ball stays with the player who had it (or who gets it next)
+      carrier_m: 5 # ... if a player was this close to it when it was last (or next) seen
+      carry_blend_s: 0.5 # ... and glides to its next sighting over this long
+      ball_max_from_player_m: 7 # a ball sighting further than this from every player is not the match ball (painted spots, spare balls)
+      hotspot_min: 30 # a 1 m cell where the "ball" is seen this often in a half is a fixed mark (a real ball: <= ~15)
+      hotspot_radius_m: 1.6 # sightings this close to such a mark are dropped
     director: # Step 5: DirectorV2 in "tv" mode (studio.director._tv), merged over studio.director for stadium runs
       mode: tv
       start_cam: 1
@@ -577,6 +589,70 @@ studio:
       program_width: 1280
       jpeg_quality: 70
       state_hz: 10 # state messages per second over the WebSocket
+  broadcast: # Virtual Broadcast (docs/VIRTUAL_BROADCAST_PLAN.md): every camera virtual, rendered in 3D from the twin
+    outputs_dir: "outputs/broadcast" # runs: outputs/broadcast/<segment>/<run_id>/
+    fps: 30
+    # The T2 camera plan of a real TV crew (main stand = near side, y > 34). position [x, y, height] m; look_at = the
+    # starting aim; field width = metres across the picture where it looks; motion like a fluid head (speed AND
+    # acceleration limits: moves ease in and out). Changing the camera plan = changing this list.
+    cameras:
+      main: { name: "MAIN", kind: ptz, built_from: 3d, position: [0, 58, 18], look_at: [0, 0], field_width_m: 40,
+              min_field_width_m: 18, max_field_width_m: 70, max_pan_deg_s: 25, max_accel_deg_s2: 30,
+              max_zoom_ratio_s: 1.25, max_zoom_accel: 0.4, dead_zone_deg: 0.6, smoothing_s: 0.45 }
+      tight: { name: "TIGHT", kind: ptz, built_from: 3d, position: [4, 58, 18], look_at: [0, 0], field_width_m: 9,
+               min_field_width_m: 4, max_field_width_m: 25, max_pan_deg_s: 40, max_accel_deg_s2: 70,
+               max_zoom_ratio_s: 1.6, max_zoom_accel: 1.0, dead_zone_deg: 0.25, smoothing_s: 0.3 }
+      wide: { name: "WIDE", kind: fixed, built_from: 3d, position: [0, 58, 17.5], look_at: [0, -8], field_width_m: 100 } # under the stand roof, like the gantry
+      high18l: { name: "HIGH 18 L", kind: ptz, built_from: 3d, position: [-36, 56, 15], look_at: [-40, 0], field_width_m: 32,
+                 min_field_width_m: 12, max_field_width_m: 50, max_pan_deg_s: 30, max_accel_deg_s2: 40,
+                 max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.45 }
+      high18r: { name: "HIGH 18 R", kind: ptz, built_from: 3d, position: [36, 56, 15], look_at: [40, 0], field_width_m: 32,
+                 min_field_width_m: 12, max_field_width_m: 50, max_pan_deg_s: 30, max_accel_deg_s2: 40,
+                 max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.45 }
+      goall: { name: "GOAL L", kind: ptz, built_from: 3d, position: [-74, 0, 12], look_at: [-40, 0], field_width_m: 34,
+               min_field_width_m: 14, max_field_width_m: 50, max_pan_deg_s: 25, max_accel_deg_s2: 35,
+               max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.5 }
+      goalr: { name: "GOAL R", kind: ptz, built_from: 3d, position: [74, 0, 12], look_at: [40, 0], field_width_m: 34,
+               min_field_width_m: 14, max_field_width_m: 50, max_pan_deg_s: 25, max_accel_deg_s2: 35,
+               max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.5 }
+    shot_types: { wide_above_m: 50, close_below_m: 20 }
+    warmup_s: 5 # the map and the heads start this long before the clip (a crew is already filming)
+    operators: # studio.broadcast.Operators: framing rules
+      lead_m: 6 # MAIN aims this far ahead of the ball, towards the goal the team on the ball attacks
+      lead_s: 0.5 # ... plus this many seconds of the ball's movement
+      lead_max_m: 8
+      main_players: 5 # MAIN's shot is wide enough for the ball + this many nearest players ...
+      main_margin: 1.25 # ... with this much room around them
+      main_open_m: 32 # MAIN never tighter than this in open play
+      main_attack_m: 30 # at most this wide in an attack in a box
+      main_restart_m: 55 # kick-off / goal kick
+      tight_m: 9 # TIGHT on the player on the ball
+      tight_stoppage_m: 7
+      carrier_m: 3 # a player this close to the ball has it
+      carrier_switch_m: 1.0 # another player must be this much nearer ...
+      carrier_switch_s: 0.5 # ... for this long before TIGHT changes player
+      half_from_m: 5 # HIGH 18 / GOAL cameras work when the ball is past this x on their side
+      high18_m: 28
+      goal_min_m: 18
+      goal_max_m: 45
+      goal_aim_share: 0.25 # GOAL L/R aim at the play, this share of the way towards their goal (0.5 put the net in the middle)
+      idle_m: 40 # resting shot on their box
+    director: # DirectorV2 tv mode (studio.director._tv), same rules as MVP 4 with this camera set's roles
+      mode: tv
+      start_cam: 1
+      min_shot_seconds: 2.5
+      roles: { main: 1, close: 2, wide: 3, boxl: 4, boxr: 5, goall: 6, goalr: 7 } # boxl/boxr = the HIGH 18 cameras
+      attack_min_intensity: 0.45
+      attack_min_players: 2
+      attack_exit_s: 1.0
+      attack_max_s: 6
+      attack_cooldown_s: 10
+      stoppage_lost_s: 4.0
+      close_min_s: 2.5
+      close_max_s: 4.0
+      restart_move_ms: 6
+      restart_max_s: 8
+      settle_deg_s: 10
 
 # ---------------------------------------------------------------------------------------------------------------
 # Arm MVP: AI director on REAL footage — a home-made arm-wrestling match filmed by 5 phones.

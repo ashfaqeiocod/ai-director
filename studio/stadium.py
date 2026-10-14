@@ -68,6 +68,8 @@ class Camera:
     max_field_width_m: float = 120.0
     max_pan_deg_s: float = 0.0                 # motor limits (robotic heads only)
     max_zoom_ratio_s: float = 1.0              # the shot may get at most this many times wider/tighter per second
+    max_accel_deg_s2: float = 0.0              # how fast a turn may speed up / slow down (0 = no limit, MVP 4)
+    max_zoom_accel: float = 0.0                # the same for the zoom, in log(width ratio) per s^2 (0 = no limit)
     dead_zone_deg: float = 0.0
     smoothing_s: float = 0.5                   # how quickly the head closes the gap to its target (time constant)
     source_cam: int | None = None              # built_from "source": which real Alfheim camera
@@ -82,7 +84,7 @@ class Camera:
 
 def make_cameras(cfg: dict, pano: Panorama) -> list[Camera]:
     """The camera list from config.yaml (studio.stadium.cameras); position "rig" = the fitted Alfheim platform."""
-    rig = (float(pano.centre[0]), float(pano.centre[1]), float(-pano.centre[2]))
+    rig = (float(pano.centre[0]), float(pano.centre[1]), float(-pano.centre[2])) if pano is not None else None
     fields = set(Camera.__dataclass_fields__)
     out = []
     for cam_id, c in cfg["cameras"].items():
@@ -181,6 +183,8 @@ class PTZHead:
         self.target_look = cam.look_at_m
         self.target_width = self._clamp(cam.field_width_m)
         self.speed_deg_s = 0.0                     # how fast the head turned in the last step
+        self.velocity = [0.0, 0.0]                 # pan, tilt deg/s (used with an acceleration limit)
+        self.zoom_rate = 0.0                       # log-width per second (used with a zoom acceleration limit)
 
     def _clamp(self, width: float) -> float:
         return min(max(width, self.cam.min_field_width_m), self.cam.max_field_width_m)
@@ -206,10 +210,29 @@ class PTZHead:
         size = math.hypot(*moves)
         if size > limit:                           # the motor's top speed (for the combined move)
             moves = [m * limit / size for m in moves]
+        if cam.max_accel_deg_s2 > 0 and dt > 0:    # a fluid head: speed changes gently (ease in / ease out)
+            gaps = [getattr(target, a) - getattr(self.view, a) for a in ("pan", "tilt")]
+            want = [m / dt for m in moves]
+            # never faster than it can still stop in: v <= sqrt(2 a d)
+            for k in (0, 1):
+                brake = math.sqrt(2 * cam.max_accel_deg_s2 * abs(gaps[k]))
+                want[k] = max(-brake, min(brake, want[k]))
+            change = [w - v for w, v in zip(want, self.velocity)]
+            size = math.hypot(*change)
+            if size > cam.max_accel_deg_s2 * dt:
+                change = [c * cam.max_accel_deg_s2 * dt / size for c in change]
+            self.velocity = [v + c for v, c in zip(self.velocity, change)]
+            moves = [v * dt for v in self.velocity]
         pan, tilt = self.view.pan + moves[0], self.view.tilt + moves[1]
         # zoom works in ratios ("twice as wide"), not metres
         gap = math.log(target.hfov / self.view.hfov)
         zoom = max(-math.log(cam.max_zoom_ratio_s) * dt, min(math.log(cam.max_zoom_ratio_s) * dt, alpha * gap))
+        if cam.max_zoom_accel > 0 and dt > 0:
+            want = zoom / dt
+            brake = math.sqrt(2 * cam.max_zoom_accel * abs(gap))
+            want = max(-brake, min(brake, want))
+            self.zoom_rate += max(-cam.max_zoom_accel * dt, min(cam.max_zoom_accel * dt, want - self.zoom_rate))
+            zoom = self.zoom_rate * dt
         self.view = View(pan, tilt, self.view.hfov * math.exp(zoom))
         self.speed_deg_s = math.hypot(*moves) / dt if dt > 0 else 0.0
         return self.view

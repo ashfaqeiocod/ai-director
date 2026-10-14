@@ -1,0 +1,548 @@
+<!doctype html>
+<!--
+  broadcast.html — Virtual Broadcast (MVP 4 part 2, docs/VIRTUAL_BROADCAST_PLAN.md): a TV production where EVERY
+  camera is virtual, rendered in 3D from the digital twin of the Alfheim match.
+
+  Python (studio.broadcast) decided everything beforehand: where each camera looks and how wide (camera paths, one
+  value per frame and camera), and which camera is on air (the TV director). This page only RENDERS that:
+    PROGRAM        the on-air camera, with TV graphics (scorebug, clock, camera name), drawn into the picture
+    MONITOR WALL   all cameras small, the one on air in red
+    TIMELINE       the clip coloured by the camera on air; click to jump
+  Play = a smooth real-time preview on the GPU (nothing is sent from Python while it plays).
+  Record = frame-exact 1920x1080 program.mp4 (one video frame per 1/30 s of match time, in 2-minute parts that the
+  server joins), into the run's folder.
+
+  The scene: night match under floodlights (shadows), mown pitch with lines, stands with an animated crowd, LED
+  boards, floodlight towers, goals with nets. Players: a rigged figure (three.js example "Xbot", Mixamo animations
+  idle / walk / run blended by speed) painted in each team's kit (Tromsø red-white stripes, Strømsgodset blue,
+  keepers and referee in their own colours). Positions come from the twin: home team = ZXY sensors, away team,
+  referee and ball = our detections (studio.zxy).
+
+  Coordinates: pitch metres (x right, y towards the main stand) -> Three.js (X = x, Y = height, Z = y).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Virtual Broadcast</title>
+  <link rel="stylesheet" href="/studio/studio.css">
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+  </script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: #020617; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    canvas { display: block; }
+    #prog { width: 100%; height: auto; aspect-ratio: 16 / 9; background: #000; border: 2px solid #1e293b; }
+    #wall { width: 100%; height: auto; background: #000; }
+    #timeline { width: 100%; height: 26px; cursor: pointer; }
+    button:disabled, select:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body class="text-slate-200 min-h-screen">
+<div class="p-3 flex flex-col gap-3 max-w-[1800px] mx-auto">
+  <header class="flex flex-wrap items-center gap-3">
+    <h1 class="text-lg font-semibold">Virtual Broadcast <span class="text-slate-500 font-normal">· every camera virtual</span></h1>
+    <select id="runs" class="bg-slate-900 border border-slate-700 rounded px-1 text-sm"></select>
+    <span id="loadstatus" class="text-xs text-slate-400"></span>
+    <span class="flex-1"></span>
+    <a href="/static/stadium.html" class="text-sm text-sky-400 hover:underline">Stadium (MVP 4)</a>
+  </header>
+
+  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3">
+    <div class="xl:col-span-9 flex flex-col gap-2">
+      <canvas id="prog" width="1280" height="720"></canvas>
+      <canvas id="timeline" width="1600" height="26"></canvas>
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        <button id="play" class="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white">Play</button>
+        <select id="speed" class="bg-slate-900 border border-slate-700 rounded px-1">
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+        <span class="mono text-base px-2" id="clock">--:--</span>
+        <span class="mono text-xs text-slate-400" id="fps"></span>
+        <span class="flex-1"></span>
+        <label class="text-xs flex items-center gap-1"><input type="checkbox" id="hq"> high quality preview</label>
+        <button id="rec" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Render program.mp4 (1080p)</button>
+      </div>
+      <div id="recstatus" class="text-xs text-slate-400 mono"></div>
+    </div>
+    <div class="xl:col-span-3 flex flex-col gap-2">
+      <div class="relative"><canvas id="wall" width="640" height="720"></canvas></div>
+      <div class="rounded border border-slate-800 p-2 text-xs text-slate-400 leading-relaxed">
+        <div class="text-sm font-semibold text-slate-200 mb-1" id="state">-</div>
+        <div id="reason" class="mono"></div>
+        <div class="mt-2">Every camera is drawn in 3D from the match data (home team: ZXY sensors; away team, referee,
+          ball: our detector). The director and the camera operators decided beforehand (studio.broadcast); this page
+          renders their decisions.</div>
+        <div class="mt-1" id="credit"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+
+const $ = id => document.getElementById(id);
+const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const q = new URLSearchParams(location.search);
+const S = { B: null, segment: null, run: null, c: 0, playing: false, speed: 1, last: null, chunks: {}, loading: {},
+            recording: false, cheer: 0 };
+
+// ================================================================================================ the twin data
+const CHUNK = 60, STEP = 0.1;
+function loadChunk(k) {
+  if (k < 0 || S.chunks[k] || S.loading[k]) return S.loading[k];
+  S.loading[k] = fetch(`/studio/stadium/twin/${S.segment}?start=${k * CHUNK}&seconds=${CHUNK + 1}`).then(r => r.json())
+    .then(rows => { S.chunks[k] = rows; delete S.loading[k];
+      for (const key of Object.keys(S.chunks)) if (Math.abs(key - k) > 2) delete S.chunks[key]; });
+  return S.loading[k];
+}
+async function ensure(t) {
+  await loadChunk(Math.floor(t / CHUNK));
+  if (t % CHUNK > CHUNK - 15) loadChunk(Math.floor(t / CHUNK) + 1);
+  if (t % CHUNK > CHUNK - 0.3) await loadChunk(Math.floor(t / CHUNK) + 1);
+}
+function row(t) {
+  const k = Math.floor(t / CHUNK), rows = S.chunks[k];
+  if (!rows) return null;
+  return rows[Math.min(rows.length - 1, Math.max(0, Math.floor((t - k * CHUNK) / STEP + 1e-6)))] || null;
+}
+// Everyone at time t, blended between the two twin rows around it.
+function people(t) {
+  const a = row(t), b = row(t + STEP);
+  if (!a) return null;
+  const s = b ? Math.min(1, Math.max(0, (t - a.t) / STEP)) : 0, out = [];
+  for (const team of ['home', 'away', 'ref']) {
+    const next = new Map((b ? b[team] : []).map(p => [p.id, p]));
+    for (const p of a[team]) {
+      const n = next.get(p.id) || p, x = p.x + (n.x - p.x) * s, y = p.y + (n.y - p.y) * s;
+      if (team === 'home' && (Math.abs(x) > 53 || Math.abs(y) > 34.6) && (p.speed ?? 0) < 0.5) continue;  // bench
+      out.push({ key: team + p.id, team, x, y });
+    }
+  }
+  let ball = null;
+  if (a.ball) { const n = (b && b.ball) || a.ball;
+    ball = { x: a.ball.x + (n.x - a.ball.x) * s, y: a.ball.y + (n.y - a.ball.y) * s, z: a.ball.z + (n.z - a.ball.z) * s }; }
+  return { people: out, ball };
+}
+
+// ================================================================================================ the stadium
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x070b16);
+scene.fog = new THREE.Fog(0x070b16, 180, 420);
+scene.add(new THREE.HemisphereLight(0xc9dcff, 0x1d2a14, 0.55));
+const flood = new THREE.DirectionalLight(0xfff6e8, 2.4);          // the floodlights (one casts the shadows)
+flood.position.set(-45, 70, 50); flood.castShadow = true;
+Object.assign(flood.shadow.camera, { left: -70, right: 70, top: 50, bottom: -50, near: 10, far: 200 });
+flood.shadow.mapSize.set(2048, 2048); flood.shadow.bias = -0.0004; flood.shadow.normalBias = 0.03;
+scene.add(flood);
+const flood2 = new THREE.DirectionalLight(0xe8f0ff, 1.1); flood2.position.set(50, 60, -50); scene.add(flood2);
+const flood3 = new THREE.DirectionalLight(0xffffff, 0.6); flood3.position.set(0, 40, 80); scene.add(flood3);
+
+function canvasTexture(w, h, draw, repeat) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...repeat); }
+  return t;
+}
+// Pitch: mown stripes, a little noise (worn grass), crisp white lines. 120 x 80 m so the surroundings are grass too.
+const pitchTex = canvasTexture(4096, 2731, (g, W, H) => {
+  const s = W / 120, P = (x, y) => [(x + 60) * s, (y + 40) * s];
+  g.fillStyle = '#2a6b2c'; g.fillRect(0, 0, W, H);
+  for (let k = 0; k < 18; k++) { g.fillStyle = k % 2 ? '#2f7631' : '#28682a'; g.fillRect(...P(-52.5 + k * 105 / 18, -34), 105 / 18 * s + 1, 68 * s); }
+  for (let k = 0; k < 60000; k++) {                                  // grass noise
+    g.fillStyle = `rgba(${Math.random() < 0.5 ? '255,255,200' : '0,20,0'},${Math.random() * 0.06})`;
+    g.fillRect(Math.random() * W, Math.random() * H, 2 + Math.random() * 6, 2 + Math.random() * 6);
+  }
+  g.strokeStyle = 'rgba(245,248,250,0.92)'; g.lineWidth = 0.12 * s; g.lineCap = 'round';
+  const line = pts => { g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo : g.moveTo).call(g, ...P(x, y))); g.stroke(); };
+  const arc = (x, y, r, a0, a1) => { g.beginPath(); g.arc(...P(x, y), r * s, a0, a1); g.stroke(); };
+  line([[-52.5, -34], [52.5, -34], [52.5, 34], [-52.5, 34], [-52.5, -34]]); line([[0, -34], [0, 34]]);
+  arc(0, 0, 9.15, 0, 2 * Math.PI);
+  for (const d of [-1, 1]) {
+    const gx = d * 52.5;
+    line([[gx, -20.16], [gx - d * 16.5, -20.16], [gx - d * 16.5, 20.16], [gx, 20.16]]);
+    line([[gx, -9.16], [gx - d * 5.5, -9.16], [gx - d * 5.5, 9.16], [gx, 9.16]]);
+    const spot = gx - d * 11, a = Math.acos(5.5 / 9.15);
+    arc(spot, 0, 9.15, d < 0 ? -a : Math.PI - a, d < 0 ? a : Math.PI + a);
+    for (const cy of [-34, 34]) { const a0 = cy < 0 ? (d < 0 ? 0 : Math.PI / 2) : (d < 0 ? -Math.PI / 2 : Math.PI); arc(gx, cy, 1, a0, a0 + Math.PI / 2); }
+    g.fillStyle = '#f5f8fa'; g.beginPath(); g.arc(...P(spot, 0), 0.16 * s, 0, 2 * Math.PI); g.fill();
+  }
+  g.beginPath(); g.arc(...P(0, 0), 0.16 * s, 0, 2 * Math.PI); g.fill();
+});
+const pitch = new THREE.Mesh(new THREE.PlaneGeometry(120, 80), new THREE.MeshStandardMaterial({ map: pitchTex, roughness: 0.95 }));
+pitch.rotation.x = -Math.PI / 2; pitch.receiveShadow = true; scene.add(pitch);
+const apron = new THREE.Mesh(new THREE.PlaneGeometry(260, 200), new THREE.MeshStandardMaterial({ color: 0x1c3a1e, roughness: 1 }));
+apron.rotation.x = -Math.PI / 2; apron.position.y = -0.02; apron.receiveShadow = true; scene.add(apron);
+
+// Goals: posts, crossbar, a net that slopes back.
+function goal(side) {
+  const g = new THREE.Group(), white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+  const post = new THREE.CylinderGeometry(0.06, 0.06, 2.44, 16);
+  for (const z of [-3.66, 3.66]) { const m = new THREE.Mesh(post, white); m.position.set(0, 1.22, z); m.castShadow = true; g.add(m); }
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 7.44, 16), white);
+  bar.rotation.x = Math.PI / 2; bar.position.y = 2.44; bar.castShadow = true; g.add(bar);
+  const pts = [], D = 2.0, BACK = 1.5, st = 0.2;
+  for (let z = -3.66; z <= 3.661; z += st) pts.push(0, 2.44, z, D, BACK, z, D, BACK, z, D, 0, z);
+  for (let y = 0; y <= BACK + 1e-3; y += st) pts.push(D, y, -3.66, D, y, 3.66);
+  for (let x = 0; x <= D + 1e-3; x += st) { const y = 2.44 - (2.44 - BACK) * x / D; pts.push(x, y, -3.66, x, y, 3.66); }
+  for (const z of [-3.66, 3.66]) for (let y = 0; y <= 2.441; y += st) pts.push(0, y, z, D, Math.min(y, BACK), z);
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xe2e8f0, transparent: true, opacity: 0.55 })));
+  g.position.x = side * 52.5; g.scale.x = side; scene.add(g);
+}
+goal(-1); goal(1);
+for (const x of [-52.5, 52.5]) for (const z of [-34, 34]) {                // corner flags
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0xffffff }));
+  pole.position.set(x, 0.75, z); scene.add(pole);
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.3), new THREE.MeshStandardMaterial({ color: 0xf43f5e, side: THREE.DoubleSide }));
+  flag.position.set(x + Math.sign(-x) * 0.2, 1.35, z); scene.add(flag);
+}
+
+// LED advertising boards around the pitch (scrolling text, they glow).
+const ledTex = canvasTexture(2048, 64, (g, W, H) => {
+  const words = ['VIRTUAL STADIUM', 'AI DIRECTOR', 'TROMSØ IL', 'STRØMSGODSET', 'ALFHEIM'];
+  const cols = ['#1d4ed8', '#b91c1c', '#0f766e', '#7c2d12', '#4c1d95'];
+  for (let k = 0; k < 5; k++) { g.fillStyle = cols[k]; g.fillRect(k * W / 5, 0, W / 5, H);
+    g.fillStyle = '#fff'; g.font = 'bold 34px sans-serif'; g.textAlign = 'center'; g.fillText(words[k], k * W / 5 + W / 10, 45); }
+}, [6, 1]);
+const ledMat = new THREE.MeshStandardMaterial({ map: ledTex, emissive: 0xffffff, emissiveMap: ledTex, emissiveIntensity: 0.7 });
+for (const [x, z, w, rot] of [[0, -38, 116, 0], [0, 38, 116, Math.PI], [-58, 0, 78, Math.PI / 2], [58, 0, 78, -Math.PI / 2]]) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, 0.9, 0.12), ledMat); b.position.set(x, 0.45, z); b.rotation.y = rot; scene.add(b);
+}
+
+// Stands: stepped tiers with a roof; the crowd = one instanced mesh (thousands of small figures), bouncing when
+// play is exciting (a shader moves them; cheap).
+const crowdMat = new THREE.MeshLambertMaterial();
+const crowdU = { uTime: { value: 0 }, uCheer: { value: 0 } };
+crowdMat.onBeforeCompile = sh => {
+  Object.assign(sh.uniforms, crowdU);
+  sh.vertexShader = 'uniform float uTime; uniform float uCheer;\n' + sh.vertexShader.replace('#include <begin_vertex>',
+    `#include <begin_vertex>
+     float ph = float(gl_InstanceID) * 1.731;
+     transformed.y += (0.04 + uCheer * 0.35) * abs(sin(uTime * (2.0 + uCheer * 6.0) + ph));`);
+};
+const seats = [];
+function stand(cx, cz, length, rows, rotY, rise = 0.55, depth = 0.85) {
+  const grp = new THREE.Group(), conc = new THREE.MeshStandardMaterial({ color: 0x2b2f3a, roughness: 0.9 });
+  for (let r = 0; r < rows; r++) {
+    const step = new THREE.Mesh(new THREE.BoxGeometry(length, rise, depth), conc);
+    step.position.set(0, r * rise + rise / 2, r * depth); grp.add(step);
+    for (let k = 0; k < length / 0.6; k++) if (Math.random() < 0.85) seats.push({ grp, x: -length / 2 + k * 0.6 + 0.3, y: (r + 1) * rise, z: r * depth });
+  }
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(length + 2, 0.4, rows * depth + 4), new THREE.MeshStandardMaterial({ color: 0x141821 }));
+  roof.position.set(0, rows * rise + 6, rows * depth / 2); grp.add(roof);
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(length, rows * rise + 6, 0.4), conc);
+  wall.position.set(0, (rows * rise + 6) / 2, rows * depth); grp.add(wall);
+  grp.position.set(cx, 0.9, cz); grp.rotation.y = rotY; scene.add(grp);
+}
+stand(0, 42, 120, 22, 0); stand(0, -42, 120, 18, Math.PI); stand(-63, 0, 76, 14, -Math.PI / 2); stand(63, 0, 76, 14, Math.PI / 2);
+{ // the crowd
+  const fan = new THREE.BoxGeometry(0.42, 0.75, 0.32); fan.translate(0, 0.37, 0);
+  const crowd = new THREE.InstancedMesh(fan, crowdMat, seats.length);
+  const m = new THREE.Matrix4(), col = new THREE.Color(), palette = [0xdc2626, 0xf1f5f9, 0xdc2626, 0x1e293b, 0x334155, 0xfbbf24, 0x1d4ed8];
+  seats.forEach((st, k) => { st.grp.updateMatrixWorld(); m.makeTranslation(st.x, st.y, st.z).premultiply(st.grp.matrixWorld);
+    crowd.setMatrixAt(k, m); crowd.setColorAt(k, col.setHex(palette[Math.floor(Math.random() * palette.length)]).multiplyScalar(0.6 + Math.random() * 0.4)); });
+  scene.add(crowd);
+}
+// Floodlight towers in the corners, lamps glowing.
+const glow = canvasTexture(64, 64, (g) => { const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  r.addColorStop(0, 'rgba(255,250,235,1)'); r.addColorStop(0.3, 'rgba(255,245,220,0.5)'); r.addColorStop(1, 'rgba(255,240,200,0)'); g.fillStyle = r; g.fillRect(0, 0, 64, 64); });
+for (const x of [-68, 68]) for (const z of [-50, 54]) {
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.9, 40, 8), new THREE.MeshStandardMaterial({ color: 0x3a3f4b }));
+  mast.position.set(x, 20, z); scene.add(mast);
+  const lamp = new THREE.Mesh(new THREE.BoxGeometry(7, 4, 0.6), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff4dd, emissiveIntensity: 1.5 }));
+  lamp.position.set(x, 41, z); lamp.lookAt(0, 0, 0); scene.add(lamp);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+  spr.position.copy(lamp.position); spr.scale.set(26, 26, 1); scene.add(spr);
+}
+
+// ================================================================================================ players + ball
+// Kits are painted on the figure by where a point is on its body (bind pose, metres): boots, socks, knees, shorts,
+// shirt (with stripes), sleeves, forearms, head, hair.
+const KITS = {
+  home:    { shirt: 0xd71920, shirt2: 0xf4f4f4, shorts: 0xf4f4f4, socks: 0xd71920 },   // Tromsø IL: red-white stripes
+  away:    { shirt: 0x1e3a8a, shirt2: 0x1e3a8a, shorts: 0x1e3a8a, socks: 0x1e3a8a },   // Strømsgodset: blue
+  homegk:  { shirt: 0x16a34a, shirt2: 0x16a34a, shorts: 0x111827, socks: 0x16a34a },
+  awaygk:  { shirt: 0xf97316, shirt2: 0xf97316, shorts: 0xf97316, socks: 0xf97316 },
+  ref:     { shirt: 0xd9f99d, shirt2: 0xd9f99d, shorts: 0x111111, socks: 0x111111 },
+};
+const kitMats = {};
+for (const [name, k] of Object.entries(KITS)) {
+  const m = new THREE.MeshStandardMaterial({ roughness: 0.7 });
+  m.onBeforeCompile = sh => {
+    const u = c => ({ value: new THREE.Color(c) });
+    Object.assign(sh.uniforms, { uShirt: u(k.shirt), uShirt2: u(k.shirt2), uShorts: u(k.shorts), uSocks: u(k.socks),
+      uSkin: u(0xc68a64), uBoots: u(0x111111), uHair: u(0x2b1d14) });
+    sh.vertexShader = 'varying vec3 vKit;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vKit = position;');
+    sh.fragmentShader = 'varying vec3 vKit;\nuniform vec3 uShirt, uShirt2, uShorts, uSocks, uSkin, uBoots, uHair;\n' +
+      sh.fragmentShader.replace('vec4 diffuseColor = vec4( diffuse, opacity );', `
+        float y = vKit.y, ax = abs(vKit.x);
+        vec3 shirt = fract(vKit.x * 5.0) < 0.5 ? uShirt : uShirt2;
+        vec3 c = uSkin;
+        if (y < 0.09) c = uBoots;
+        else if (y < 0.47) c = uSocks;
+        else if (y < 0.56) c = uSkin;
+        else if (y < 0.93) c = uShorts;
+        else if (ax > 0.21 && y > 1.12) c = ax < 0.45 ? shirt : uSkin;
+        else if (y < 1.47) c = shirt;
+        else if (y > 1.71 || (y > 1.6 && vKit.z < -0.02)) c = uHair;
+        vec4 diffuseColor = vec4( c, opacity );`);
+  };
+  kitMats[name] = m;
+}
+let figureSrc = null;            // the loaded glTF (scene + animations)
+const figures = new Map();
+function makeFigure(kit) {
+  const root = SkeletonUtils.clone(figureSrc.scene);
+  root.traverse(o => { if (o.isMesh) { o.material = kitMats[kit]; o.castShadow = true; o.frustumCulled = false; } });
+  const mixer = new THREE.AnimationMixer(root);
+  const act = {};
+  for (const name of ['idle', 'walk', 'run']) {
+    act[name] = mixer.clipAction(figureSrc.animations.find(a => a.name === name));
+    act[name].play(); act[name].setEffectiveWeight(name === 'idle' ? 1 : 0);
+    act[name].time = Math.random() * act[name].getClip().duration;
+  }
+  scene.add(root);
+  return { root, mixer, act, kit, heading: 0, last: null, speed: 0 };
+}
+// The keeper of each team = its player nearest its own goal (checked now and then, so it doesn't flicker).
+const keepers = { home: null, away: null };
+let keeperCheck = -1e9;
+function pickKeepers(t, list) {
+  if (t - keeperCheck < 2 && keeperCheck <= t) return;
+  keeperCheck = t;
+  const dir = S.B.home_attacks;               // home attacks +x -> defends x = -52.5
+  for (const team of ['home', 'away']) {
+    const goalX = (team === 'home' ? -dir : dir) * 52.5;
+    const mine = list.filter(p => p.team === team);
+    if (!mine.length) continue;
+    const best = mine.reduce((a, b) => (Math.abs(a.x - goalX) < Math.abs(b.x - goalX) ? a : b));
+    if (Math.abs(best.x - goalX) < 20) keepers[team] = best.key;
+  }
+}
+const ball = new THREE.Mesh(new THREE.SphereGeometry(0.12, 20, 14), new THREE.MeshStandardMaterial({
+  map: canvasTexture(128, 64, (g) => { g.fillStyle = '#f8fafc'; g.fillRect(0, 0, 128, 64); g.fillStyle = '#111';
+    for (let k = 0; k < 10; k++) { g.beginPath(); g.arc((k * 37) % 128, (k * 23) % 64, 6, 0, 7); g.fill(); } }), roughness: 0.5 }));
+ball.castShadow = true; scene.add(ball);
+
+function placeEveryone(t, dt) {
+  const now = people(t);
+  const seen = new Set();
+  if (now) {
+    pickKeepers(t, now.people);
+    for (const p of now.people) {
+      seen.add(p.key);
+      const kit = p.team === 'ref' ? 'ref' : keepers[p.team] === p.key ? p.team + 'gk' : p.team;
+      let f = figures.get(p.key);
+      if (!f) { f = makeFigure(kit); figures.set(p.key, f); }
+      if (f.kit !== kit) { f.root.traverse(o => { if (o.isMesh) o.material = kitMats[kit]; }); f.kit = kit; }
+      let speed = 0;
+      if (f.last && dt > 0) {
+        const vx = (p.x - f.last.x) / dt, vy = (p.y - f.last.y) / dt;
+        speed = Math.hypot(vx, vy);
+        if (speed > 0.5) { let d = Math.atan2(vx, vy) - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 5); }
+        else if (now.ball) { let d = Math.atan2(now.ball.x - p.x, now.ball.y - p.y) - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 2); }
+      }
+      f.speed += (Math.min(speed, 9) - f.speed) * Math.min(1, dt * 4);   // smoothed: no twitching between animations
+      f.last = { x: p.x, y: p.y };
+      f.root.position.set(p.x, 0, p.y); f.root.rotation.y = f.heading;
+      const s = f.speed;
+      const wIdle = Math.max(0, 1 - s / 1.0), wRun = Math.min(1, Math.max(0, (s - 2.5) / 2)), wWalk = Math.max(0, 1 - wIdle - wRun);
+      f.act.idle.setEffectiveWeight(wIdle); f.act.walk.setEffectiveWeight(wWalk); f.act.run.setEffectiveWeight(wRun);
+      f.act.walk.setEffectiveTimeScale(Math.min(1.6, Math.max(0.6, s / 1.4)));
+      f.act.run.setEffectiveTimeScale(Math.min(1.5, Math.max(0.8, s / 5)));
+      f.mixer.update(dt);
+    }
+  }
+  for (const [k, f] of figures) if (!seen.has(k)) { scene.remove(f.root); figures.delete(k); }
+  const b = now && now.ball;
+  ball.visible = !!b;
+  if (b) { ball.position.set(b.x, (b.z || 0) + 0.12, b.y); ball.rotation.x += dt * 6; }
+}
+
+// ================================================================================================ cameras
+const ROLE_COLOURS = ['#e11d48', '#f59e0b', '#64748b', '#0ea5e9', '#06b6d4', '#22c55e', '#84cc16'];
+const cams = [];
+function cameraAt(k, frame, frac) {
+  const cam = S.B.cameras[k], path = S.B.paths[cam.id], n = path.pan.length - 1;
+  const i = Math.min(n, frame), j = Math.min(n, frame + 1);
+  const lerp = a => a[i] + (a[j] - a[i]) * frac;
+  const pan = lerp(path.pan) * Math.PI / 180, tilt = lerp(path.tilt) * Math.PI / 180, hfov = lerp(path.hfov) * Math.PI / 180;
+  const c = cams[k], [x, y, h] = cam.position_m;
+  c.position.set(x, h, y);
+  c.lookAt(x + Math.sin(pan) * Math.cos(tilt), h - Math.sin(tilt), y - Math.cos(pan) * Math.cos(tilt));
+  c.fov = 2 * Math.atan(Math.tan(hfov / 2) / c.aspect) * 180 / Math.PI;
+  c.updateProjectionMatrix();
+  return c;
+}
+
+// ================================================================================================ rendering
+const gl = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.05;
+gl.shadowMap.enabled = true; gl.shadowMap.type = THREE.PCFSoftShadowMap;
+gl.setPixelRatio(1);
+pitchTex.anisotropy = gl.capabilities.getMaxAnisotropy();
+const wallGl = new THREE.WebGLRenderer({ canvas: $('wall'), antialias: false });
+wallGl.toneMapping = THREE.ACESFilmicToneMapping; wallGl.setPixelRatio(1); wallGl.setSize(640, 720, false);
+const prog = $('prog'), pg = prog.getContext('2d');
+function setSize(w, h) { gl.setSize(w, h, false); prog.width = w; prog.height = h; for (const c of cams) { c.aspect = w / h; } }
+
+// TV graphics, drawn into the picture so the recording has them.
+function graphics(t, k) {
+  const W = prog.width, s = W / 1920, B = S.B;
+  pg.save(); pg.scale(s, s);
+  pg.fillStyle = 'rgba(15,23,42,0.92)'; pg.fillRect(60, 50, 330, 54);
+  pg.fillStyle = '#b91c1c'; pg.fillRect(390, 50, 120, 54);
+  pg.fillStyle = '#fff'; pg.font = 'bold 30px sans-serif'; pg.textBaseline = 'middle';
+  pg.fillText('TIL', 80, 78); pg.fillText('0 - 0', 175, 78); pg.fillText('SIF', 310, 78);
+  pg.fillText(fmt(t), 408, 78);
+  pg.fillStyle = 'rgba(220,38,38,0.95)'; pg.fillRect(1780, 50, 80, 36); pg.fillStyle = '#fff'; pg.font = 'bold 22px sans-serif'; pg.fillText('LIVE', 1793, 69);
+  pg.font = '20px sans-serif'; pg.fillStyle = 'rgba(255,255,255,0.75)'; pg.fillText(B.cameras[k].name, 60, 1030);
+  pg.font = '16px sans-serif'; pg.fillStyle = 'rgba(255,255,255,0.55)'; pg.textAlign = 'right'; pg.fillText(B.credit, 1860, 1030);
+  pg.restore();
+}
+function renderFrame(c, dt, wall) {
+  const fps = S.B.fps, frame = Math.floor(c * fps + 1e-6), frac = c * fps - frame, t = S.B.start_s + c;
+  placeEveryone(t, dt);
+  const f = Math.min(frame, S.B.on_air.length - 1), k = S.B.on_air[f];
+  // the crowd gets louder in attacks and stoppages near goal (the director's state)
+  const target = S.B.states[f] === 'ATTACK' ? 1 : S.B.states[f] === 'STOPPAGE' ? 0.4 : 0.1;
+  S.cheer += (target - S.cheer) * Math.min(1, dt * 2); crowdU.uCheer.value = S.cheer; crowdU.uTime.value = t;
+  ledTex.offset.x = (t * 0.02) % 1;
+  gl.render(scene, cameraAt(k, frame, frac));
+  pg.drawImage(gl.domElement, 0, 0, prog.width, prog.height);
+  graphics(t, k);
+  if (wall) renderWall(frame, frac, k);
+  return { t, k, f };
+}
+function renderWall(frame, frac, live) {
+  const n = S.B.cameras.length, cols = 2, w = 320, h = 180;
+  wallGl.setScissorTest(true);
+  for (let k = 0; k < n; k++) {
+    const x = (k % cols) * w, y = 720 - (Math.floor(k / cols) + 1) * h;
+    const c = cameraAt(k, frame, frac), saved = c.aspect; c.aspect = 16 / 9; c.updateProjectionMatrix();
+    wallGl.setViewport(x, y, w, h); wallGl.setScissor(x, y, w, h);
+    wallGl.render(scene, c); c.aspect = saved;
+  }
+  wallGl.setScissorTest(false);
+  // labels + the on-air border are drawn by drawWallLabels (2D overlay canvas below)
+  drawWallLabels(live);
+}
+const wallLabels = document.createElement('canvas'); wallLabels.width = 640; wallLabels.height = 720;
+wallLabels.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+$('wall').insertAdjacentElement('afterend', wallLabels);
+function drawWallLabels(live) {
+  const g = wallLabels.getContext('2d'); g.clearRect(0, 0, 640, 720);
+  S.B.cameras.forEach((cam, k) => {
+    const x = (k % 2) * 320, y = Math.floor(k / 2) * 180;
+    g.strokeStyle = k === live ? '#ef4444' : '#1e293b'; g.lineWidth = k === live ? 5 : 2; g.strokeRect(x + 1, y + 1, 318, 178);
+    g.fillStyle = 'rgba(2,6,23,0.75)'; g.fillRect(x + 6, y + 6, 8 + cam.name.length * 8, 20);
+    g.fillStyle = '#fff'; g.font = 'bold 13px sans-serif'; g.fillText(cam.name, x + 10, y + 21);
+  });
+}
+
+// timeline: the clip coloured by the camera on air
+function drawTimeline() {
+  const tl = $('timeline'), g = tl.getContext('2d'), n = S.B.on_air.length, W = tl.width;
+  for (let x = 0; x < W; x++) { const k = S.B.on_air[Math.floor(x / W * n)]; g.fillStyle = ROLE_COLOURS[k % ROLE_COLOURS.length]; g.fillRect(x, 0, 1, 26); }
+  g.fillStyle = '#fff'; g.fillRect(Math.floor(S.c / S.B.seconds * W), 0, 2, 26);
+}
+
+// ================================================================================================ playback + recording
+let fpsCount = 0, fpsSince = performance.now(), wallTick = 0;
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (!S.B || S.recording) return;
+  const dt = S.last === null ? 0 : Math.min(0.1, (now - S.last) / 1000); S.last = now;
+  if (S.playing) S.c = Math.min(S.B.seconds - 1 / S.B.fps, S.c + dt * S.speed);
+  ensure(S.B.start_s + S.c);
+  if (!row(S.B.start_s + S.c)) return;
+  const r = renderFrame(S.c, S.playing ? dt * S.speed : 0, (wallTick++ % 3) === 0);
+  $('clock').textContent = fmt(r.t);
+  $('state').textContent = `${S.B.states[r.f]} · on air: ${S.B.cameras[r.k].name}`;
+  const cut = [...S.B.cuts].reverse().find(x => x.frame <= r.f);
+  $('reason').textContent = cut ? `last cut ${fmt(S.B.start_s + cut.frame / S.B.fps)}: ${cut.reason}` : '';
+  drawTimeline();
+  fpsCount++; if (now - fpsSince > 1000) { $('fps').textContent = `${fpsCount} fps`; fpsCount = 0; fpsSince = now; }
+}
+const PART_S = 120;
+async function record() {
+  S.recording = true; S.playing = false; $('play').textContent = 'Play'; $('rec').disabled = true;
+  setSize(1920, 1080);
+  flood.shadow.mapSize.set(4096, 4096); flood.shadow.map?.dispose(); flood.shadow.map = null;   // sharper shadows for the video
+  const fps = S.B.fps, total = S.B.frames, parts = Math.ceil(total / (PART_S * fps));
+  try {
+    for (let part = 0; part < parts; part++) {
+      const a = part * PART_S * fps, b = Math.min(total, a + PART_S * fps);
+      const stream = prog.captureStream(0), track = stream.getVideoTracks()[0];
+      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 }), chunks = [];
+      rec.ondataavailable = e => e.data.size && chunks.push(e.data); rec.start(1000);
+      await new Promise(r => setTimeout(r, 300));
+      for (let k = a; k < b; k++) {
+        const c = k / fps;
+        await ensure(S.B.start_s + c); await ensure(S.B.start_s + c + STEP);
+        renderFrame(c, k === a && part === 0 ? 0 : 1 / fps, false);
+        track.requestFrame();
+        await new Promise(r => requestAnimationFrame(r));
+        if (k % fps === 0) $('recstatus').textContent = `rendering ${fmt(S.B.start_s + c)} (${Math.round(100 * k / total)}%)`;
+      }
+      await new Promise(r => setTimeout(r, 300));
+      const blob = await new Promise(r => { rec.onstop = () => r(new Blob(chunks, { type: 'video/webm' })); rec.stop(); });
+      $('recstatus').textContent = `uploading part ${part + 1}/${parts} (${(blob.size / 1e6).toFixed(0)} MB)…`;
+      const qs = new URLSearchParams({ cam: 'program', start: S.B.start_s + a / fps, seconds: (b - a) / fps, run: S.run, part, area: 'broadcast' });
+      const res = await fetch(`/studio/stadium/upload/${S.segment}?${qs}`, { method: 'POST', body: blob });
+      if (!res.ok) throw new Error((await res.json()).detail);
+    }
+    const res = await fetch(`/studio/stadium/join/${S.segment}?cam=program&run=${S.run}&area=broadcast`, { method: 'POST' });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.detail);
+    $('recstatus').textContent = `saved ${out.file} (${out.parts} parts)`;
+    document.title = 'RENDERED';
+  } catch (e) { $('recstatus').textContent = 'render failed: ' + e.message; document.title = 'FAILED'; }
+  setSize(...previewSize()); S.recording = false; $('rec').disabled = false; S.last = null;
+}
+function previewSize() { return $('hq').checked ? [1920, 1080] : [1280, 720]; }
+
+// ================================================================================================ start
+async function openRun(segment, run) {
+  $('loadstatus').textContent = 'loading…';
+  S.segment = segment; S.run = run; S.chunks = {}; S.loading = {};
+  S.B = await (await fetch(`/studio/broadcast/run/${segment}/${run}`)).json();
+  cams.length = 0;
+  for (const c of S.B.cameras) cams.push(new THREE.PerspectiveCamera(40, 16 / 9, 0.3, 600));
+  setSize(...previewSize());
+  for (const f of figures.values()) scene.remove(f.root);
+  figures.clear();
+  S.c = q.get('c') ? Number(q.get('c')) : 0; S.last = null;
+  await ensure(S.B.start_s + S.c);
+  $('credit').textContent = S.B.credit;
+  $('loadstatus').textContent = `${fmt(S.B.start_s)} +${S.B.seconds}s · ${S.B.cuts.length} cuts`;
+}
+async function main() {
+  figureSrc = await new GLTFLoader().loadAsync('/studio/broadcast/model/Xbot.glb');
+  const runs = await (await fetch('/studio/broadcast/runs')).json();
+  for (const r of runs) $('runs').add(new Option(`${r.segment} · ${fmt(r.start_s)} +${r.seconds}s · ${r.run}${r.rendered ? ' · rendered' : ''}`, `${r.segment}|${r.run}`));
+  const want = q.get('run') ? `${q.get('segment') || 'alfheim-2013-11-03-H1'}|${q.get('run')}` : $('runs').value;
+  if (!want) { $('loadstatus').textContent = 'no runs yet: venv/bin/python -m studio.broadcast'; return; }
+  $('runs').value = want;
+  await openRun(...want.split('|'));
+  $('runs').onchange = e => openRun(...e.target.value.split('|'));
+  $('play').onclick = () => { S.playing = !S.playing; $('play').textContent = S.playing ? 'Pause' : 'Play'; S.last = null; };
+  $('speed').onchange = e => { S.speed = Number(e.target.value); };
+  $('hq').onchange = () => setSize(...previewSize());
+  $('timeline').onclick = e => { const r = e.target.getBoundingClientRect(); S.c = (e.clientX - r.left) / r.width * S.B.seconds; S.last = null; };
+  $('rec').onclick = record;
+  requestAnimationFrame(tick);
+  if (q.get('play')) $('play').onclick();
+  if (q.get('render')) record();
+}
+main();
+</script>
+</body>
+</html>

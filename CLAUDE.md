@@ -19,6 +19,8 @@
   MVP 4). Simulates a T2 camera setup on the Alfheim half (real panorama cameras + 3D behind-goal cameras, robotic
   MAIN/CLOSE steered by the director). Code in `studio/` and the dashboard; `src/` and `story/` defaults unchanged.
   Progress: "MVP 4" section of `PROGRESS.md`.
+  **Part 2, Virtual Broadcast: CURRENT** — every camera rendered in 3D from the twin (`docs/VIRTUAL_BROADCAST_PLAN.md`,
+  `studio/broadcast.py`, `dashboard/static/broadcast.html`); progress: "Virtual Broadcast" section of `PROGRESS.md`.
 - **Arm MVP (real footage, arm wrestling): BUILT** (labels + votes pending). Spec: `docs/ARM_MVP_SPEC.md`. A home-made
   arm-wrestling match filmed by 5 phones (`data/arm/raw/`, real colleagues: never commit, never upload except the
   capped Gemini stills: hard cap 200 requests, counted in `data/arm/cache/gemini_calls.json`). Code in `arm/` (+ the

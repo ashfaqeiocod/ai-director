@@ -658,7 +658,7 @@ def stadium_twin(segment: str, start: float = 0.0, seconds: float = 60.0) -> lis
 
 @router.post("/stadium/upload/{segment}")
 async def stadium_upload(segment: str, request: Request, cam: str, start: float, seconds: float,
-                         run: str | None = None, part: int | None = None) -> dict:
+                         run: str | None = None, part: int | None = None, area: str = "stadium") -> dict:
     """A 3D camera's recording (WebM from the page's MediaRecorder, one video frame per 1/fps of match time)
     -> cam_<cam>.mp4 in outputs/stadium/<segment>/<run> (default run: 3d-<start>-<seconds>s).
     part: a long recording comes in parts (the browser keeps a recording in memory): cam_<cam>_part<NNN>.mp4,
@@ -667,11 +667,11 @@ async def stadium_upload(segment: str, request: Request, cam: str, start: float,
 
     from src.common import ffmpeg_exe
 
-    if not cam.isalnum() or (run and (".." in run or "/" in run)):
+    if not cam.isalnum() or (run and (".." in run or "/" in run)) or area not in ("stadium", "broadcast"):
         raise HTTPException(400, "bad name")
     folder = _stadium_folder(segment)
     fps = json.loads((folder / "meta.json").read_text())["fps"]
-    out = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / (run or f"3d-{start:g}-{seconds:g}s")
+    out = ROOT / load_config()["studio"][area]["outputs_dir"] / segment / (run or f"3d-{start:g}-{seconds:g}s")
     out.mkdir(parents=True, exist_ok=True)
     name = f"cam_{cam}" if part is None else f"cam_{cam}_part{part:03d}"
     webm = out / f"{name}.webm"
@@ -697,15 +697,15 @@ async def stadium_upload(segment: str, request: Request, cam: str, start: float,
 
 
 @router.post("/stadium/join/{segment}")
-def stadium_join(segment: str, cam: str, run: str) -> dict:
+def stadium_join(segment: str, cam: str, run: str, area: str = "stadium") -> dict:
     """cam_<cam>_part000.mp4, part001 ... -> cam_<cam>.mp4 (no re-encoding), then the parts are deleted."""
     import subprocess
 
     from src.common import ffmpeg_exe
 
-    if not cam.isalnum() or ".." in run or "/" in run:
+    if not cam.isalnum() or ".." in run or "/" in run or area not in ("stadium", "broadcast"):
         raise HTTPException(400, "bad name")
-    out = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / run
+    out = ROOT / load_config()["studio"][area]["outputs_dir"] / segment / run
     parts = sorted(out.glob(f"cam_{cam}_part*.mp4"))
     if not parts:
         raise HTTPException(404, "no parts")
@@ -746,3 +746,47 @@ def stadium_live_start(body: dict) -> dict:
         live_ctl.live = StadiumLive(src, live_ctl.publish, start_s=start_s)
         live_ctl.live.start()
     return live_ctl.status()
+
+
+
+# ---------------------------------------------------------------- Virtual Broadcast (MVP 4 part 2)
+# dashboard/static/broadcast.html renders EVERY camera in 3D from the twin, following the camera paths and director
+# decisions of studio.broadcast (outputs/broadcast/<segment>/<run>/broadcast.json).
+def _broadcast_dir(segment: str, run: str) -> Path:
+    if ".." in segment + run or "/" in segment + run:
+        raise HTTPException(404, "run not found")
+    folder = ROOT / load_config()["studio"]["broadcast"]["outputs_dir"] / segment / run
+    if not (folder / "broadcast.json").exists():
+        raise HTTPException(404, "run not found")
+    return folder
+
+
+@router.get("/broadcast", response_class=HTMLResponse)
+def broadcast_page() -> str:
+    return (STATIC / "broadcast.html").read_text()
+
+
+@router.get("/broadcast/runs")
+def broadcast_runs() -> list[dict]:
+    """Newest first: segment, run id, start, length, and whether a rendered program.mp4 exists."""
+    root = ROOT / load_config()["studio"]["broadcast"]["outputs_dir"]
+    out = []
+    for path in sorted(root.glob("*/*/summary.json"), key=lambda p: p.parent.name, reverse=True):
+        info = json.loads(path.read_text())
+        out.append({"segment": path.parent.parent.name, "run": path.parent.name, "start_s": info["start_s"],
+                    "seconds": info["seconds"], "rendered": (path.parent / "program.mp4").exists()})
+    return out
+
+
+@router.get("/broadcast/run/{segment}/{run}")
+def broadcast_run(segment: str, run: str) -> FileResponse:
+    return FileResponse(_broadcast_dir(segment, run) / "broadcast.json", media_type="application/json")
+
+
+@router.get("/broadcast/model/{name}")
+def broadcast_model(name: str) -> FileResponse:
+    """3D models kept in data/models/ (downloaded, not in git): the rigged player figure."""
+    path = ROOT / "data" / "models" / name
+    if "/" in name or ".." in name or not path.exists():
+        raise HTTPException(404, "no such model (see TESTING_MVP4.md: download data/models/Xbot.glb)")
+    return FileResponse(path, media_type="model/gltf-binary")
