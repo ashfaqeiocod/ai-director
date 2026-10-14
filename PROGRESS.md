@@ -708,7 +708,7 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 | VB3. Twin v2 (data) | done | teams from shirt colours, cleaned tracks, painted-spot balls removed, ball carried through gaps |
 | VB4. Operators v2 | done | MAIN framing with lead room + nearest players, TIGHT on the ball carrier (sticky), gantry positions |
 | VB5. Intensity (crowd sound, replays, graphics) | done | slow-motion replays with a wipe, crowd sound that follows the play, TV graphics |
-| VB6. 1080p render: 5 min, then the half | in progress | 5 min done (9000/9000 frames, 2.6 min to render); the half is rendering |
+| VB6. 1080p render: 5 min, then the half | done | 5 min (2.6 min to render) and the whole half (84,780/84,780 frames, 23 min) |
 
 ## Key results
 - Preview: the browser renders the program + 7-camera wall from precomputed camera paths at ~60 fps (MVP 4's live
@@ -720,6 +720,10 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
   9000 of 9000 frames, crowd sound; rendered in 2.6 min (headless Chrome, ~2x real time). Airtime MAIN 73.0%,
   GOAL L 7.9%, TIGHT 7.0%, HIGH 18 L 5.9%, HIGH 18 R 3.0%, GOAL R 1.7%, WIDE 1.6%; 33 cuts, average shot 8.8 s,
   shots < 2.5 s: 0; 2 slow-motion replays; no camera faster than its fluid-head limit.
+- Whole half (outputs/broadcast/alfheim-2013-11-03-H1/20261014-210714/program.mp4, 2.2 GB): 1920x1080, 30 fps,
+  84,780 of 84,780 frames, 47:06, crowd sound; rendered in 23.1 min in 10 segments of 5 min (no retries needed).
+  Airtime MAIN 74.3%, TIGHT 7.1%, HIGH 18 L 5.9%, GOAL L 4.9%, WIDE 3.9%, GOAL R 2.2%,
+  HIGH 18 R 1.8%; 289 cuts, average shot 9.74 s, shots < 2.5 s: 0; 19 replays.
 - The detector's "ball" was a PAINTED SPOT in 21% of all sightings: right penalty spot 698x, left 446x (a real ball
   stays in a 1 m cell at most ~15x per half). Learned as hotspots and dropped in the twin.
 
@@ -733,6 +737,10 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
   and the 1080p render is frame-exact. Any engine could render the same paths later.
 - Players: the three.js example figure "Xbot" (Mixamo rig: idle / walk / run, blended by speed), kept in data/models/
   (not in git), kits painted by body zone in a shader (Tromsø red-white stripes, Strømsgodset blue, keepers, referee).
+- Long renders go in 5-minute segments, each in a fresh headless tab (one tab rendering the whole half crashed
+  after ~20 min on the 8 GB Mac); a dead or stalled tab (90 s without new video) is retried; segments start with
+  1 s of unrecorded warm-up so the joins don't show (picture change across a join = normal frame-to-frame change),
+  then are joined without re-encoding.
 - Rendering: frame-exact through WebCodecs (the browser's hardware H.264 encoder; the page waits when the encoder
   is busy, so no frame is ever dropped) -> the server appends the stream and wraps it at exactly 30 fps (ffmpeg
   setts). MediaRecorder at 1080p dropped 23% of the frames. 16 Mbit/s for clips, 6 Mbit/s for a half (disk: ~7 GB
@@ -751,12 +759,13 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
   (or next gets) it.
 
 ## Problems / open issues
+- Disk: the Mac has ~3 GB free after the half (program.mp4 is 2.2 GB). A second full half needs space freed first.
 - The live MVP 3/4 pitch map still takes painted spots for the ball (false attacks in MVP 4); the hotspot idea could
   be learned live in the first minutes.
 - Up close the players are mannequins (free rigged figure); real-looking footballers need better models.
 
 ## Next action
-Finish the full-half render; then possible next steps: better player models (real-looking footballers), a live
+Watch both programs with the user. Possible next steps: better player models (real-looking footballers), a live
 director run that streams decisions to the page, crowd chants/real stadium audio.
 
 # Arm MVP — AI director on real footage (a 5-phone arm-wrestling match)
