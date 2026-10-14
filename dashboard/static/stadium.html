@@ -1,0 +1,675 @@
+<!doctype html>
+<!--
+  stadium.html — MVP 4 "Virtual Stadium": the playground of the simulated T2 camera set (docs/MVP4_STADIUM_PLAN.md).
+
+  LIVE (Go live): studio.stadium_live plays the Alfheim half at real speed. The robotic MAIN / CLOSE cameras are aimed
+  by their "operators", the TV director cuts between all 7 cameras. Pictures of the 5 real-pixel cameras + the
+  program arrive as MJPEG (<img>, /studio/live/stream/<name>); the state (clock, on air, every camera's view, the
+  pitch map) ~10x per second plus every cut / camera move over the WebSocket /studio/live/ws.
+
+  3D: Alfheim has no cameras behind the goals, so the page DRAWS them: a Three.js stadium with every player and the
+  ball placed from the "digital twin" (studio.zxy: home team from the ZXY sensors, away team + referees + ball from
+  our detections, 10 rows per second). GOAL L / GOAL R are drawn at the live loop's time (or the page's own clock
+  when not live). When a 3D camera is on air, the program box shows it.
+
+  What is on screen:
+    program        the broadcast: scorebug (teams, score, match clock), camera name, LIVE badge, credit
+    monitor wall   all 7 cameras, the one on air in red (like a control room's monitors)
+    pitch map      every camera's position and view cone (robotic ones move), the ball and players
+    log            cuts (with the director's reason) and robotic-camera moves
+    director view  a free 3D view (drag / scroll), or seen from any camera; Record makes cam_goall/goalr.mp4
+  Record: renders the goal cameras frame by frame (one video frame per 1/30 s of MATCH time, so the result is in
+  sync whatever the computer's speed) with MediaRecorder; the server turns each WebM into an mp4 (ffmpeg).
+
+  Coordinates: pitch metres (x right, y towards the near touchline) -> Three.js (X = x, Y = height, Z = y).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Virtual Stadium</title>
+  <link rel="stylesheet" href="/studio/studio.css">
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: #020617; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .tile { position: relative; border: 2px solid #1e293b; background: #000; aspect-ratio: 16 / 9; overflow: hidden; }
+    .tile.live { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+    .tile canvas, .tile img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .tile .label { position: absolute; left: 6px; top: 4px; font-size: 12px; font-weight: 600; color: #fff;
+      background: rgba(2, 6, 23, .7); padding: 1px 6px; border-radius: 4px; }
+    .tile .sub { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #cbd5e1;
+      background: rgba(2, 6, 23, .7); padding: 0 5px; border-radius: 4px; }
+    .tile .off { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 12px; color: #475569; }
+    .bug { position: absolute; left: 3%; top: 5%; display: flex; font-weight: 700; font-size: clamp(11px, 1.4vw, 18px); }
+    .bug .teams { background: rgba(15, 23, 42, .92); color: #fff; padding: .2em .7em; }
+    .bug .clock { background: #b91c1c; color: #fff; padding: .2em .6em; }
+    .chipf.on { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    .scroll::-webkit-scrollbar { width: 6px; } .scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    button:disabled, input:disabled, select:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body class="text-slate-200 min-h-screen">
+<div class="p-3 flex flex-col gap-3 max-w-[1800px] mx-auto">
+  <header class="flex flex-wrap items-center gap-3">
+    <h1 class="text-lg font-semibold">Virtual Stadium <span class="text-slate-500 font-normal">· T2 camera set, Alfheim</span></h1>
+    <span id="teams" class="text-sm text-slate-400"></span>
+    <span class="flex-1"></span>
+    <a href="/studio" class="text-sm text-sky-400 hover:underline">Studio</a>
+  </header>
+
+  <!-- controls: live run + the page's own clock (used when not live) -->
+  <div class="flex flex-wrap items-center gap-2 text-sm">
+    <span class="font-semibold text-slate-400">LIVE</span>
+    <label class="flex items-center gap-1">from <input id="live-from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
+    <button id="golive" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Go live</button>
+    <button id="stop" class="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700">Stop</button>
+    <span id="livestatus" class="text-xs text-slate-400 mono min-w-[260px]">not live</span>
+    <span class="w-px h-5 bg-slate-700 mx-1"></span>
+    <span class="font-semibold text-slate-400">3D CLOCK</span>
+    <button id="play" class="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white">Play</button>
+    <label class="flex items-center gap-1">from <input id="from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
+    <button id="go" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Go</button>
+    <select id="speed" class="bg-slate-900 border border-slate-700 rounded px-1">
+      <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+    <span class="mono text-base px-2" id="clock">--:--.-</span>
+    <input id="slider" type="range" min="0" max="2826" step="0.1" value="1420" class="flex-1 min-w-[160px]">
+    <span id="status" class="text-xs text-slate-400"></span>
+  </div>
+
+  <!-- program + monitor wall -->
+  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3">
+    <div class="xl:col-span-7 flex flex-col gap-1">
+      <div class="tile" id="program">
+        <div class="off" id="prog-off">PROGRAM · not live (press Go live)</div>
+        <img id="prog-img" alt="">
+        <canvas id="prog-3d" width="1280" height="720" style="position:absolute;inset:0;display:none"></canvas>
+        <div class="bug"><span class="teams" id="bug-teams">TIL 0-0 SIF</span><span class="clock mono" id="bug-clock">00:00</span></div>
+        <span class="label" style="left:auto;right:6px;background:#dc2626">LIVE</span>
+        <span class="sub" id="prog-cam" style="left:6px;right:auto"></span>
+        <span class="sub" id="prog-credit"></span>
+      </div>
+      <div class="text-xs text-slate-400 mono truncate" id="reason">&nbsp;</div>
+    </div>
+    <div class="xl:col-span-5 grid grid-cols-2 gap-2 content-start" id="wall"></div>
+  </div>
+
+  <!-- pitch map, log, director view -->
+  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3">
+    <div class="xl:col-span-4 rounded border border-slate-800 p-2">
+      <div class="text-sm font-semibold mb-1">Pitch map · cameras and their views</div>
+      <svg id="map" viewBox="-68 -44 136 96" class="w-full bg-slate-950"></svg>
+      <div class="text-xs text-slate-500 mt-1">red = on air · pink = robotic (MAIN, CLOSE) · blue = fixed · white dot = ball</div>
+    </div>
+    <div class="xl:col-span-3 rounded border border-slate-800 p-2 flex flex-col">
+      <div class="flex items-center gap-1 text-sm mb-1"><span class="font-semibold flex-1">Log</span>
+        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="cut">cuts</button>
+        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="ptz">camera moves</button>
+        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="info">info</button></div>
+      <div id="log" class="scroll overflow-y-auto text-xs mono flex-1 max-h-[360px] min-h-[200px]"></div>
+    </div>
+    <div class="xl:col-span-5 flex flex-col gap-2">
+      <div class="tile"><canvas id="cv-free"></canvas>
+        <span class="label">DIRECTOR · drag to turn, scroll to zoom ·
+          <select id="viewpick" class="bg-slate-900 border border-slate-700 rounded text-xs"><option value="">free</option></select></span></div>
+      <div class="rounded border border-slate-800 p-2 text-sm">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold">Record the 3D cameras</span>
+          <label>from <input id="rec-from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
+          <label>for <input id="rec-secs" value="60" class="mono w-12 bg-slate-900 border border-slate-700 rounded px-1"> s</label>
+          <label>run <input id="rec-run" placeholder="(new folder)" class="mono w-40 bg-slate-900 border border-slate-700 rounded px-1"></label>
+          <button id="rec" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Record</button>
+        </div>
+        <div id="rec-status" class="text-xs text-slate-400 mt-1 mono"></div>
+        <div class="text-xs text-slate-500 mt-1 leading-relaxed">
+          <span class="inline-block w-3 h-3 align-middle rounded-sm" style="background:#f8fafc;border:2px solid #dc2626"></span> home (ZXY sensors)
+          <span class="inline-block w-3 h-3 align-middle rounded-sm ml-2" style="background:#1e3a8a"></span> away (detections)
+          <span class="inline-block w-3 h-3 align-middle rounded-sm ml-2" style="background:#d9f99d"></span> referees ·
+          The behind-goal views are drawn from data, so they look like a video game; away players come from the detector
+          (less smooth than sensors); the ball has no real height (long fast balls get a made-up arc). CLOSE and zoomed MAIN
+          are soft: the sources are 1280x960. <span id="twininfo" class="mono"></span></div>
+      </div>
+    </div>
+  </div>
+  <footer id="credit" class="text-xs text-slate-500"></footer>
+</div>
+
+<script>
+// ------------------------------------------------------------------------------------------------ setup + state
+const SEGMENT = new URLSearchParams(location.search).get('segment') || 'alfheim-2013-11-03-H1';
+const FPS = 30;
+const S = { setup: null, chunks: {}, loading: {}, t: 1420, playing: false, speed: 1, wall: 0, startT: 0,
+            recording: false, live: null, liveAt: 0, logFilter: { cut: true, ptz: true, info: true } };
+const $ = id => document.getElementById(id);
+const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+const parseTime = s => { const p = s.split(':').map(Number); return p.length === 2 ? p[0] * 60 + p[1] : p[0]; };
+
+// ------------------------------------------------------------------------------------------------ the twin data
+// Rows (one per 0.1 s) come in 60-second chunks; the next chunk is fetched before it is needed.
+const CHUNK = 60, STEP = 0.1;
+function chunkOf(t) { return Math.floor(t / CHUNK); }
+async function loadChunk(k) {
+  if (k < 0 || S.chunks[k] || S.loading[k]) return S.loading[k];
+  S.loading[k] = fetch(`/studio/stadium/twin/${SEGMENT}?start=${k * CHUNK}&seconds=${CHUNK + 1}`)
+    .then(r => r.json()).then(rows => { S.chunks[k] = rows; delete S.loading[k];
+      // keep memory small: forget chunks far from now
+      for (const key of Object.keys(S.chunks)) if (Math.abs(key - k) > 3) delete S.chunks[key]; });
+  return S.loading[k];
+}
+function row(t) {
+  const k = chunkOf(t), rows = S.chunks[k];
+  if (!rows) return null;
+  return rows[Math.min(rows.length - 1, Math.max(0, Math.round((t - k * CHUNK) / STEP)))] || null;
+}
+async function ensure(t) {                     // make sure rows around t are loaded (used by the recorder)
+  await loadChunk(chunkOf(t));
+  if (t - chunkOf(t) * CHUNK > CHUNK - 15) loadChunk(chunkOf(t) + 1);
+}
+
+// Everyone's position at time t: straight-line blend between the two rows around t.
+function people(t) {
+  const a = row(Math.floor(t / STEP) * STEP + 1e-6), b = row(Math.floor(t / STEP) * STEP + STEP + 1e-6);
+  if (!a) return null;
+  const s = b ? (t - a.t) / STEP : 0, out = [];
+  for (const team of ['home', 'away', 'ref']) {
+    const next = new Map((b ? b[team] : []).map(p => [p.id, p]));
+    for (const p of a[team]) {
+      const q = next.get(p.id) || p;
+      const x = p.x + (q.x - p.x) * s, y = p.y + (q.y - p.y) * s;
+      // home tags outside the pitch that stand still are the substitutes on the bench: not drawn
+      if (team === 'home' && (Math.abs(x) > 53 || Math.abs(y) > 34.6) && (p.speed ?? 0) < 0.5) continue;
+      out.push({ key: team + p.id, team, x, y, speed: p.speed });
+    }
+  }
+  let ball = null;
+  if (a.ball) {
+    const q = (b && b.ball) || a.ball;
+    ball = { x: a.ball.x + (q.x - a.ball.x) * s, y: a.ball.y + (q.y - a.ball.y) * s, z: a.ball.z + (q.z - a.ball.z) * s };
+  }
+  return { people: out, ball };
+}
+
+// ------------------------------------------------------------------------------------------------ the 3D scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070d);           // a night match
+scene.fog = new THREE.Fog(0x05070d, 160, 320);
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2a12, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 0.55);  // the floodlights, roughly
+sun.position.set(-30, 60, 40);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+
+// Pitch: one big canvas texture (mowing stripes + white lines), 120 x 80 m so the lines' surroundings are grass.
+function pitchTexture() {
+  const W = 4096, H = Math.round(4096 * 80 / 120), s = W / 120, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  for (let k = 0; k < 20; k++) {                           // mowing stripes across the length
+    g.fillStyle = k % 2 ? '#2f7d32' : '#357f36';
+    g.fillRect(k * W / 20, 0, W / 20 + 1, H);
+  }
+  const P = (x, y) => [(x + 60) * s, (y + 40) * s];        // pitch metres -> canvas pixels
+  g.strokeStyle = '#f1f5f9'; g.lineWidth = 0.12 * s; g.lineCap = 'round';
+  const line = pts => { g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo : g.moveTo).call(g, ...P(x, y))); g.stroke(); };
+  const arc = (x, y, r, a0, a1) => { g.beginPath(); g.arc(...P(x, y), r * s, a0, a1); g.stroke(); };
+  line([[-52.5, -34], [52.5, -34], [52.5, 34], [-52.5, 34], [-52.5, -34]]);
+  line([[0, -34], [0, 34]]);
+  arc(0, 0, 9.15, 0, 2 * Math.PI);
+  for (const d of [-1, 1]) {
+    const gx = d * 52.5;
+    line([[gx, -20.16], [gx - d * 16.5, -20.16], [gx - d * 16.5, 20.16], [gx, 20.16]]);   // penalty box
+    line([[gx, -9.16], [gx - d * 5.5, -9.16], [gx - d * 5.5, 9.16], [gx, 9.16]]);          // goal area
+    const spot = gx - d * 11, a = Math.acos(5.5 / 9.15);                                     // penalty arc
+    arc(spot, 0, 9.15, d < 0 ? -a : Math.PI - a, d < 0 ? a : Math.PI + a);
+    for (const cy of [-34, 34]) {                                                            // corner arcs
+      const a0 = cy < 0 ? (d < 0 ? 0 : Math.PI / 2) : (d < 0 ? -Math.PI / 2 : Math.PI);
+      arc(gx, cy, 1, a0, a0 + Math.PI / 2);
+    }
+    g.fillStyle = '#f1f5f9';
+    g.beginPath(); g.arc(...P(spot, 0), 0.15 * s, 0, 2 * Math.PI); g.fill();
+  }
+  g.beginPath(); g.arc(...P(0, 0), 0.15 * s, 0, 2 * Math.PI); g.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.encoding = THREE.sRGBEncoding;
+  return tex;
+}
+const pitchTex = pitchTexture();
+const pitch = new THREE.Mesh(new THREE.PlaneGeometry(120, 80), new THREE.MeshLambertMaterial({ map: pitchTex }));
+pitch.rotation.x = -Math.PI / 2;                          // lie flat; the texture's top edge = the far side
+scene.add(pitch);
+const apron = new THREE.Mesh(new THREE.PlaneGeometry(220, 170), new THREE.MeshLambertMaterial({ color: 0x1b2a1c }));
+apron.rotation.x = -Math.PI / 2; apron.position.y = -0.02;
+scene.add(apron);
+
+// Goals: posts + crossbar, and a net (a grid of thin lines) 2 m deep.
+function goal(side) {
+  const grp = new THREE.Group(), white = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const post = new THREE.CylinderGeometry(0.06, 0.06, 2.44, 12);
+  for (const z of [-3.66, 3.66]) { const m = new THREE.Mesh(post, white); m.position.set(0, 1.22, z); grp.add(m); }
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 7.44, 12), white);
+  bar.rotation.x = Math.PI / 2; bar.position.set(0, 2.44, 0); grp.add(bar);
+  // the net: from the crossbar it slopes down to a lower back (1.46 m), 2 m behind the goal line
+  const pts = [], D = 2.0, BACK = 1.46, step = 0.25;
+  for (let z = -3.66; z <= 3.661; z += step) pts.push(0, 2.44, z, D, BACK, z, D, BACK, z, D, 0, z);   // roof + back
+  for (let y = 0; y <= BACK + 1e-3; y += step) pts.push(D, y, -3.66, D, y, 3.66);                    // back rows
+  for (const z of [-3.66, 3.66]) for (let y = 0; y <= 2.441; y += step) pts.push(0, y, z, D, Math.min(y, BACK), z);  // sides
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  grp.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xcbd5e1, transparent: true, opacity: 0.45 })));
+  grp.position.set(side * 52.5, 0, 0);
+  grp.scale.x = side;                                       // the net goes OUTWARDS on both sides
+  scene.add(grp);
+}
+goal(-1); goal(1);
+
+// Stands: a crowd texture (random dots) on stepped boxes around the pitch, plus a strip of advertising boards.
+function crowdTexture() {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 256;
+  const g = c.getContext('2d'); g.fillStyle = '#1e1b2e'; g.fillRect(0, 0, 1024, 256);
+  const cols = ['#b91c1c', '#e2e8f0', '#1f2937', '#7f1d1d', '#334155', '#f8fafc', '#475569'];
+  for (let k = 0; k < 9000; k++) { g.fillStyle = cols[k % cols.length]; g.fillRect(Math.random() * 1024, Math.random() * 256, 3, 4); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.encoding = THREE.sRGBEncoding; return t;
+}
+const crowd = crowdTexture();
+function stand(cx, cz, length, depth, rotY, rows = 4) {
+  for (let r = 0; r < rows; r++) {
+    const tex = crowd.clone(); tex.needsUpdate = true; tex.repeat.set(length / 25, 1);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(length, 2.2, depth / rows),
+                               new THREE.MeshLambertMaterial({ map: tex }));
+    const out = r * depth / rows + depth / rows / 2;
+    box.position.set(cx + Math.sin(rotY) * out, 1.1 + r * 2.2, cz + Math.cos(rotY) * out);
+    box.rotation.y = rotY;
+    scene.add(box);
+  }
+}
+stand(0, -42, 120, 14, Math.PI);  stand(0, 46, 120, 14, 0);          // far stand, main stand (the rig is here)
+stand(-63, 0, 80, 12, -Math.PI / 2); stand(63, 0, 80, 12, Math.PI / 2);
+const adMat = new THREE.MeshLambertMaterial({ color: 0x1d4ed8, emissive: 0x0b1f5c });
+for (const [x, z, w, rot] of [[0, -37, 110, 0], [0, 37, 110, 0], [-56, 0, 74, Math.PI / 2], [56, 0, 74, Math.PI / 2]]) {
+  const ad = new THREE.Mesh(new THREE.BoxGeometry(w, 0.9, 0.15), adMat);
+  ad.position.set(x, 0.45, z); ad.rotation.y = rot; scene.add(ad);
+}
+
+// ------------------------------------------------------------------------------------------------ players + ball
+// A low-poly figure: legs and arms swing with the running speed, the body faces where the player moves.
+function stripes(a, b) {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 64; const g = c.getContext('2d');
+  for (let k = 0; k < 8; k++) { g.fillStyle = k % 2 ? b : a; g.fillRect(k * 8, 0, 8, 64); }
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+}
+const KIT = {
+  home: { shirt: new THREE.MeshLambertMaterial({ map: stripes('#dc2626', '#f8fafc') }), shorts: 0xf8fafc, socks: 0xdc2626 },
+  away: { shirt: new THREE.MeshLambertMaterial({ color: 0x1e3a8a }), shorts: 0x1e3a8a, socks: 0x1e3a8a },
+  ref:  { shirt: new THREE.MeshLambertMaterial({ color: 0xd9f99d, emissive: 0x2a3a10 }), shorts: 0x111111, socks: 0x111111 },
+};
+const skin = new THREE.MeshLambertMaterial({ color: 0xd6a07a });
+const shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const r = g.createRadialGradient(32, 32, 2, 32, 32, 30); r.addColorStop(0, 'rgba(0,0,0,.55)'); r.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = r; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
+const shadowMat = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false });
+const shadowGeo = new THREE.PlaneGeometry(1.1, 1.1);
+
+function limb(w, h, d, mat, y) {                 // a box hanging from a pivot at height y (hip or shoulder)
+  const pivot = new THREE.Group(), m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.y = -h / 2; pivot.add(m); pivot.position.y = y; return pivot;
+}
+function figure(team) {
+  const k = KIT[team], g = new THREE.Group();
+  const shorts = new THREE.MeshLambertMaterial({ color: k.shorts }), socks = new THREE.MeshLambertMaterial({ color: k.socks });
+  const legs = [-0.11, 0.11].map(x => { const l = limb(0.16, 0.9, 0.18, socks, 0.92); l.position.x = x;
+    const top = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.3, 0.2), shorts); top.position.y = -0.15; l.add(top); g.add(l); return l; });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.62, 0.26), k.shirt); body.position.y = 1.22; g.add(body);
+  const arms = [-0.3, 0.3].map(x => { const a = limb(0.11, 0.62, 0.12, k.shirt, 1.5); a.position.x = x; g.add(a); return a; });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), skin); head.position.y = 1.7; g.add(head);
+  const shadow = new THREE.Mesh(shadowGeo, shadowMat); shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.01; g.add(shadow);
+  scene.add(g);
+  return { g, legs, arms, phase: Math.random() * 6, heading: 0, last: null, speed: 0 };
+}
+const figures = new Map();
+const ball = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12),          // ~2x real size so it shows from afar
+                            new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x555555 }));
+const ballShadow = new THREE.Mesh(shadowGeo, shadowMat); ballShadow.rotation.x = -Math.PI / 2; ballShadow.scale.setScalar(0.5);
+scene.add(ball, ballShadow);
+
+let lastT = null;
+function placeEveryone(t) {
+  const now = people(t);
+  const dt = lastT === null ? 0 : Math.max(0, Math.min(0.5, t - lastT)); lastT = t;
+  const seen = new Set();
+  if (now) for (const p of now.people) {
+    seen.add(p.key);
+    let f = figures.get(p.key);
+    if (!f) { f = figure(p.team); figures.set(p.key, f); }
+    // speed: the sensor's for home players, else from the movement
+    let speed = p.speed;
+    if (f.last && dt > 0) {
+      const vx = (p.x - f.last.x) / dt, vy = (p.y - f.last.y) / dt, v = Math.hypot(vx, vy);
+      if (speed == null) speed = v;
+      if (v > 0.4) {                                  // face where you are going (smoothly)
+        const want = Math.atan2(vx, vy);
+        let d = want - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d));
+        f.heading += d * Math.min(1, dt * 6);
+      }
+    }
+    f.speed = Math.min(9, speed ?? 0); f.last = { x: p.x, y: p.y };
+    f.g.position.set(p.x, 0, p.y);
+    f.g.rotation.y = f.heading;
+    // running: stride rate and leg swing grow with speed
+    f.phase += dt * (2 + f.speed * 1.1) * Math.PI;
+    const swing = Math.min(0.9, f.speed * 0.13) * Math.sin(f.phase);
+    f.legs[0].rotation.x = swing; f.legs[1].rotation.x = -swing;
+    f.arms[0].rotation.x = -swing * 0.8; f.arms[1].rotation.x = swing * 0.8;
+  }
+  for (const [key, f] of figures) if (!seen.has(key)) { scene.remove(f.g); figures.delete(key); }
+  const b = now && now.ball;
+  ball.visible = ballShadow.visible = !!b;
+  if (b) { ball.position.set(b.x, b.z + 0.2, b.y); ballShadow.position.set(b.x, 0.02, b.y); }
+}
+
+// ------------------------------------------------------------------------------------------------ cameras + views
+// A camera model from the server -> a Three.js camera (level horizon, same field of view).
+function threeCamera(cam, aspect) {
+  const [x, y, h] = cam.position_m, [lx, ly] = cam.look_at_m;
+  const vfov = 2 * Math.atan(Math.tan(cam.hfov_deg * Math.PI / 360) / aspect) * 180 / Math.PI;
+  const c = new THREE.PerspectiveCamera(vfov, aspect, 0.5, 500);
+  c.position.set(x, h, y); c.up.set(0, 1, 0); c.lookAt(lx, 0, ly);
+  return c;
+}
+// A real camera exactly (direction incl. roll, focal length, the 16:9 part of its picture), to compare with it.
+// Its rotation turns world directions (x, y, z down) into camera ones (x right, y down, z forward).
+function realCamera(cam) {
+  const { rotation: R, focal_px: f, source_size: [sw, sh], crop: [cx, cy, cw, ch] } = cam.real;
+  const w = v => new THREE.Vector3(v[0], -v[2], v[1]);          // a world direction -> Three.js axes
+  const right = w(R[0]), up = w(R[1]).negate(), back = w(R[2]).negate();
+  const c = new THREE.PerspectiveCamera(2 * Math.atan(sh / 2 / f) * 180 / Math.PI, sw / sh, 0.5, 500);
+  const [x, y, h] = cam.position_m; c.position.set(x, h, y);
+  c.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, back));
+  c.setViewOffset(sw, sh, cx, cy, cw, ch);                       // only the cropped part of the picture
+  return c;
+}
+function makeRenderer(canvas, w, h, keep) {
+  const r = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: keep });
+  r.setPixelRatio(1); r.setSize(w, h, false); r.outputEncoding = THREE.sRGBEncoding;
+  return r;
+}
+const views = {};
+function buildViews() {
+  const [W, H] = S.setup.output_size;
+  for (const id of ['goall', 'goalr']) {
+    const cam = S.setup.cameras.find(c => c.id === id);
+    views[id] = { cam: threeCamera(cam, W / H), renderer: makeRenderer($('cv-' + id), W, H, true) };
+    pitchTex.anisotropy = views[id].renderer.capabilities.getMaxAnisotropy();
+  }
+  // the director's free view: orbit around the centre spot
+  const free = new THREE.PerspectiveCamera(45, 16 / 9, 0.5, 800);
+  views.free = { cam: free, renderer: makeRenderer($('cv-free'), 1280, 720, false), az: 0.35, el: 0.55, dist: 120 };
+  // every camera of the T2 set: a small box where it stands + its cone (only drawn in the director's view)
+  const colours = { ptz: 0xf43f5e, fixed: 0x38bdf8 };
+  for (const cam of S.setup.cameras) {
+    const [x, y, h] = cam.position_m;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), new THREE.MeshBasicMaterial({ color: colours[cam.kind] }));
+    m.position.set(x, h, y); m.layers.set(1); scene.add(m);
+    if (!cam.look_at_m || cam.built_from === 'source' || cam.id === 'wide') continue;
+    const helperCam = threeCamera(cam, W / H); helperCam.far = 30; helperCam.updateProjectionMatrix();
+    const helper = new THREE.CameraHelper(helperCam); helper.layers.set(1); scene.add(helper);
+  }
+  free.layers.enable(1);
+  for (const cam of S.setup.cameras) $('viewpick').add(new Option(`from ${cam.name}`, cam.id));
+  $('viewpick').onchange = e => { const cam = S.setup.cameras.find(c => c.id === e.target.value);
+    views.fixed = cam ? (cam.real ? realCamera(cam) : threeCamera(cam, 16 / 9)) : null; };
+  let drag = null;
+  $('cv-free').addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; e.target.setPointerCapture(e.pointerId); });
+  $('cv-free').addEventListener('pointerup', () => { drag = null; });
+  $('cv-free').addEventListener('pointermove', e => {
+    if (!drag) return; const v = views.free;
+    v.az -= (e.clientX - drag[0]) * 0.006; v.el = Math.max(0.05, Math.min(1.45, v.el + (e.clientY - drag[1]) * 0.006));
+    drag = [e.clientX, e.clientY];
+  });
+  $('cv-free').addEventListener('wheel', e => { e.preventDefault(); views.free.dist = Math.max(15, Math.min(250, views.free.dist * (1 + e.deltaY * 0.001))); }, { passive: false });
+}
+function renderAll(includeFree = true) {
+  for (const id of ['goall', 'goalr']) views[id].renderer.render(scene, views[id].cam);
+  if (includeFree && views.fixed) {                // seen from a real camera's position (to compare with it)
+    views.free.renderer.render(scene, views.fixed);
+  } else if (includeFree) {
+    const v = views.free;
+    v.cam.position.set(v.dist * Math.cos(v.el) * Math.sin(v.az), v.dist * Math.sin(v.el), v.dist * Math.cos(v.el) * Math.cos(v.az));
+    v.cam.lookAt(0, 0, 0);
+    v.renderer.render(scene, v.cam);
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ the clock
+function setTime(t) { S.t = Math.max(0, Math.min(S.setup.duration, t)); S.startT = S.t; S.wall = performance.now(); lastT = null; ensure(S.t); }
+const liveNow = () => S.live && performance.now() - S.liveAt < 2000;   // live state arrived in the last 2 s
+function tick() {
+  if (!S.recording) {
+    if (liveNow()) S.t = S.live.t + (performance.now() - S.liveAt) / 1000;  // the live loop's clock
+    else if (S.playing) S.t = Math.min(S.setup.duration, S.startT + (performance.now() - S.wall) / 1000 * S.speed);
+    ensure(S.t);
+    placeEveryone(S.t);
+    renderAll();
+    programOverlay();
+    $('clock').textContent = fmt(S.t);
+    if (document.activeElement !== $('slider')) $('slider').value = S.t;
+    $('status').textContent = row(S.t) ? '' : 'loading positions…';
+  }
+  requestAnimationFrame(tick);
+}
+
+// ------------------------------------------------------------------------------------------------ monitor wall
+// One tile per camera, in the order of the camera set: real-pixel cameras are MJPEG <img>, 3D ones a canvas.
+function buildWall() {
+  const wall = $('wall');
+  for (const cam of S.setup.cameras) {
+    const tile = document.createElement('div');
+    tile.className = 'tile'; tile.id = 'tile-' + cam.id;
+    tile.innerHTML = cam.built_from === '3d'
+      ? `<canvas id="cv-${cam.id}"></canvas><span class="label">${cam.name} · 3D</span><span class="sub" id="sub-${cam.id}"></span>`
+      : `<div class="off">not live</div><img data-stream="${cam.id}" alt=""><span class="label">${cam.name}</span><span class="sub" id="sub-${cam.id}"></span>`;
+    wall.appendChild(tile);
+  }
+  const info = document.createElement('div');
+  info.className = 'tile p-2 text-xs';
+  info.innerHTML = `<div class="font-semibold text-sm mb-1">Director</div><div id="dstate" class="mono text-base text-rose-400">-</div>
+    <div id="dreason" class="text-slate-400 mt-1"></div><div id="dstats" class="text-slate-500 mt-1 mono"></div>`;
+  wall.appendChild(info);
+}
+function startStreams() {                    // (re)connect every MJPEG <img>; a stream ends ~60 s after a run
+  const r = Date.now();
+  for (const img of document.querySelectorAll('img[data-stream]')) img.src = `/studio/live/stream/${img.dataset.stream}?r=${r}`;
+  $('prog-img').src = `/studio/live/stream/program?r=${r}`;
+  for (const el of document.querySelectorAll('.tile .off')) el.style.display = 'none';
+  $('prog-off').style.display = 'none';
+}
+
+// When a 3D camera is on air, the program box shows its canvas (the live loop's program picture is a card then).
+function programOverlay() {
+  const id = liveNow() ? S.live.on_air : null, cam = id && S.setup.cameras.find(c => c.id === id);
+  const show = cam && cam.built_from === '3d';
+  $('prog-3d').style.display = show ? 'block' : 'none';
+  if (show) $('prog-3d').getContext('2d').drawImage($('cv-' + id), 0, 0, 1280, 720);
+  $('bug-clock').textContent = fmt(S.t).slice(0, 5);
+}
+
+// ------------------------------------------------------------------------------------------------ live (WebSocket)
+function connectLive() {
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/studio/live/ws`);
+  ws.onmessage = e => onLive(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connectLive, 2000);
+}
+function onLive(m) {
+  if (m.type === 'live_status') {
+    const st = m.status;
+    $('livestatus').textContent = m.running ? `${st.state}` : (st ? `last run: ${st.state}` : 'not live');
+    if (m.running && (m.run_id || '').includes('stadium')) startStreams();
+    return;
+  }
+  if (m.type === 'state') {
+    if (!m.cams) return;                      // an MVP 3 live run: not ours
+    S.live = m; S.liveAt = performance.now();
+    const st = m.status || {};
+    $('livestatus').textContent = `live ${fmt(m.t)} · ${st.shown_fps} fps shown · lag ${st.lag_s}s · skipped ${st.skipped}`;
+    for (const cam of S.setup.cameras) {
+      $('tile-' + cam.id).classList.toggle('live', cam.id === m.on_air);
+      const c = m.cams[cam.id] || {};
+      $('sub-' + cam.id).textContent = c.field_width_m ? `${Math.round(c.field_width_m)} m` + (c.speed_deg_s > 1 ? ` · ${Math.round(c.speed_deg_s)}°/s` : '') : '';
+    }
+    const onAir = S.setup.cameras.find(c => c.id === m.on_air);
+    $('prog-cam').textContent = onAir ? onAir.name + (onAir.built_from === '3d' ? ' (3D)' : '') : '';
+    $('bug-teams').textContent = `TIL ${m.score[0]}-${m.score[1]} SIF`;
+    $('dstate').textContent = m.director_state; $('dreason').textContent = m.reason;
+    $('reason').textContent = `${m.director_state} · ${m.reason}`;
+    drawMap(m);
+    return;
+  }
+  if (['cut', 'ptz', 'info', 'live_error'].includes(m.type)) addLog(m);
+}
+function addLog(m) {
+  const kind = m.type === 'live_error' ? 'info' : m.type;
+  const colour = { cut: 'text-rose-300', ptz: 'text-sky-300', info: 'text-slate-400' }[kind];
+  const row = document.createElement('div');
+  row.className = `${colour} py-px`; row.dataset.k = kind;
+  row.textContent = `${m.t != null ? fmt(m.t).slice(0, 5) : '     '}  ${m.message}`;
+  row.style.display = S.logFilter[kind] ? '' : 'none';
+  const log = $('log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
+  log.appendChild(row);
+  while (log.children.length > 400) log.removeChild(log.firstChild);
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+
+// ------------------------------------------------------------------------------------------------ pitch map (SVG)
+const NS = 'http://www.w3.org/2000/svg';
+function svg(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || $('map')).appendChild(e); return e; }
+function buildMap() {
+  const line = { fill: 'none', stroke: '#cbd5e1', 'stroke-width': 0.3 };
+  svg('rect', { x: -52.5, y: -34, width: 105, height: 68, ...line, fill: '#14532d' });
+  svg('line', { x1: 0, y1: -34, x2: 0, y2: 34, ...line });
+  svg('circle', { cx: 0, cy: 0, r: 9.15, ...line });
+  for (const d of [-1, 1]) {
+    svg('rect', { x: d < 0 ? -52.5 : 36, y: -20.16, width: 16.5, height: 40.32, ...line });
+    svg('rect', { x: d < 0 ? -52.5 : 47, y: -9.16, width: 5.5, height: 18.32, ...line });
+    svg('rect', { x: d < 0 ? -54.5 : 52.5, y: -3.66, width: 2, height: 7.32, ...line });
+  }
+  S.mapLayer = svg('g', {});
+  drawMap(null);
+}
+function cone(pos, panDeg, hfovDeg, length) {   // a camera's view as a triangle on the map
+  const p = panDeg * Math.PI / 180, h = hfovDeg * Math.PI / 360;
+  const ray = a => [pos[0] + length * Math.sin(p + a), pos[1] - length * Math.cos(p + a)];
+  return [pos, ray(-h), ray(h)].map(q => q.join(',')).join(' ');
+}
+function drawMap(m) {
+  const g = S.mapLayer; g.innerHTML = '';
+  for (const cam of S.setup.cameras) {
+    const c = (m && m.cams[cam.id]) || {};
+    const look = c.look_at || cam.look_at_m, hfov = c.hfov || cam.hfov_deg;
+    const pos = [cam.position_m[0], cam.position_m[1]];
+    let pan = c.pan;
+    if (pan == null && look) pan = Math.atan2(look[0] - pos[0], -(look[1] - pos[1])) * 180 / Math.PI;
+    const onAir = m && m.on_air === cam.id;
+    const colour = onAir ? '#ef4444' : cam.kind === 'ptz' ? '#f472b6' : '#38bdf8';
+    if (look && pan != null && cam.id !== 'wide') {
+      const len = Math.hypot(look[0] - pos[0], look[1] - pos[1]) * 1.15;
+      svg('polygon', { points: cone(pos, pan, hfov, len), fill: colour, 'fill-opacity': onAir ? 0.28 : 0.08,
+                       stroke: colour, 'stroke-opacity': onAir ? 0.9 : 0.35, 'stroke-width': 0.3 }, g);
+    }
+    svg('circle', { cx: pos[0], cy: pos[1], r: 1.4, fill: colour }, g);
+  }
+  svg('text', { x: -2.9, y: 47, 'font-size': 3.2, fill: '#94a3b8', 'text-anchor': 'middle' }, g).textContent = 'rig: MAIN CLOSE WIDE BOX L/R';
+  svg('text', { x: -60.5, y: -4, 'font-size': 3, fill: '#94a3b8', 'text-anchor': 'middle' }, g).textContent = 'GOAL L';
+  svg('text', { x: 60.5, y: -4, 'font-size': 3, fill: '#94a3b8', 'text-anchor': 'middle' }, g).textContent = 'GOAL R';
+  if (!m) return;
+  for (const q of m.players) svg('circle', { cx: q[0], cy: q[1], r: 0.9, fill: '#e2e8f0', 'fill-opacity': 0.75 }, g);
+  if (m.ball) svg('circle', { cx: m.ball[0], cy: m.ball[1], r: 1.3, fill: m.ball_status === 'seen' ? '#fff' : '#fde047', stroke: '#000', 'stroke-width': 0.3 }, g);
+}
+
+// ------------------------------------------------------------------------------------------------ recording
+// Frame-exact: for every 1/30 s of match time, place everyone, render, and hand the frame to the recorder.
+async function record() {
+  const from = parseTime($('rec-from').value), secs = Number($('rec-secs').value), run = $('rec-run').value.trim();
+  if (!(secs > 0)) return;
+  S.recording = true; S.playing = false; $('play').textContent = 'Play';
+  $('rec').disabled = true;
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  const rec = {};
+  for (const id of ['goall', 'goalr']) {
+    const stream = $('cv-' + id).captureStream(0);           // 0 = a frame only when we ask for one
+    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12e6 });
+    const parts = []; r.ondataavailable = e => e.data.size && parts.push(e.data);
+    r.start(1000);
+    rec[id] = { r, parts, track: stream.getVideoTracks()[0] };
+  }
+  const n = Math.round(secs * FPS);
+  lastT = null;
+  await new Promise(res => setTimeout(res, 300));               // recorders warm up before the first frame
+  for (let k = 0; k < n; k++) {
+    const t = from + k / FPS;
+    await ensure(t); await ensure(t + STEP);
+    placeEveryone(t);
+    renderAll(false);
+    for (const id in rec) rec[id].track.requestFrame();
+    await new Promise(res => requestAnimationFrame(res));       // let the recorder take the frame
+    if (k % FPS === 0) $('rec-status').textContent = `recording ${fmt(t)}  (${Math.round(100 * k / n)}%)`;
+  }
+  await new Promise(res => setTimeout(res, 300));               // ... and take the last frames before stopping
+  const blobs = await Promise.all(Object.entries(rec).map(([id, x]) => new Promise(res => {
+    x.r.onstop = () => res([id, new Blob(x.parts, { type: 'video/webm' })]); x.r.stop(); })));
+  S.recording = false;
+  for (const [id, blob] of blobs) {
+    $('rec-status').textContent = `uploading ${id} (${(blob.size / 1e6).toFixed(1)} MB)…`;
+    const q = new URLSearchParams({ cam: id, start: from, seconds: secs }); if (run) q.set('run', run);
+    const res = await fetch(`/studio/stadium/upload/${SEGMENT}?${q}`, { method: 'POST', body: blob });
+    const out = await res.json();
+    $('rec-status').textContent = res.ok ? `saved ${out.file} (${out.recorded_frames} of ${out.frames} frames recorded)` : `error: ${out.detail}`;
+  }
+  $('rec').disabled = false;
+  setTime(S.t);
+}
+
+// ------------------------------------------------------------------------------------------------ start
+async function main() {
+  S.setup = await (await fetch(`/studio/stadium/setup/${SEGMENT}`)).json();
+  $('teams').textContent = S.setup.teams;
+  $('credit').textContent = 'Footage + player positions: ' + S.setup.credit + '. Player tags are anonymous.';
+  $('slider').max = S.setup.duration;
+  $('prog-credit').textContent = 'Alfheim dataset (Simula) · non-commercial research';
+  buildWall(); buildMap();
+  if (S.setup.twin) $('twininfo').textContent = `sensor clock offset ${S.setup.twin.offset_s} s · home players within ${S.setup.twin.median_after_correction_m} m of the detector (median)`;
+  buildViews();
+  const q = new URLSearchParams(location.search);
+  setTime(q.get('t') ? parseTime(q.get('t')) : parseTime($('from').value));
+  if (q.get('view')) { $('viewpick').value = q.get('view'); $('viewpick').onchange({ target: $('viewpick') }); }
+  if (q.get('play')) { S.playing = true; $('play').textContent = 'Pause'; }
+  $('play').onclick = () => { S.playing = !S.playing; $('play').textContent = S.playing ? 'Pause' : 'Play'; setTime(S.t); };
+  $('go').onclick = () => setTime(parseTime($('from').value));
+  $('speed').onchange = e => { S.speed = Number(e.target.value); setTime(S.t); };
+  $('slider').oninput = e => setTime(Number(e.target.value));
+  $('rec').onclick = record;
+  $('golive').onclick = async () => {
+    for (const el of document.querySelectorAll('#log > div')) el.remove();
+    const res = await fetch('/studio/stadium/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segment: SEGMENT, start_s: parseTime($('live-from').value) }) });
+    const out = await res.json();
+    if (!res.ok) { addLog({ type: 'info', message: 'could not start: ' + out.detail }); return; }
+    startStreams();
+  };
+  $('stop').onclick = () => fetch('/studio/live/stop', { method: 'POST' });
+  for (const chip of document.querySelectorAll('.chipf')) chip.onclick = () => {
+    const k = chip.dataset.k; S.logFilter[k] = !S.logFilter[k]; chip.classList.toggle('on', S.logFilter[k]);
+    for (const row of document.querySelectorAll(`#log > div[data-k="${k}"]`)) row.style.display = S.logFilter[k] ? '' : 'none';
+  };
+  connectLive();
+  requestAnimationFrame(tick);
+  // ?record=MM:SS&secs=N[&run=folder]: start a recording right away (for scripts, e.g. headless Chrome)
+  if (q.get('record')) {
+    $('rec-from').value = q.get('record'); $('rec-secs').value = q.get('secs') || 60; $('rec-run').value = q.get('run') || '';
+    await record();
+    document.title = 'RECORDED';
+  }
+}
+main();
+</script>
+</body>
+</html>

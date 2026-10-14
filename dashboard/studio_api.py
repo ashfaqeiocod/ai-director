@@ -15,7 +15,7 @@ import json
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from src.common import ROOT, load_config
@@ -585,3 +585,134 @@ def live_stream(name: str) -> StreamingResponse:
                 idle += 1
                 time.sleep(0.1 if not item else 0.02)
     return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+# ---------------------------------------------------------------- MVP 4: the virtual stadium (Step 4: 3D scene)
+# The page dashboard/static/stadium.html draws the behind-goal cameras GOAL L / GOAL R in 3D (Three.js) from
+# the "digital twin" (studio.zxy: everyone's position 10x per second) and the camera models (studio.stadium).
+_twin_cache: dict[str, list[str]] = {}
+
+
+def _stadium_folder(segment: str) -> Path:
+    from studio.sources import folder_of
+
+    folder = folder_of(segment) if segment.startswith("alfheim-") else None
+    if folder is None or not (folder / "panorama.json").exists():
+        raise HTTPException(404, "no stadium for this segment (needs studio.panorama)")
+    return folder
+
+
+@router.get("/stadium", response_class=HTMLResponse)
+def stadium_page() -> str:
+    return (STATIC / "stadium.html").read_text()
+
+
+@router.get("/stadium/setup/{segment}")
+def stadium_setup(segment: str) -> dict:
+    """Every camera's model (position, where it looks, field of view) + match facts, for the 3D scene and the map."""
+    from studio.panorama import Panorama
+    from studio.stadium import Stadium, settings as stadium_settings
+
+    folder = _stadium_folder(segment)
+    cfg = stadium_settings()
+    st = Stadium(cfg, Panorama.load(folder))
+    meta = json.loads((folder / "meta.json").read_text())
+    cams = []
+    for cam_id, shot in st.shots().items():
+        c = shot.cam
+        hfov = shot.state.get("hfov")
+        if hfov is None and shot.pinhole is None:      # a fixed real camera: its field of view from its width
+            import math
+            look = c.look_at_m
+            dist = math.dist((look[0], look[1], 0), c.position_m)
+            hfov = math.degrees(2 * math.atan(shot.state["field_width_m"] / 2 / dist))
+        item = {"id": c.id, "name": c.name, "kind": c.kind, "built_from": c.built_from,
+                "position_m": [round(v, 2) for v in c.position_m], "look_at_m": shot.state.get("look_at"),
+                "field_width_m": shot.state.get("field_width_m"), "hfov_deg": round(hfov, 2)}
+        if c.built_from == "source":                   # the real lens: exact direction (with its roll) + focal
+            item["real"] = {"rotation": st.pano.data["rig_rotation"][str(c.source_cam)],
+                            "focal_px": st.pano.data["rig_focal_px"][str(c.source_cam)],
+                            "source_size": [1280, 960], "crop": list(c.crop)}
+        cams.append(item)
+    twin = folder / "twin.json"
+    return {"segment": segment, "cameras": cams, "output_size": cfg["output_size"], "fps": meta["fps"],
+            "duration": meta["length_s"], "teams": meta.get("teams", ""), "credit": meta.get("credit", ""),
+            "twin": json.loads(twin.read_text()) if twin.exists() else None}
+
+
+@router.get("/stadium/twin/{segment}")
+def stadium_twin(segment: str, start: float = 0.0, seconds: float = 60.0) -> list[dict]:
+    """The twin rows (one per 0.1 s) from `start` for `seconds` (the page asks for the next minute ahead of time)."""
+    folder = _stadium_folder(segment)
+    if segment not in _twin_cache:
+        path = folder / "twin.jsonl"
+        if not path.exists():
+            raise HTTPException(404, "twin.jsonl missing: run `venv/bin/python -m studio.zxy`")
+        _twin_cache[segment] = path.read_text().splitlines()
+    lines = _twin_cache[segment]
+    step = json.loads(lines[1])["t"] - json.loads(lines[0])["t"]
+    a = max(0, int(start / step))
+    b = min(len(lines), a + int(min(seconds, 300) / step) + 1)
+    return [json.loads(line) for line in lines[a:b]]
+
+
+@router.post("/stadium/upload/{segment}")
+async def stadium_upload(segment: str, request: Request, cam: str, start: float, seconds: float,
+                         run: str | None = None) -> dict:
+    """A 3D camera's recording (WebM from the page's MediaRecorder, one video frame per 1/fps of match time)
+    -> cam_<cam>.mp4 in outputs/stadium/<segment>/<run> (default run: 3d-<start>-<seconds>s)."""
+    import subprocess
+
+    from src.common import ffmpeg_exe
+
+    if not cam.isalnum() or (run and (".." in run or "/" in run)):
+        raise HTTPException(400, "bad name")
+    folder = _stadium_folder(segment)
+    fps = json.loads((folder / "meta.json").read_text())["fps"]
+    out = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / (run or f"3d-{start:g}-{seconds:g}s")
+    out.mkdir(parents=True, exist_ok=True)
+    webm = out / f"cam_{cam}.webm"
+    webm.write_bytes(await request.body())
+    mp4 = out / f"cam_{cam}.mp4"
+    # Frames were recorded one per step of match time, not by the wall clock: renumber them at a steady fps, and
+    # make the count exact (a recorder can drop a frame at the very start or end: the last one is repeated).
+    frames = round(seconds * fps)
+    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(webm),
+           "-vf", f"setpts=N/({fps}*TB),fps={fps},tpad=stop_mode=clone:stop=30", "-frames:v", str(frames),
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+           str(mp4)]
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise HTTPException(500, f"ffmpeg failed: {done.stderr[-300:]}")
+    count = subprocess.run([ffmpeg_exe(), "-i", str(webm), "-f", "null", "-"], capture_output=True, text=True).stderr
+    recorded = int(count.rsplit("frame=", 1)[1].split()[0]) if "frame=" in count else None
+    print(f"[stadium] {cam}: {recorded} of {frames} frames recorded -> {mp4.relative_to(ROOT)}", flush=True)
+    webm.unlink()
+    return {"file": str(mp4.relative_to(ROOT)), "start": start, "seconds": seconds, "frames": frames,
+            "recorded_frames": recorded}
+
+
+@router.post("/stadium/live/start")
+def stadium_live_start(body: dict) -> dict:
+    """Play the virtual stadium live (studio.stadium_live). Pictures and state come over the same routes as an MVP 3
+    live run: /studio/live/ws and /studio/live/stream/<program | main | close | wide | boxl | boxr>."""
+    from studio.stadium_live import StadiumLive
+
+    with live_ctl.lock:
+        if live_ctl.live and live_ctl.live.status["state"] in BUSY:
+            raise HTTPException(409, "a live run is already going: stop it first")
+        segment = body.get("segment") or "alfheim-2013-11-03-H1"
+        folder = _stadium_folder(segment)
+        if not (folder / "panorama.mp4").exists():
+            raise HTTPException(400, "panorama.mp4 is missing: run `venv/bin/python -m studio.panorama`")
+        src = _cached_source(segment)
+        try:
+            start_s = float(body.get("start_s") or 0.0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "start_s must be a number of seconds") from None
+        if not 0 <= start_s < src.frames / src.fps - 10:
+            raise HTTPException(400, "start is outside the match")
+        live_ctl.history, live_ctl.last_state = [], None
+        live_ctl.live = StadiumLive(src, live_ctl.publish, start_s=start_s)
+        live_ctl.live.start()
+    return live_ctl.status()

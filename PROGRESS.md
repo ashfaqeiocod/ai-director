@@ -590,7 +590,7 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 1. Panorama | done | studio/panorama.py: 3434x1310 cylinder, 84,780 frames (62 min at 22.7 fps); seams ~1 px |
 | 2. Camera devices + real feeds | done | studio/stadium.py: 7 camera models, PTZ heads, cards, 5 real feeds; ball in MAIN 92.3% |
 | 3. ZXY player positions | done | studio/zxy.py: twin.jsonl (28,261 rows); home players 1.58 m median from the detector |
-| 4. 3D scene (behind-goal cams) | not started | |
+| 4. 3D scene (behind-goal cams) | done | dashboard/static/stadium.html (Three.js r128): GOAL L/R + free view, frame-exact recording |
 | 5. Director: robotic cameras + TV rules | not started | |
 | 6. Playground page | not started | |
 | 7. Test runs | not started | |
@@ -611,6 +611,12 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   36-46: no drift). ZXY y is flipped against ours. A small affine correction (~0.5 m shift) brings matched pairs
   from 1.51 to 1.32 m median. Check (5 moments, cam2): home players 1.58 m median / 2.44 m p90 from the nearest
   detected player (target ~2 m). Ball in 19,428 of 28,261 rows (69%). Pictures: data/alfheim/2013-11-03_H1/twin_check/.
+- Step 4 3D scene (`/static/stadium.html`, or `/studio/stadium`): 105x68 pitch (canvas texture), goals with nets,
+  stands, low-poly players (run animation by speed, face where they move), ball. Check: the 3D scene seen from the
+  REAL BOX L / BOX R lenses (rig fit: direction incl. roll, focal) laid over the real pictures at 23:45: pitch lines
+  on the white lines (BOX R ~exact, BOX L a few px off at the near touchline: lens distortion), 3D figures on the
+  real players (linesman, keeper, away player). Recording: 5 s -> 150 of 150 frames (GPU); headless Chrome records
+  20 s of both cameras in ~24 s.
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
@@ -640,10 +646,15 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   referees (detector class "referee"), so an away player marking a home player closely is kept.
 - Step 3: ball gaps up to 2 s are filled with a straight line (needs the next sighting: fine within the 5-10 s
   broadcast delay; the twin only DRAWS the 3D cameras, the director never reads it).
+- Step 4: 3D recordings are frame-exact: the page renders one frame per 1/30 s of MATCH time and hands it to
+  MediaRecorder (captureStream(0) + requestFrame); the server renumbers frames at 30 fps and pads/trims to the exact
+  count (ffmpeg setpts + fps + tpad). Headless Chrome must draw with the GPU (--use-angle=metal): software drawing
+  (SwiftShader) was ~10x slower and timed out.
+- Step 4: the page can show the 3D scene from any camera of the set (dropdown / `?view=boxl`) for checks.
 ## Problems / open issues (MVP 4)
 - Twin: the detector sometimes sees one away player twice (two dots ~2 m apart) and the map's ball is sometimes a
   false detection; both show in the 3D scene as they are.
 - MVP 3's cam1 calibration draws the left penalty box ~10-15 px (~1 m) too deep (seen on panorama_check.jpg and on
   cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
-Step 4: commit the 3D scene (dashboard/static/stadium.html + API), already checked.
+Step 5: 5-minute director run (`studio.stadium --aim director`), then Step 6 live test.

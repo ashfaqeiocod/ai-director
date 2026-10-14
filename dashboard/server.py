@@ -33,6 +33,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.common import detections_path, load_config, path
 from src.director import DecisionLog
@@ -315,6 +316,8 @@ class RunStats:
 app = FastAPI(title="AI Sports Director")
 app.include_router(story_router)
 app.include_router(studio_router)
+# MVP 4: plain files of dashboard/static (e.g. /static/stadium.html, the 3D behind-goal cameras)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 ctl = Controller()
 
 
