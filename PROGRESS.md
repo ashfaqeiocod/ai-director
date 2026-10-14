@@ -589,7 +589,7 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 0. Plan + camera infra guide | done | docs/MVP4_STADIUM_PLAN.md |
 | 1. Panorama | done | studio/panorama.py: 3434x1310 cylinder, 84,780 frames (62 min at 22.7 fps); seams ~1 px |
 | 2. Camera devices + real feeds | done | studio/stadium.py: 7 camera models, PTZ heads, cards, 5 real feeds; ball in MAIN 92.3% |
-| 3. ZXY player positions | not started | |
+| 3. ZXY player positions | done | studio/zxy.py: twin.jsonl (28,261 rows); home players 1.58 m median from the detector |
 | 4. 3D scene (behind-goal cams) | not started | |
 | 5. Director: robotic cameras + TV rules | not started | |
 | 6. Playground page | not started | |
@@ -605,6 +605,12 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 - Step 2 follow run (`studio.stadium --aim follow --start 23:40 --seconds 300`, 15.7 min at 9.5 fps): MAIN had the
   ball in its picture at 92.3% of the 613 detection steps where the detector saw it (target >= 90%); fastest moves
   45 deg/s (MAIN) and 60 deg/s (CLOSE) = exactly the motor limits, never faster (also a unit test).
+- Step 3 twin (`venv/bin/python -m studio.zxy`, ~1 min): ZXY 20 Hz, 14 tags (11 on the pitch + substitutes on the
+  bench). Clock: video starts 18:01:14.248 (raw piece names, none missing, exactly 3.000 s apart); the sensor clock
+  is 8.70 s ahead (file names say 5.25 s: the sensor clock is ~3.5 s off; measured the same in minutes 2-12, 20-30,
+  36-46: no drift). ZXY y is flipped against ours. A small affine correction (~0.5 m shift) brings matched pairs
+  from 1.51 to 1.32 m median. Check (5 moments, cam2): home players 1.58 m median / 2.44 m p90 from the nearest
+  detected player (target ~2 m). Ball in 19,428 of 28,261 rows (69%). Pictures: data/alfheim/2013-11-03_H1/twin_check/.
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
@@ -630,8 +636,14 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 - Step 2: CLOSE's tightest shot is 10 m (lens limit in config): the sources are 1280x960 (honest limit). Magnified
   views get their COLOUR (not brightness) softened over 2.5 source pixels: the camera sensor gives thin white lines
   rainbow edges that a 5x zoom makes very visible.
+- Step 3: each ZXY home player claims the ONE nearest detection within 4 m; what is left are away players and
+  referees (detector class "referee"), so an away player marking a home player closely is kept.
+- Step 3: ball gaps up to 2 s are filled with a straight line (needs the next sighting: fine within the 5-10 s
+  broadcast delay; the twin only DRAWS the 3D cameras, the director never reads it).
 ## Problems / open issues (MVP 4)
+- Twin: the detector sometimes sees one away player twice (two dots ~2 m apart) and the map's ball is sometimes a
+  false detection; both show in the 3D scene as they are.
 - MVP 3's cam1 calibration draws the left penalty box ~10-15 px (~1 m) too deep (seen on panorama_check.jpg and on
   cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
-Step 3: commit the twin (studio/zxy.py, already built and checked).
+Step 4: commit the 3D scene (dashboard/static/stadium.html + API), already checked.

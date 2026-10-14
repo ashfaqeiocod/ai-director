@@ -304,3 +304,44 @@ def test_tv_waits_for_a_swinging_robotic_camera():
     states = {0.0: map_state(0.0), 3.0: map_state(3.0, (10, 34.5), "out", events=[{"type": "BALL_OUT", "line": "touchline"}])}
     on_air, _ = run_tv(states, 5, moving={2: 40.0})     # CLOSE is still turning fast
     assert 2 not in on_air
+
+
+# ------------------------------------------------------------------ Step 3: the twin (ZXY + detections)
+from studio.zxy import PitchTracker, apply_correction, ball_track, claim, to_centre  # noqa: E402
+
+
+def test_zxy_corner_metres_to_centre_metres():
+    corners = np.array([[0, 0], [105, 68], [52.5, 34]])
+    assert np.allclose(to_centre(corners, False, False), [[-52.5, -34], [52.5, 34], [0, 0]])
+    # Alfheim: the sensors' y runs the other way (measured): flip_y
+    assert np.allclose(to_centre(corners, False, True), [[-52.5, 34], [52.5, -34], [0, 0]])
+    assert np.allclose(apply_correction(corners, [1, 0, 0, 0, 1, 0]), corners)
+    assert np.allclose(apply_correction([[1, 2]], [1, 0, -0.5, 0, 1, 0.5]), [[0.5, 2.5]])
+
+
+def test_each_home_player_claims_only_one_detection():
+    home = np.array([[0.0, 0.0]])
+    people = [(0.5, 0.0, "player"), (1.5, 0.0, "player"), (20.0, 0.0, "referee")]   # a marker 1.5 m away
+    rest = claim(home, people, radius=4.0)
+    assert rest == [(1.5, 0.0, "player"), (20.0, 0.0, "referee")]       # the marker is NOT swallowed
+
+
+def test_tracker_holds_a_lost_player_for_one_second():
+    tr = PitchTracker(gate_m=3, hold_s=1.0, smooth=0.5)
+    for k in range(5):
+        tr.update(k * 0.2, [(k * 1.0, 0.0)])                          # running at 5 m/s
+    assert len(tr.at(1.0, min_hits=2)) == 1
+    tr.update(1.4, [])
+    (_, x, _), = tr.at(1.4, min_hits=2)
+    assert x > 4.0                                                     # predicted forward, not frozen
+    tr.update(2.5, [])
+    assert tr.at(2.5, min_hits=2) == []                                # gone after the hold time
+
+
+def test_ball_gaps_are_filled_and_long_balls_fly():
+    cfg = {"ball_gap_s": 2.0, "lofted_speed_ms": 15, "lofted_min_m": 20, "lofted_max_m": 15}
+    ball = ball_track([(0.0, (0.0, 0.0)), (1.0, (10.0, 0.0)), (3.0, (50.0, 0.0)), (6.0, (55.0, 0.0))], cfg)
+    assert ball(0.5) == (5.0, 0.0, 0.0)                               # short gap, slow: on the ground
+    x, y, z = ball(2.0)
+    assert x == pytest.approx(30.0) and z > 3                          # 40 m in 2 s: a lofted ball, high mid-way
+    assert ball(4.5) is None                                           # a 3 s gap is not filled
