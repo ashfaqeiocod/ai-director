@@ -244,9 +244,10 @@ stand(0, 42, 120, 22, 0); stand(0, -42, 120, 18, Math.PI); stand(-63, 0, 76, 14,
 { // the crowd
   const fan = new THREE.BoxGeometry(0.42, 0.75, 0.32); fan.translate(0, 0.37, 0);
   const crowd = new THREE.InstancedMesh(fan, crowdMat, seats.length);
-  const m = new THREE.Matrix4(), col = new THREE.Color(), palette = [0xdc2626, 0xf1f5f9, 0xdc2626, 0x1e293b, 0x334155, 0xfbbf24, 0x1d4ed8];
+  // a night crowd: mostly dark winter coats, some home red and white, a few away blue
+  const m = new THREE.Matrix4(), col = new THREE.Color(), palette = [0x1f2937, 0x111827, 0x374151, 0x27272a, 0x3f3f46, 0x1e293b, 0x9f1239, 0xb91c1c, 0xe5e7eb, 0x1e3a8a];
   seats.forEach((st, k) => { st.grp.updateMatrixWorld(); m.makeTranslation(st.x, st.y, st.z).premultiply(st.grp.matrixWorld);
-    crowd.setMatrixAt(k, m); crowd.setColorAt(k, col.setHex(palette[Math.floor(Math.random() * palette.length)]).multiplyScalar(0.6 + Math.random() * 0.4)); });
+    crowd.setMatrixAt(k, m); crowd.setColorAt(k, col.setHex(palette[Math.floor(Math.random() * palette.length)]).multiplyScalar(0.55 + Math.random() * 0.35)); });
   scene.add(crowd);
 }
 // Floodlight towers in the corners, lamps glowing.
@@ -393,32 +394,53 @@ const prog = $('prog'), pg = prog.getContext('2d');
 function setSize(w, h) { gl.setSize(w, h, false); prog.width = w; prog.height = h; for (const c of cams) { c.aspect = w / h; } }
 
 // TV graphics, drawn into the picture so the recording has them.
-function graphics(t, k) {
+function graphics(t, k, replay, kf) {
   const W = prog.width, s = W / 1920, B = S.B;
   pg.save(); pg.scale(s, s);
+  if (replay) {                                                     // REPLAY badge + a wipe in and out
+    const edge = Math.min(kf - replay.at, replay.to - 1 - kf), WIPE = 14;
+    if (edge < WIPE) {
+      const p = edge / WIPE, x = (kf - replay.at < WIPE ? p : 1 - p) * 2400 - 300;
+      pg.fillStyle = 'rgba(185,28,28,0.95)'; pg.beginPath(); pg.moveTo(x - 220, 0); pg.lineTo(x + 120, 0); pg.lineTo(x - 80, 1080); pg.lineTo(x - 420, 1080); pg.fill();
+      pg.fillStyle = '#fff'; pg.font = 'bold 54px sans-serif'; pg.textAlign = 'center'; pg.fillText('REPLAY', x - 150, 540); pg.textAlign = 'left';
+    }
+  }
   pg.fillStyle = 'rgba(15,23,42,0.92)'; pg.fillRect(60, 50, 330, 54);
   pg.fillStyle = '#b91c1c'; pg.fillRect(390, 50, 120, 54);
   pg.fillStyle = '#fff'; pg.font = 'bold 30px sans-serif'; pg.textBaseline = 'middle';
   pg.fillText('TIL', 80, 78); pg.fillText('0 - 0', 175, 78); pg.fillText('SIF', 310, 78);
   pg.fillText(fmt(t), 408, 78);
-  pg.fillStyle = 'rgba(220,38,38,0.95)'; pg.fillRect(1780, 50, 80, 36); pg.fillStyle = '#fff'; pg.font = 'bold 22px sans-serif'; pg.fillText('LIVE', 1793, 69);
+  if (replay) { pg.fillStyle = 'rgba(15,23,42,0.92)'; pg.fillRect(1730, 50, 130, 36); pg.fillStyle = '#facc15'; pg.font = 'bold 22px sans-serif'; pg.fillText('REPLAY', 1748, 69); }
+  else { pg.fillStyle = 'rgba(220,38,38,0.95)'; pg.fillRect(1780, 50, 80, 36); pg.fillStyle = '#fff'; pg.font = 'bold 22px sans-serif'; pg.fillText('LIVE', 1793, 69); }
   pg.font = '20px sans-serif'; pg.fillStyle = 'rgba(255,255,255,0.75)'; pg.fillText(B.cameras[k].name, 60, 1030);
   pg.font = '16px sans-serif'; pg.fillStyle = 'rgba(255,255,255,0.55)'; pg.textAlign = 'right'; pg.fillText(B.credit, 1860, 1030);
   pg.restore();
 }
+// The program frame at clip time c. Live frames show the match at the same moment; replay frames show an earlier
+// moment, slowed down (B.src = the match frame each program frame shows).
+function sourceAt(c) {
+  const fps = S.B.fps, n = S.B.on_air.length, kf = Math.min(n - 1, Math.floor(c * fps + 1e-6)), frac = c * fps - kf;
+  const a = S.B.src ? S.B.src[kf] : kf, b = S.B.src ? S.B.src[Math.min(n - 1, kf + 1)] : kf + 1;
+  const step = Math.abs(b - a) < 2 ? b - a : 1;                  // a jump (replay start / end) is not a step
+  return { kf, src: a + frac * step, step };
+}
+function replayAt(kf) { return (S.B.replays || []).find(r => kf >= r.at && kf < r.to) || null; }
 function renderFrame(c, dt, wall) {
-  const fps = S.B.fps, frame = Math.floor(c * fps + 1e-6), frac = c * fps - frame, t = S.B.start_s + c;
-  placeEveryone(t, dt);
-  const f = Math.min(frame, S.B.on_air.length - 1), k = S.B.on_air[f];
-  // the crowd gets louder in attacks and stoppages near goal (the director's state)
-  const target = S.B.states[f] === 'ATTACK' ? 1 : S.B.states[f] === 'STOPPAGE' ? 0.4 : 0.1;
+  const fps = S.B.fps, { kf, src, step } = sourceAt(c);
+  const t = S.B.start_s + src / fps, live = S.B.start_s + c;
+  const prev = S.prevSrc;
+  S.prevSrc = src;
+  if (prev != null && Math.abs(src - prev) > 15) for (const f of figures.values()) f.last = null;   // cut to a replay
+  placeEveryone(t, Math.max(0, dt * Math.abs(step)));
+  const k = S.B.on_air[kf], frame = Math.floor(src + 1e-6), frac = src - frame;
+  const target = S.B.states[kf] === 'ATTACK' ? 1 : S.B.states[kf] === 'STOPPAGE' ? 0.4 : 0.1;
   S.cheer += (target - S.cheer) * Math.min(1, dt * 2); crowdU.uCheer.value = S.cheer; crowdU.uTime.value = t;
   ledTex.offset.x = (t * 0.02) % 1;
   gl.render(scene, cameraAt(k, frame, frac));
   pg.drawImage(gl.domElement, 0, 0, prog.width, prog.height);
-  graphics(t, k);
+  graphics(live, k, replayAt(kf), kf);
   if (wall) renderWall(frame, frac, k);
-  return { t, k, f };
+  return { t: live, k, f: kf };
 }
 function renderWall(frame, frac, live) {
   const n = S.B.cameras.length, cols = 2, w = 320, h = 180;
@@ -464,45 +486,56 @@ function tick(now) {
   if (!row(S.B.start_s + S.c)) return;
   const r = renderFrame(S.c, S.playing ? dt * S.speed : 0, (wallTick++ % 3) === 0);
   $('clock').textContent = fmt(r.t);
-  $('state').textContent = `${S.B.states[r.f]} · on air: ${S.B.cameras[r.k].name}`;
+  $('state').textContent = `${replayAt(r.f) ? 'REPLAY' : S.B.states[r.f]} · on air: ${S.B.cameras[r.k].name}`;
   const cut = [...S.B.cuts].reverse().find(x => x.frame <= r.f);
   $('reason').textContent = cut ? `last cut ${fmt(S.B.start_s + cut.frame / S.B.fps)}: ${cut.reason}` : '';
   drawTimeline();
   fpsCount++; if (now - fpsSince > 1000) { $('fps').textContent = `${fpsCount} fps`; fpsCount = 0; fpsSince = now; }
 }
-const PART_S = 120;
+// Frame-exact 1080p: every frame is rendered, handed to the browser's H.264 encoder (WebCodecs, the Mac's hardware
+// encoder) and the encoded stream goes to the server in pieces; the page waits whenever the encoder is busy, so no
+// frame is ever dropped. The server wraps the stream into program.mp4 at exactly 30 fps.
 async function record() {
   S.recording = true; S.playing = false; $('play').textContent = 'Play'; $('rec').disabled = true;
   setSize(1920, 1080);
-  flood.shadow.mapSize.set(4096, 4096); flood.shadow.map?.dispose(); flood.shadow.map = null;   // sharper shadows for the video
-  const fps = S.B.fps, total = S.B.frames, parts = Math.ceil(total / (PART_S * fps));
+  flood.shadow.mapSize.set(4096, 4096); flood.shadow.map?.dispose(); flood.shadow.map = null;   // sharper shadows
+  const fps = S.B.fps, total = S.B.frames, base = `${S.segment}/${S.run}`;
+  let pending = [], bytes = 0, first = true, failed = null;
+  const send = async () => {
+    if (!pending.length) return;
+    const blob = new Blob(pending); pending = []; bytes = 0;
+    const res = await fetch(`/studio/broadcast/stream/${base}?reset=${first ? 1 : 0}`, { method: 'POST', body: blob });
+    if (!res.ok) throw new Error('upload failed');
+    first = false;
+  };
+  const enc = new VideoEncoder({
+    output: chunk => { const b = new Uint8Array(chunk.byteLength); chunk.copyTo(b); pending.push(b); bytes += b.length; },
+    error: e => { failed = e; } });
+  enc.configure({ codec: 'avc1.640028', width: 1920, height: 1080, bitrate: 16e6, framerate: fps,
+                  hardwareAcceleration: 'prefer-hardware', avc: { format: 'annexb' } });
+  const t0 = performance.now();
   try {
-    for (let part = 0; part < parts; part++) {
-      const a = part * PART_S * fps, b = Math.min(total, a + PART_S * fps);
-      const stream = prog.captureStream(0), track = stream.getVideoTracks()[0];
-      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
-      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 }), chunks = [];
-      rec.ondataavailable = e => e.data.size && chunks.push(e.data); rec.start(1000);
-      await new Promise(r => setTimeout(r, 300));
-      for (let k = a; k < b; k++) {
-        const c = k / fps;
-        await ensure(S.B.start_s + c); await ensure(S.B.start_s + c + STEP);
-        renderFrame(c, k === a && part === 0 ? 0 : 1 / fps, false);
-        track.requestFrame();
-        await new Promise(r => requestAnimationFrame(r));
-        if (k % fps === 0) $('recstatus').textContent = `rendering ${fmt(S.B.start_s + c)} (${Math.round(100 * k / total)}%)`;
+    for (let k = 0; k < total; k++) {
+      const c = k / fps;
+      const src = S.B.src ? S.B.src[k] : k;
+      await ensure(S.B.start_s + src / fps); await ensure(S.B.start_s + src / fps + STEP);
+      renderFrame(c, k === 0 ? 0 : 1 / fps, false);
+      const frame = new VideoFrame(prog, { timestamp: Math.round(k * 1e6 / fps) });
+      enc.encode(frame, { keyFrame: k % (2 * fps) === 0 });
+      frame.close();
+      while (enc.encodeQueueSize > 3) await new Promise(r => setTimeout(r, 2));   // the encoder is busy: wait
+      if (failed) throw failed;
+      if (bytes > 4e6) await send();
+      if (k % fps === 0) {
+        const rate = k / ((performance.now() - t0) / 1000);
+        $('recstatus').textContent = `rendering ${fmt(S.B.start_s + c)} · ${Math.round(100 * k / total)}% · ${rate.toFixed(1)} fps`;
       }
-      await new Promise(r => setTimeout(r, 300));
-      const blob = await new Promise(r => { rec.onstop = () => r(new Blob(chunks, { type: 'video/webm' })); rec.stop(); });
-      $('recstatus').textContent = `uploading part ${part + 1}/${parts} (${(blob.size / 1e6).toFixed(0)} MB)…`;
-      const qs = new URLSearchParams({ cam: 'program', start: S.B.start_s + a / fps, seconds: (b - a) / fps, run: S.run, part, area: 'broadcast' });
-      const res = await fetch(`/studio/stadium/upload/${S.segment}?${qs}`, { method: 'POST', body: blob });
-      if (!res.ok) throw new Error((await res.json()).detail);
     }
-    const res = await fetch(`/studio/stadium/join/${S.segment}?cam=program&run=${S.run}&area=broadcast`, { method: 'POST' });
+    await enc.flush(); await send(); enc.close();
+    const res = await fetch(`/studio/broadcast/finish/${base}?frames=${total}&fps=${fps}`, { method: 'POST' });
     const out = await res.json();
     if (!res.ok) throw new Error(out.detail);
-    $('recstatus').textContent = `saved ${out.file} (${out.parts} parts)`;
+    $('recstatus').textContent = `saved ${out.file} (${out.frames} of ${out.expected} frames)`;
     document.title = 'RENDERED';
   } catch (e) { $('recstatus').textContent = 'render failed: ' + e.message; document.title = 'FAILED'; }
   setSize(...previewSize()); S.recording = false; $('rec').disabled = false; S.last = null;

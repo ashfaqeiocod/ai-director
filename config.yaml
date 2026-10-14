@@ -592,21 +592,22 @@ studio:
   broadcast: # Virtual Broadcast (docs/VIRTUAL_BROADCAST_PLAN.md): every camera virtual, rendered in 3D from the twin
     outputs_dir: "outputs/broadcast" # runs: outputs/broadcast/<segment>/<run_id>/
     fps: 30
-    # The T2 camera plan of a real TV crew (main stand = near side, y > 34). position [x, y, height] m; look_at = the
+    # The T2 camera plan of a real TV crew (main stand = near side, y > 34; the main-stand cameras hang on a gantry at
+    # the front edge of its roof, y = 45, 11 m behind the touchline). position [x, y, height] m; look_at = the
     # starting aim; field width = metres across the picture where it looks; motion like a fluid head (speed AND
     # acceleration limits: moves ease in and out). Changing the camera plan = changing this list.
     cameras:
-      main: { name: "MAIN", kind: ptz, built_from: 3d, position: [0, 58, 18], look_at: [0, 0], field_width_m: 40,
+      main: { name: "MAIN", kind: ptz, built_from: 3d, position: [0, 45, 17], look_at: [0, 0], field_width_m: 40,
               min_field_width_m: 18, max_field_width_m: 70, max_pan_deg_s: 25, max_accel_deg_s2: 30,
               max_zoom_ratio_s: 1.25, max_zoom_accel: 0.4, dead_zone_deg: 0.6, smoothing_s: 0.45 }
-      tight: { name: "TIGHT", kind: ptz, built_from: 3d, position: [4, 58, 18], look_at: [0, 0], field_width_m: 9,
+      tight: { name: "TIGHT", kind: ptz, built_from: 3d, position: [4, 45, 17], look_at: [0, 0], field_width_m: 9,
                min_field_width_m: 4, max_field_width_m: 25, max_pan_deg_s: 40, max_accel_deg_s2: 70,
                max_zoom_ratio_s: 1.6, max_zoom_accel: 1.0, dead_zone_deg: 0.25, smoothing_s: 0.3 }
-      wide: { name: "WIDE", kind: fixed, built_from: 3d, position: [0, 58, 17.5], look_at: [0, -8], field_width_m: 100 } # under the stand roof, like the gantry
-      high18l: { name: "HIGH 18 L", kind: ptz, built_from: 3d, position: [-36, 56, 15], look_at: [-40, 0], field_width_m: 32,
+      wide: { name: "WIDE", kind: fixed, built_from: 3d, position: [0, 45, 17.5], look_at: [0, -6], field_width_m: 100 }
+      high18l: { name: "HIGH 18 L", kind: ptz, built_from: 3d, position: [-36, 45, 15], look_at: [-40, 0], field_width_m: 32,
                  min_field_width_m: 12, max_field_width_m: 50, max_pan_deg_s: 30, max_accel_deg_s2: 40,
                  max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.45 }
-      high18r: { name: "HIGH 18 R", kind: ptz, built_from: 3d, position: [36, 56, 15], look_at: [40, 0], field_width_m: 32,
+      high18r: { name: "HIGH 18 R", kind: ptz, built_from: 3d, position: [36, 45, 15], look_at: [40, 0], field_width_m: 32,
                  min_field_width_m: 12, max_field_width_m: 50, max_pan_deg_s: 30, max_accel_deg_s2: 40,
                  max_zoom_ratio_s: 1.3, max_zoom_accel: 0.5, dead_zone_deg: 0.6, smoothing_s: 0.45 }
       goall: { name: "GOAL L", kind: ptz, built_from: 3d, position: [-74, 0, 12], look_at: [-40, 0], field_width_m: 34,
@@ -637,6 +638,27 @@ studio:
       goal_max_m: 45
       goal_aim_share: 0.25 # GOAL L/R aim at the play, this share of the way towards their goal (0.5 put the net in the middle)
       idle_m: 40 # resting shot on their box
+    replays: # an attack that ends in a stoppage is shown again, slowed down, from behind the goal
+      after_attack_s: 8 # the stoppage must come within this long after the attack
+      before_s: 1.5 # the replay starts this long before the attack ...
+      after_s: 0.5 # ... and ends this long after the stoppage
+      max_source_s: 6 # at most this much match time
+      speed: 0.6 # slow motion
+      delay_s: 1.0 # it starts this long after the stoppage
+      gap_s: 20 # at least this long between two replays
+    sound: # the crowd (studio.broadcast.crowd_sound): excitement 0..1 per director state, smoothed
+      rate: 22050
+      play: 0.25
+      attack: 0.9
+      stoppage: 0.35
+      restart: 0.3
+      replay: 0.25
+      roar: 1.0 # an attack ending in a stoppage (a shot or a near miss)
+      roar_s: 3.0
+      smooth_s: 1.2
+      murmur_gain: 0.25
+      cheer_gain: 0.35
+      volume: 0.9
     director: # DirectorV2 tv mode (studio.director._tv), same rules as MVP 4 with this camera set's roles
       mode: tv
       start_cam: 1

@@ -790,3 +790,38 @@ def broadcast_model(name: str) -> FileResponse:
     if "/" in name or ".." in name or not path.exists():
         raise HTTPException(404, "no such model (see TESTING_MVP4.md: download data/models/Xbot.glb)")
     return FileResponse(path, media_type="model/gltf-binary")
+
+
+@router.post("/broadcast/stream/{segment}/{run}")
+async def broadcast_stream(segment: str, run: str, request: Request, reset: int = 0) -> dict:
+    """The page's H.264 stream (WebCodecs, hardware encoder, one frame per 1/30 s of match time), appended piece by
+    piece to program.h264 in the run folder (reset=1: the first piece starts the file)."""
+    folder = _broadcast_dir(segment, run)
+    data = await request.body()
+    with open(folder / "program.h264", "wb" if reset else "ab") as f:
+        f.write(data)
+    return {"bytes": len(data)}
+
+
+@router.post("/broadcast/finish/{segment}/{run}")
+def broadcast_finish(segment: str, run: str, frames: int, fps: float = 30) -> dict:
+    """program.h264 -> program.mp4 (wrapped at exactly `fps`, not re-encoded); checks the frame count."""
+    import subprocess
+
+    from src.common import ffmpeg_exe
+
+    folder = _broadcast_dir(segment, run)
+    raw, part, mp4 = folder / "program.h264", folder / "program.part.mp4", folder / "program.mp4"
+    # the raw stream has no usable timing: number the frames at exactly `fps` (setts), not re-encoded
+    done = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(raw), "-c", "copy",
+                           "-bsf:v", f"setts=ts=N/({fps}*TB)", "-video_track_timescale", str(round(fps * 1000)),
+                           "-movflags", "+faststart", str(part)], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise HTTPException(500, f"ffmpeg failed: {done.stderr[-300:]}")
+    count = subprocess.run([ffmpeg_exe(), "-i", str(part), "-c", "copy", "-f", "null", "-"], capture_output=True,
+                           text=True).stderr
+    got = int(count.rsplit("frame=", 1)[1].split()[0]) if "frame=" in count else None
+    part.replace(mp4)
+    raw.unlink()
+    print(f"[broadcast] program: {got} of {frames} frames -> {mp4.relative_to(ROOT)}", flush=True)
+    return {"file": str(mp4.relative_to(ROOT)), "frames": got, "expected": frames}

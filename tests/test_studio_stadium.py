@@ -351,3 +351,51 @@ def test_ball_gaps_are_filled_and_long_balls_fly():
     x, y, z = ball(2.0)
     assert x == pytest.approx(30.0) and z > 3                          # 40 m in 2 s: a lofted ball, high mid-way
     assert ball(4.5) is None                                           # a 3 s gap is not filled
+
+
+# ------------------------------------------------------------------ Virtual Broadcast: replays, program summary
+from studio.broadcast import add_replays, crowd_envelope, program_summary  # noqa: E402
+
+IDS = ["main", "tight", "wide", "high18l", "high18r", "goall", "goalr"]
+REPLAY = {"after_attack_s": 8, "before_s": 1.5, "after_s": 0.5, "max_source_s": 6, "speed": 0.6, "delay_s": 1.0,
+          "gap_s": 20}
+
+
+def program_with_attack(fps=30):
+    """60 s: MAIN, an attack on the left goal (GOAL L on air) 10-16 s, a stoppage with CLOSE from 16 s, MAIN again."""
+    n = 60 * fps
+    states = ["PLAY"] * n
+    on_air = [0] * n
+    for k in range(10 * fps, 16 * fps):
+        states[k], on_air[k] = "ATTACK", 5
+    for k in range(16 * fps, 19 * fps):
+        states[k], on_air[k] = "STOPPAGE", 1
+    return on_air, states
+
+
+def test_a_replay_follows_an_attack_that_ends_in_a_stoppage():
+    on_air, states = program_with_attack()
+    src, replays = add_replays(on_air, states, IDS, REPLAY, 30, 2.5)
+    assert len(replays) == 1
+    r = replays[0]
+    assert IDS[r["cam"]] == "high18l"             # GOAL L showed it live: the replay comes from HIGH 18 L
+    assert r["until"] >= 16 * 30 and r["until"] - r["from"] <= 6 * 30   # the end of the attack (the shot), <= 6 s
+    assert src[r["at"] + 10] < r["at"]                     # replay frames show an earlier moment ...
+    assert abs((src[r["at"] + 11] - src[r["at"] + 10]) - 0.6) < 1e-6   # ... in slow motion
+    assert r["at"] >= 16 * 30 + 75                         # the CLOSE shot keeps its 2.5 s first
+
+
+def test_no_shot_shorter_than_the_minimum_with_replays():
+    on_air, states = program_with_attack()
+    src, _ = add_replays(on_air, states, IDS, REPLAY, 30, 2.5)
+    s = program_summary(on_air, src, IDS, 30, 2.5)
+    assert s["shots_under_min"] == 0
+
+
+def test_crowd_roars_after_an_attack_and_is_quiet_in_replays():
+    on_air, states = program_with_attack()
+    cfg = {"play": 0.25, "attack": 0.9, "stoppage": 0.35, "restart": 0.3, "replay": 0.25, "roar": 1.0, "roar_s": 3,
+           "smooth_s": 1.2}
+    env = crowd_envelope({"fps": 30, "states": states, "replays": []}, cfg)
+    assert env[16 * 30 + 15] > env[5 * 30] + 0.4          # louder right after the attack than in open play
+    assert env.max() <= 1.0

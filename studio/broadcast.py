@@ -33,7 +33,7 @@ from src.common import ROOT, load_config
 from studio.director import DirectorV2
 from studio.panorama import parse_time
 from studio.pitchmap import HALF_X, MapState, PitchMap, Projection
-from studio.stadium import Stadium, director_summary, view_towards
+from studio.stadium import Stadium, view_towards
 
 SEGMENT = "alfheim-2013-11-03-H1"
 
@@ -267,7 +267,14 @@ def run(segment: str, start_s: float, seconds: float) -> Path:
         reason = decision.reason.replace('"', "'")
         dlog.write(f'{i},{t:.3f},{decision.cam},{cam.name},{decision.state},"{reason}"\n')
     dlog.close()
+    ids = [c.id for c in stadium.cameras]
+    src, replays = add_replays(on_air, states, ids, cfg["replays"], fps, cfg["director"]["min_shot_seconds"])
+    for r in replays:
+        cuts.append({"type": "REPLAY", "frame": r["at"], "t": round(start_s + r["at"] / fps, 2), "to_id": ids[r["cam"]],
+                     "reason": f"replay of the attack at {fmt_time(start_s + r['from'] / fps)} from {stadium.cameras[r['cam']].name}"})
+    cuts.sort(key=lambda c: c["frame"])
     data = {"segment": segment, "start_s": start_s, "seconds": seconds, "fps": fps, "frames": n,
+            "src": src, "replays": replays,
             "home_attacks": home_dir, "teams": ["Tromsø IL", "Strømsgodset"],
             "cameras": [{"id": c.id, "name": c.name, "kind": c.kind, "position_m": list(c.position_m)}
                         for c in stadium.cameras],
@@ -275,14 +282,202 @@ def run(segment: str, start_s: float, seconds: float) -> Path:
             "credit": "Alfheim dataset (Simula), non-commercial research"}
     (out / "broadcast.json").write_text(json.dumps(data, separators=(",", ":")))
     summary = {"segment": segment, "start_s": start_s, "seconds": seconds, "run": run_id,
-               **director_summary(airtime, [c for c in cuts], n, fps, {"director": cfg["director"]}),
+               **program_summary(on_air, src, ids, fps, cfg["director"]["min_shot_seconds"]),
+               "replays": len(replays),
                "fastest_deg_s": {cid: round(max(abs(np.diff(paths[cid]["pan"])).max(initial=0),
                                                 abs(np.diff(paths[cid]["tilt"])).max(initial=0)) * fps, 1)
                                  for cid in stadium.heads},
                "seconds_taken": round(time.time() - t0, 1)}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    crowd_sound(data, out / "crowd.wav", cfg["sound"])
     print(json.dumps(summary, indent=1))
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 4. Sound: a crowd that reacts (Alfheim has no sound)
+# ---------------------------------------------------------------------------------------------------------------
+def crowd_envelope(data: dict, cfg: dict) -> np.ndarray:
+    """How excited the crowd is, per program frame (0..1): from the director's state (an attack in a box is loud),
+    a roar when an attack ends in a stoppage (a shot or a near miss), quieter during replays."""
+    fps = data["fps"]
+    level = {"ATTACK": cfg["attack"], "STOPPAGE": cfg["stoppage"], "RESTART": cfg["restart"]}
+    raw = np.array([level.get(s, cfg["play"]) for s in data["states"]], np.float64)
+    for k in range(1, len(raw)):                         # roars: attack -> stoppage
+        if data["states"][k] in ("STOPPAGE", "RESTART") and data["states"][k - 1] == "ATTACK":
+            n = round(cfg["roar_s"] * fps)
+            raw[k:k + n] = np.maximum(raw[k:k + n], cfg["roar"] * np.exp(-np.arange(min(n, len(raw) - k)) / (n / 3)))
+    for r in data.get("replays", []):
+        raw[r["at"]:r["to"]] = np.minimum(raw[r["at"]:r["to"]], cfg["replay"])
+    out = np.empty_like(raw)                             # smooth: a crowd swells and calms over a second or two
+    a = 1 - math.exp(-1 / (cfg["smooth_s"] * fps))
+    v = raw[0]
+    for k, x in enumerate(raw):
+        v += a * (x - v)
+        out[k] = v
+    return out
+
+
+def crowd_sound(data: dict, path: Path, cfg: dict) -> None:
+    """A stadium crowd as a WAV file: a murmur (filtered noise, slowly drifting) + a brighter cheering layer that
+    follows the excitement. Made in one-minute blocks, so a whole half fits in memory."""
+    import wave
+
+    from scipy.signal import butter, sosfilt, sosfilt_zi
+
+    rate, fps = cfg["rate"], data["fps"]
+    env = crowd_envelope(data, cfg)
+    total = round((len(env) / fps + 1.0) * rate)        # 1 s longer than the picture: muxing cuts at the picture
+    murmur = butter(4, [120, 1800], btype="band", fs=rate, output="sos")
+    cheer = butter(4, [700, 4500], btype="band", fs=rate, output="sos")
+    zm, zc = sosfilt_zi(murmur) * 0, sosfilt_zi(cheer) * 0
+    rng = np.random.default_rng(7)
+    drift = 0.0
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        for a in range(0, total, rate * 60):
+            n = min(rate * 60, total - a)
+            t = (a + np.arange(n)) / rate
+            e = np.interp(t * fps, np.arange(len(env)), env)
+            m, zm = sosfilt(murmur, rng.standard_normal(n), zi=zm)
+            c, zc = sosfilt(cheer, rng.standard_normal(n), zi=zc)
+            # slow random drift of the murmur (a crowd is never perfectly steady)
+            steps = np.cumsum(rng.standard_normal(n // rate + 2)) * 0.05
+            drift_curve = np.interp(np.arange(n) / rate, np.arange(len(steps)), steps + drift)
+            drift = float(drift_curve[-1])
+            mono = m * cfg["murmur_gain"] * (0.8 + 0.2 * np.tanh(drift_curve)) * (0.5 + e) + c * cfg["cheer_gain"] * e ** 2
+            # stereo: two slightly different mixes so it sounds wide
+            left = mono + 0.15 * c * e
+            right = mono - 0.15 * c * e
+            # a soft limiter (tanh): loud roars get rounder instead of clipping
+            pcm = (np.tanh(np.stack([left, right], axis=1) * cfg["volume"]) * 32000).astype("<i2")
+            w.writeframes(pcm.tobytes())
+
+
+def add_sound(video: Path, wav: Path, fps: float = 30) -> None:
+    """program.mp4 + crowd.wav -> program.mp4 with sound (the picture is copied, not re-encoded)."""
+    import subprocess
+
+    from src.common import ffmpeg_exe
+
+    tmp = video.with_name("program_sound.part.mp4")
+    # the picture is also re-timed to exactly 30 fps (the browser's raw stream carries no usable timing)
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(video), "-i", str(wav), "-map", "0:v",
+                    "-map", "1:a", "-c:v", "copy", "-bsf:v", f"setts=ts=N/({fps}*TB)",
+                    "-video_track_timescale", str(round(fps * 1000)), "-c:a", "aac", "-b:a", "160k", "-shortest",
+                    "-movflags", "+faststart", str(tmp)], check=True)
+    tmp.replace(video)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 5. Rendering the 1080p program (headless Chrome renders the page; the dashboard server stores the video)
+# ---------------------------------------------------------------------------------------------------------------
+def render(segment: str, run_id: str, server: str, seconds: float) -> bool:
+    import shutil
+    import subprocess
+    import tempfile
+    import urllib.request
+
+    cfg = settings()
+    out = ROOT / cfg["outputs_dir"] / segment / run_id
+    try:
+        urllib.request.urlopen(f"{server}/studio/broadcast/runs", timeout=10).read()
+    except Exception as e:  # noqa: BLE001
+        print(f"[broadcast] no dashboard at {server} ({e}). Start it: venv/bin/python -m dashboard.server", flush=True)
+        return False
+    chrome = load_config()["studio"]["stadium"]["program"]["chrome"]
+    flags = load_config()["studio"]["stadium"]["program"]["chrome_flags"]
+    profile = tempfile.mkdtemp(prefix="broadcast-chrome-")
+    url = f"{server}/studio/broadcast?segment={segment}&run={run_id}&render=1"
+    print(f"[broadcast] rendering program.mp4 (1080p) in headless Chrome...", flush=True)
+    proc = subprocess.Popen([chrome, "--headless=new", *flags, "--window-size=1700,1200", f"--user-data-dir={profile}",
+                             "--remote-debugging-port=0", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0 = time.time()
+    try:
+        while time.time() - t0 < 300 + seconds * 20 and not (out / "program.mp4").exists():
+            time.sleep(3)
+    finally:
+        proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
+    ok = (out / "program.mp4").exists()
+    print(f"[broadcast] program.mp4 {'rendered' if ok else 'NOT rendered (timeout)'} in {(time.time() - t0) / 60:.1f} min",
+          flush=True)
+    return ok
+
+
+def program_summary(on_air: list[int], src: list[float], ids: list[str], fps: float, min_shot: float) -> dict:
+    """Airtime per camera and shot lengths of the FINAL program (replays included: a replay is its own shot)."""
+    shots, k, n = [], 0, len(on_air)
+    replay = [abs(src[i] - i) > 0.5 for i in range(n)]
+    while k < n:
+        j = k
+        while j < n and on_air[j] == on_air[k] and replay[j] == replay[k]:
+            j += 1
+        shots.append((j - k) / fps)
+        k = j
+    air: dict[str, int] = {}
+    for c in on_air:
+        air[ids[c]] = air.get(ids[c], 0) + 1
+    done = shots[:-1]                                   # the last shot is still running when the clip ends
+    return {"airtime_pct": {c: round(100 * v / n, 1) for c, v in sorted(air.items(), key=lambda x: -x[1])},
+            "cuts": len(shots) - 1, "avg_shot_s": round(n / fps / len(shots), 2),
+            "shots_under_min": sum(1 for d in done if d < min_shot - 1e-6),
+            "shortest_shot_s": round(min(done), 2) if done else None}
+
+
+def fmt_time(t: float) -> str:
+    return f"{int(t // 60)}:{int(t % 60):02d}"
+
+
+def add_replays(on_air: list[int], states: list[str], ids: list[str], cfg: dict, fps: float,
+                min_shot: float) -> tuple[list, list]:
+    """TV replays: when an attack ends and play stops (STOPPAGE / RESTART), the attack is shown again in slow motion
+    from a behind-goal camera (the HIGH 18 one if the goal camera already showed it live), starting
+    `delay_s` after the stoppage. Live play goes on meanwhile and is not shown (as on TV).
+    Changes `on_air` in place; returns (src = the match frame each program frame shows, the replays)."""
+    n = len(on_air)
+    src: list[float] = list(range(n))
+    replays: list[dict] = []
+    attack_start = attack_end = None
+    k = 0
+    while k < n:
+        if states[k] == "ATTACK" and (k == 0 or states[k - 1] != "ATTACK"):
+            attack_start = k
+        if states[k] != "ATTACK" and k > 0 and states[k - 1] == "ATTACK":
+            attack_end = k
+        stopped = states[k] in ("STOPPAGE", "RESTART") and k > 0 and states[k - 1] not in ("STOPPAGE", "RESTART")
+        if stopped and attack_end is not None and (k - attack_end) <= cfg["after_attack_s"] * fps \
+                and (not replays or k - replays[-1]["to"] > cfg["gap_s"] * fps):
+            a = max(attack_start - round(cfg["before_s"] * fps), 0)
+            b = min(k + round(cfg["after_s"] * fps), n - 1)
+            a = max(a, b - round(cfg["max_source_s"] * fps))
+            # which camera: the goal camera of the attacked side, unless it was on air for most of the attack live
+            side = next((ids[c][-1] for c in on_air[attack_start:attack_end] if ids[c][:4] in ("goal", "high")), "l")
+            goal, high = ids.index(f"goal{side}"), ids.index(f"high18{side}")
+            live_goal = sum(1 for c in on_air[attack_start:attack_end] if c == goal) / max(1, attack_end - attack_start)
+            cam = high if live_goal > 0.5 else goal
+            hold = round(min_shot * fps)
+            at = k + round(cfg["delay_s"] * fps)
+            shot_start = at                                  # the shot running when the replay would start ...
+            while shot_start > 0 and on_air[shot_start - 1] == on_air[min(at, n - 1)]:
+                shot_start -= 1
+            at = max(at, shot_start + hold)                  # ... is never cut short
+            length = round((b - a) / cfg["speed"])
+            if at + length + hold < n:
+                for j in range(length):
+                    on_air[at + j] = cam
+                    src[at + j] = round(a + j * cfg["speed"], 2)
+                back = on_air[at + length]                  # back to live: hold that shot long enough too
+                for j in range(at + length, at + length + hold):
+                    on_air[j] = back
+                replays.append({"at": at, "to": at + length, "from": a, "until": b, "cam": cam, "speed": cfg["speed"]})
+                attack_end = None
+                k = at + length
+                continue
+        k += 1
+    return src, replays
 
 
 def main() -> None:
@@ -290,8 +485,15 @@ def main() -> None:
     ap.add_argument("--segment", default=SEGMENT)
     ap.add_argument("--start", default="23:40")
     ap.add_argument("--seconds", type=float, default=300)
+    ap.add_argument("--render", action="store_true", help="also render program.mp4 (1080p, with crowd sound)")
+    ap.add_argument("--server", default=None, help="dashboard address (default: config studio.stadium.program.server)")
     args = ap.parse_args()
-    run(args.segment, parse_time(args.start), args.seconds)
+    out = run(args.segment, parse_time(args.start), args.seconds)
+    if args.render:
+        server = args.server or load_config()["studio"]["stadium"]["program"]["server"]
+        if render(args.segment, out.name, server, args.seconds):
+            add_sound(out / "program.mp4", out / "crowd.wav")
+            print(f"[broadcast] done: {(out / 'program.mp4').relative_to(ROOT)} (with crowd sound)", flush=True)
 
 
 if __name__ == "__main__":
