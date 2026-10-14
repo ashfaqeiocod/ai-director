@@ -25,6 +25,8 @@ open data/arm/out/program_live.mp4     # the AI live broadcast (it only saw the 
 open data/arm/out/program_edit.mp4     # the AI editor's version (it saw the whole match)
 open data/arm/synced/sync_check.mp4    # the 5 synced phones + their sound waves (spikes line up = synced)
 open data/arm/out/report.md            # the scorecard + Gemini's notes
+open data/arm/out/proof_behind_the_ai.mp4  # "behind the AI's eyes": broadcast + what the AI sees on 5 phones + why it cut
+                                           # (made by: venv/bin/python -m arm.proof, ~3 min)
 open data/arm/out/director_log_live.csv
 ```
 In `program_live.mp4` look for: tan smiling as he lifts his head (~16.5 s, close-up from C), the crowd laughing

@@ -727,7 +727,8 @@ arm:
     near_pin_upright: 0.35
     pin_lean: 0.85
     pin_upright: 0.15 # the grip this low above the elbows = a hand is (nearly) on the table = PIN
-    pin_confirm_s: 0.3 # ... for at least this long after NEAR_PIN
+    pin_confirm_s: 0.2 # the raw grip height at table level this long = PIN
+    vanish_s: 0.3 # ... or the hands were low (near pin) and then no camera saw the wrists for this long (hands flat)
     pin_hold_s: 1.0 # PIN phase, then REACTION
     reaction_min_s: 3.0 # a new grip after a pin is a new round only after this long
     release_s: 1.0 # no grip seen for this long = back to SETUP
@@ -748,6 +749,7 @@ arm:
     two_max_share: 0.85 # a TWO shot taller than this share of the picture is just the WIDE
     grip_size: 2.6 # GRIP height = this x the forearm length
     grip_unmeasured: 0.6 # clarity when the grip is only "where it was" (wrists not seen now)
+    grip_unseen_decisive: 0.25 # ... during a surge / near pin / pin: a shot that can't show the hands is nearly useless
     face_size: 3.6 # FACE height = this x the face height (head and shoulders)
     face_min_frontal: 0.35 # a face turned further away than ~70 degrees is not a face shot
     profile_frontal: 0.5 # faces up to ~60 degrees from the camera count fully (a profile reads well on TV)
@@ -758,6 +760,7 @@ arm:
     min_sharp: 0.6 # sharpness below this share of the camera's usual = blurry
     max_shake: 6.0 # the picture moved more than this (pixels of 480) since the last look = shaking
     angle_bonus: 0.5
+    pin_side_bonus: 1.0 # at the PIN the side cameras show the hand going down to the table best
     event_window_s: 2.5 # an event boosts its shot for this long (fading)
     weights: {fit: 0.4, emotion: 0.35, event: 0.35, angle: 0.15}
     # What each phase wants to see (0..1).
@@ -798,6 +801,7 @@ arm:
     lost_grace_s: 1.2 # the shot on air disappears (face turned away for a moment): keep it this long before leaving
     min_zoom_change: 0.4 # same camera: the new framing must be >= 40% bigger/smaller, else it is a jump cut
     cut_phases: [SURGE, NEAR_PIN, PIN] # hard cuts here; calm phases use a short dissolve
+    pin_hold_s: 1.0 # on a side shot of the hands at the PIN: no cut for this long (+ the min shot), the cut comes after
     line_choice_s: 3.0 # the 180-degree line: after this long, keep the better side of the table for good
   editor:
     anticipate_s: 0.6 # the editor knows an event is coming: its shot is boosted from this long before

@@ -805,5 +805,13 @@ Last updated: 2026-10-14. Spec: `docs/ARM_MVP_SPEC.md`. Testing: `TESTING_ARM.md
 - C finds both athletes only 78% of the time (tan hides behind black).
 - No debug mosaic video yet (the dashboard viewer shows the 5 cameras + on-air border instead).
 
+- Fixed 2026-10-14 (user: "the hand touching moment didn't show"): the pin (hand on the table at ~30.3 s) was
+  declared 0.8 s late (smoothed grip height + the wrists vanish when the hands lie flat) and the director cut to
+  camera B, where tan's own body hides the hands (wrong "behind cameras show the pin" bonus). Now: PIN from the raw
+  height or "hands vanished at table level" (30.5 s), the decisive bonus only for cameras that see the hands (side
+  first), and no cut away from a side shot of the hands during the PIN. Both programs show the pin from camera A.
+- Proof video: `venv/bin/python -m arm.proof` -> `data/arm/out/proof_behind_the_ai.mp4` (broadcast + the AI's
+  detections on all 5 phones + every cut's reason, live knowledge only).
+
 ## Next action (Arm MVP)
 User: label the match (`/arm/label`) and collect a few blind votes (`/arm/vote`); then re-run the report.

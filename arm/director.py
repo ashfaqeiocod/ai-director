@@ -131,6 +131,11 @@ class LiveDirector:
                 break
         else:
             return Decision(t, n, self.current)
+        # Never cut away in the middle of the decisive action: hold a side shot of the hands through the PIN,
+        # the cut comes after it (to the reaction).
+        if phase == "PIN" and on_air is not None and on_air.kind in ("TWO", "GRIP") \
+                and settings()["cameras"][on_air.cam]["side"] != "neutral" and held < c["pin_hold_s"] + self.min_shot(phase):
+            return Decision(t, n, self.current)
         lost = on_air is None or on_air.parts["clarity"] < c["min_clarity"]
         by_event = boosts.get(best.kind, 0.0) >= c["event_cut_boost"]
         if lost and held < c["lost_grace_s"]:

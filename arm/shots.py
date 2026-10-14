@@ -153,7 +153,10 @@ def score(shot: Shot, look: dict, state: dict, view: str, boosts: dict[str, floa
     clarity = 1.0
     if shot.kind in (TWO, GRIP):
         clarity *= 0.5 + 0.25 * athletes
-        clarity *= 1.0 if look["grip"] else cfg["grip_unmeasured"]
+        # In a surge / near pin a shot must show the hands. After the PIN the hands lie flat on the table: the
+        # pose model loses the wrists, but the viewer still sees them, so no extra penalty then.
+        unseen = cfg["grip_unseen_decisive"] if phase in ("SURGE", "NEAR_PIN") else cfg["grip_unmeasured"]
+        clarity *= 1.0 if look["grip"] else unseen
     if look["occluded"] and shot.kind in (TWO, GRIP):
         clarity *= 0.2
     if look["sharp"] < cfg["min_sharp"]:
@@ -161,10 +164,15 @@ def score(shot: Shot, look: dict, state: dict, view: str, boosts: dict[str, floa
     if look["shake"] > cfg["max_shake"]:
         clarity *= 0.5
 
-    # Angle: who-is-winning moments need a camera behind an athlete (it sees the hands go across the table).
+    # Angle: in the decisive moments the viewer must SEE the hands. Only cameras that see the grip right now get
+    # the bonus, side cameras most (the hand going down to the table is clearest from the side). A camera behind
+    # an athlete often has his own body in front of the hands (camera B at the pin of the first test).
     angle = 0.0
-    if phase in ("SURGE", "NEAR_PIN", "PIN") and shot.kind in (TWO, GRIP, WIDE):
-        angle = cfg["angle_bonus"] if view.startswith("behind") else 0.0
+    decisive = phase in ("SURGE", "NEAR_PIN", "PIN")
+    if decisive and shot.kind in (TWO, GRIP, WIDE) and look["grip"]:
+        angle = cfg["angle_bonus"] * (1.0 if view == "side" else 0.5)
+    if phase == "PIN" and shot.kind in (TWO, GRIP) and view == "side":
+        angle = cfg["pin_side_bonus"]           # the hand on the table: the side view shows it (wrists or not)
     angle += cfg["view_bonus"].get(view, {}).get(shot.kind, 0.0)
 
     event = boosts.get(shot.kind, 0.0)

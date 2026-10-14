@@ -248,6 +248,9 @@ class MatchTracker:
     winner: str = ""
     who: str = ""
     last_seen_grip: float = -99.0
+    raw_up: float = 1.0               # the latest unsmoothed grip height (median over the cameras that see it)
+    raw_up_t: float = -99.0
+    low_since: float | None = None    # since when the raw grip height is at table level
     votes: dict = field(default_factory=dict)        # (athlete, signal) -> recent True/False values
     crowd_s: float = 0.0
     last_event_t: dict = field(default_factory=dict)
@@ -267,6 +270,9 @@ class MatchTracker:
         alpha = min(1.0, dt / c["smooth_s"])
         if ups:
             self.last_seen_grip = t
+            # The raw height right now (median of the cameras, not smoothed): a pin is fast, smoothing is too slow.
+            self.raw_up = float(np.median(ups))
+            self.raw_up_t = t
         st.gripping = t - self.last_seen_grip <= c["release_s"]
         if ups:
             prev_lean, prev_up = self.lean_s, self.upright_s
@@ -345,8 +351,14 @@ class MatchTracker:
         c, t = self.cfg, st.t
         old = self.phase
         held = t - self.phase_since
-        pinned = st.gripping and (st.upright <= c["pin_upright"] or abs(st.lean) >= c["pin_lean"])
-        near = st.gripping and (st.upright <= c["near_pin_upright"] or abs(st.lean) >= c["near_pin_lean"])
+        # PIN: the hands are at table level (raw height) for pin_confirm_s, or they were low and then vanished:
+        # hands flat on the table hide the wrists from the pose model, so "gone while low" means "down".
+        low = self.raw_up <= c["pin_upright"]
+        self.low_since = (self.low_since if self.low_since is not None else t) if low else None
+        vanished_low = self.raw_up <= c["near_pin_upright"] and t - self.raw_up_t >= c["vanish_s"]
+        pinned = st.gripping and ((self.low_since is not None and t - self.low_since >= c["pin_confirm_s"])
+                                  or vanished_low or abs(st.lean) >= c["pin_lean"])
+        near = st.gripping and (min(st.upright, self.raw_up) <= c["near_pin_upright"] or abs(st.lean) >= c["near_pin_lean"])
         surging = st.gripping and abs(st.momentum) >= c["surge_momentum"]
         if self.phase in (PIN, REACTION):
             if self.phase == PIN and held >= c["pin_hold_s"]:
@@ -357,9 +369,10 @@ class MatchTracker:
         elif not st.gripping:
             if self.phase != SETUP:
                 self._go(SETUP, t, st, "no grip seen")
-        elif pinned and held >= c["pin_confirm_s"] and self.phase == NEAR_PIN:
+        elif pinned:
             self.winner = st.leader or ("black" if st.lean > 0 else "tan")
-            self._go(PIN, t, st, f"PIN {self.winner} (upright {st.upright:.2f}, lean {st.lean:+.2f})", self.winner)
+            how = "hands vanished at table level" if vanished_low else f"hands at table level ({self.raw_up:.2f})"
+            self._go(PIN, t, st, f"PIN {self.winner}: {how}, lean {st.lean:+.2f}", self.winner)
         elif near and self.phase != NEAR_PIN:
             self._go(NEAR_PIN, t, st, f"{st.leader or 'someone'} close to a pin (lean {st.lean:+.2f}, upright {st.upright:.2f})",
                      st.leader)
