@@ -591,8 +591,8 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 2. Camera devices + real feeds | done | studio/stadium.py: 7 camera models, PTZ heads, cards, 5 real feeds; ball in MAIN 92.3% |
 | 3. ZXY player positions | done | studio/zxy.py: twin.jsonl (28,261 rows); home players 1.58 m median from the detector |
 | 4. 3D scene (behind-goal cams) | done | dashboard/static/stadium.html (Three.js r128): GOAL L/R + free view, frame-exact recording |
-| 5. Director: robotic cameras + TV rules | not started | |
-| 6. Playground page | not started | |
+| 5. Director: robotic cameras + TV rules | done | DirectorV2 mode tv + TVOperators; 5 min: MAIN 69%, 0 shots < 2 s (Step 7 numbers below) |
+| 6. Playground page | done | /static/stadium.html + studio.stadium_live: program, 7-monitor wall, map with cones, log |
 | 7. Test runs | not started | |
 
 ## Key results (MVP 4)
@@ -617,6 +617,14 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   on the white lines (BOX R ~exact, BOX L a few px off at the near touchline: lens distortion), 3D figures on the
   real players (linesman, keeper, away player). Recording: 5 s -> 150 of 150 frames (GPU); headless Chrome records
   20 s of both cameras in ~24 s.
+- Step 5 first 5-minute director run (23:40): MAIN 57.7%, GOAL L+R 39%, CLOSE 0.7%, 43 cuts, 0 shots < 2 s,
+  ball in MAIN 91.0%. Too much goal camera, almost no close-up -> tuned with a director-only dry run (no pictures,
+  ~7 min for 5 min): attack shots capped at 6 s + 10 s cooldown, "no ball seen for 4 s" = stoppage (a bug kept it
+  from ever firing: the map resets the ball's age once it gives the ball up; the director keeps its own last-seen
+  time now). Dry run after tuning: MAIN 69.0%, GOAL L/R 20.3%, CLOSE 8.3%, BOX 2.5%, 49 cuts, avg shot 6.0 s, 0 < 2 s.
+- Step 6 live (`/static/stadium.html` -> Go live): on its own the live loop shows ~6.3 fps and stays within 0.1-1.6 s
+  of real time (frames skipped, never delayed); with headless Chrome drawing the 3D views on the same Mac the lag
+  grew to a few seconds.
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
@@ -651,10 +659,23 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   count (ffmpeg setpts + fps + tpad). Headless Chrome must draw with the GPU (--use-angle=metal): software drawing
   (SwiftShader) was ~10x slower and timed out.
 - Step 4: the page can show the 3D scene from any camera of the set (dropdown / `?view=boxl`) for checks.
+- Step 5: TV rules = DirectorV2 `mode: tv` (config studio.stadium.director; MVP 3's default untouched, its tests pass):
+  PLAY -> MAIN; ATTACK (ball in a box + map intensity >= 0.45) -> GOAL L/R if its card sees the action, else BOX L/R;
+  STOPPAGE (ball out / no ball for 4 s) -> CLOSE 2-3.5 s; RESTART (kick-off line-up / goal kick) -> WIDE. Min shot 2 s;
+  never cut TO a robotic camera turning faster than 12 deg/s. Operators: MAIN on the ball + 0.6 s lead, 40 / 28 / 60 m
+  by game state, widens itself when the ball nears the edge; CLOSE on the player nearest the ball, 12 m.
+- Step 5: cards are rebuilt when the map has news (5x/s, like MVP 3); only the heads' turning speed is updated every
+  frame. Replays (optional in the plan) not done.
+- Step 5: goal watcher stays on the REAL cameras (MVP 3's live loop); the 3D cameras are drawn from our own data, so
+  asking Gemini about them would be circular. Real T2 behind-goal cameras would replace this.
+- Step 6: the 5 real-pixel monitors come as ONE mosaic MJPEG ("wall"): a browser opens at most 6 connections to a
+  server, and 6 separate streams blocked the page's twin requests (3D tiles stayed empty). The 3 live videos are
+  decoded in 3 threads (the panorama alone takes ~21 ms per frame). 3D tiles draw at 960x540 while watching,
+  1280x720 when recording.
 ## Problems / open issues (MVP 4)
 - Twin: the detector sometimes sees one away player twice (two dots ~2 m apart) and the map's ball is sometimes a
   false detection; both show in the 3D scene as they are.
 - MVP 3's cam1 calibration draws the left penalty box ~10-15 px (~1 m) too deep (seen on panorama_check.jpg and on
   cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
-Step 5: 5-minute director run (`studio.stadium --aim director`), then Step 6 live test.
+Step 7: the 5-minute run (23:40) and the full half are running; report airtime / cuts / shot lengths / ball in MAIN.

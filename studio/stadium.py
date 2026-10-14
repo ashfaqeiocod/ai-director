@@ -365,7 +365,8 @@ class Stadium:
                                ball=info, players=n_players, play_speed=0.0, quality=Quality(),
                                source="detector", action_in_view=act is not None, action=act,
                                zone=pitch.zone if pitch else "unknown",
-                               map_intensity=pitch.intensity if pitch else 0.0))
+                               map_intensity=pitch.intensity if pitch else 0.0,
+                               moving_deg_s=round(shot.state.get("speed_deg_s", 0.0), 2)))
         return out
 
     # ------------------------------------------------------------------ pictures (real-pixel cameras)
@@ -562,6 +563,8 @@ class StadiumPipeline:
         self.director = DirectorV2({**src.cfg["director"], **cfg["director"]}, src.fps, len(stadium.cameras))
         self.ops = TVOperators(cfg["operators"], stadium)
         self.started = False                            # heads framed on the play yet?
+        self.fresh = True
+        self.cards: list = []
         self.began = False                              # director told where the run starts?
 
     @property
@@ -569,6 +572,7 @@ class StadiumPipeline:
         return self.base.pitch_state
 
     def detections(self, i: int, t: float, detector: dict, images: dict | None = None) -> list[dict]:
+        self.fresh = True                               # new map data: the cards are built again next frame
         events = self.base.detections(i, t, detector=detector, images=images)
         if self.aim == "follow":
             target = follow_aim(self.pitch, self.base.group)
@@ -587,7 +591,12 @@ class StadiumPipeline:
         """Move the heads one frame; returns (decision or None, cards, shots)."""
         self.stadium.step(dt)
         shots = self.stadium.shots()
-        cards = self.stadium.cards(t, shots, self.pitch, self.base.group)
+        if self.fresh or not self.cards:              # what each camera sees: when the map has news (5x per second)
+            self.cards = self.stadium.cards(t, shots, self.pitch, self.base.group)
+            self.fresh = False
+        for card, cam in zip(self.cards, self.stadium.cameras):   # every frame: how fast the robotic heads turn
+            card.moving_deg_s = round(shots[cam.id].state.get("speed_deg_s", 0.0), 2)
+        cards = self.cards
         decision = None
         if self.aim == "director":
             if not self.began:                          # the first shot starts where the run starts
@@ -648,7 +657,8 @@ def placeholder(name: str, w: int, h: int) -> np.ndarray:
     return img
 
 
-def program_picture(image: np.ndarray, cam: Camera, t: float, score: list[int], cfg: dict, credit: str) -> np.ndarray:
+def program_picture(image: np.ndarray, cam: Camera, t: float, score: list[int], cfg: dict, credit: str,
+                    label: bool = True) -> np.ndarray:
     """The broadcast picture: a TV scorebug (teams, score, match clock), the camera's name, the dataset credit."""
     out = image.copy()
     if cfg["program"]["scorebug"]:
@@ -659,8 +669,9 @@ def program_picture(image: np.ndarray, cam: Camera, t: float, score: list[int], 
         cv2.rectangle(out, (330, 22), (430, 62), (40, 40, 160), -1)
         cv2.putText(out, text, (36, 51), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(out, clock, (342, 51), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2, cv2.LINE_AA)
-    label = cam.name + ("  (3D)" if cam.built_from == "3d" else "")
-    cv2.putText(out, label, (26, out.shape[0] - 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 230), 1, cv2.LINE_AA)
+    if label:
+        name = cam.name + ("  (3D)" if cam.built_from == "3d" else "")
+        cv2.putText(out, name, (26, out.shape[0] - 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 230), 1, cv2.LINE_AA)
     cv2.putText(out, credit, (out.shape[1] - 10 - 7 * len(credit), out.shape[0] - 10), cv2.FONT_HERSHEY_PLAIN, 0.8,
                 (170, 170, 170), 1, cv2.LINE_AA)
     return out

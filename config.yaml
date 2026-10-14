@@ -547,9 +547,11 @@ studio:
       roles: { main: 1, close: 2, wide: 3, boxl: 4, boxr: 5, goall: 6, goalr: 7 } # card number of each camera (order of `cameras` above)
       attack_min_intensity: 0.45 # ball in a penalty box + map intensity at least this = an attack: GOAL / BOX camera
       attack_exit_s: 1.0 # ball out of the box this long -> back to MAIN
-      stoppage_lost_s: 2.5 # no ball for this long = play has stopped -> CLOSE
+      attack_max_s: 6 # a GOAL / BOX shot lasts at most this long (TV keeps goal angles short; MAIN covers play)
+      attack_cooldown_s: 10 # after an attack shot, no new one for this long
+      stoppage_lost_s: 4.0 # no ball seen for this long = play has stopped -> CLOSE (2.5 s: the detector's gaps in open play made 23% stoppages)
       close_min_s: 2.0 # CLOSE after a stoppage: at least this long ...
-      close_max_s: 4.0 # ... at most this long
+      close_max_s: 3.5 # ... at most this long
       restart_move_ms: 6 # the ball moving this fast again = play is back on (ends a stoppage / restart)
       restart_max_s: 8 # WIDE for a kick-off / goal kick at most this long
       settle_deg_s: 12 # never cut TO a robotic camera turning faster than this

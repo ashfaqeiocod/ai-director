@@ -69,6 +69,8 @@ class DirectorV2:
             self.stoppage_kind = ""
             self.last_map_t: float | None = None
             self.lost_reported = False
+            self.last_seen_t: float | None = None   # the map last SAW the ball (its own age resets once it is lost)
+            self.attack_over_t = -1e9               # when the last attack shot ended (cooldown)
 
     def start_at(self, i: int) -> None:
         """A live run that starts at frame i (not 0): the first shot starts there."""
@@ -280,14 +282,17 @@ class DirectorV2:
                 self.stoppage_kind = "goal line" if e["type"] == "GOAL_LINE" else e.get("line", "touchline")
                 self._tv_enter(STOPPAGE, t, f"ball out over the {self.stoppage_kind}")
         seen = pitch.ball is not None and pitch.ball_status != "lost"
-        if seen:
+        if pitch.ball_status == "seen":
+            self.last_seen_t = pitch.t
             self.lost_reported = False
-        elif pitch.ball_age_s >= c["stoppage_lost_s"] and not self.lost_reported and self.state in (PLAY, ATTACK):
+        unseen = t - self.last_seen_t if self.last_seen_t is not None else 0.0
+        if unseen >= c["stoppage_lost_s"] and not self.lost_reported and self.state in (PLAY, ATTACK):
             self.lost_reported = True                  # no ball for a while: play has (most likely) stopped
             self.stoppage_kind = "lost"
             self._tv_enter(STOPPAGE, t, f"no ball for {c['stoppage_lost_s']}s")
         in_box = seen and pitch.zone in ("left_box", "right_box")
-        if self.state == PLAY and in_box and pitch.intensity >= c["attack_min_intensity"]:
+        if (self.state == PLAY and in_box and pitch.intensity >= c["attack_min_intensity"]
+                and t - self.attack_over_t >= c["attack_cooldown_s"]):
             self.attack_side = "left" if pitch.zone == "left_box" else "right"
             self.out_of_box_since = None
             self._tv_enter(ATTACK, t, f"attack in the {self.attack_side} box")
@@ -296,8 +301,12 @@ class DirectorV2:
                 self.out_of_box_since = None
             elif self.out_of_box_since is None:
                 self.out_of_box_since = t
-            elif t - self.out_of_box_since >= c["attack_exit_s"]:
+            if self.out_of_box_since is not None and t - self.out_of_box_since >= c["attack_exit_s"]:
+                self.attack_over_t = t
                 self._tv_enter(PLAY, t, "ball left the box")
+            elif t - self.state_since >= c["attack_max_s"]:
+                self.attack_over_t = t                 # goal-camera shots are short on TV: back to MAIN
+                self._tv_enter(PLAY, t, "attack shot long enough")
         elif self.state == STOPPAGE:
             held = t - self.state_since
             moving = seen and pitch.speed_ms >= c["restart_move_ms"]

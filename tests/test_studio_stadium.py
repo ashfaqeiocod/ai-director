@@ -222,7 +222,7 @@ def test_shot_type_follows_the_zoom():
 from studio.cards import BallInfo, CamCard, Quality  # noqa: E402
 from studio.director import DirectorV2  # noqa: E402
 
-TV = {"mode": "tv", "start_cam": 1, "min_shot_seconds": 2.0, "hysteresis_seconds": 0.6,
+TV = {"mode": "tv", "start_cam": 1, "min_shot_seconds": 2.0, "hysteresis_seconds": 0.6, "attack_max_s": 6, "attack_cooldown_s": 10,
       "roles": {"main": 1, "close": 2, "wide": 3, "boxl": 4, "boxr": 5, "goall": 6, "goalr": 7},
       "attack_min_intensity": 0.45, "attack_exit_s": 1.0, "stoppage_lost_s": 2.5, "close_min_s": 2.0,
       "close_max_s": 4.0, "restart_move_ms": 6, "restart_max_s": 8, "settle_deg_s": 12}
@@ -241,15 +241,21 @@ def tv_cards(t: float, goal_sees: bool = False, moving: dict | None = None) -> l
 
 
 def run_tv(states: dict[float, MapState], seconds: float, goal_sees: bool = True, moving=None, fps: int = 30):
-    """Feed the director a pitch-map state at the given times (held until the next one); returns the cams on air."""
+    """Feed the director pitch-map states; like the real map, a new state comes every 0.2 s (the latest given one,
+    re-dated, its events only once). Returns the cams on air and the cuts."""
+    from dataclasses import replace
+
     d = DirectorV2(TV, fps, 7)
     d.start_at(0)
     times = sorted(states)
     on_air, cuts = [], []
+    pitch = None
     for i in range(int(seconds * fps)):
         t = i / fps
-        current = [states[s] for s in times if s <= t]
-        pitch = current[-1] if current else None
+        if i % 6 == 0:                                  # the map's news, 5 times a second
+            key = max((s for s in times if s <= t), default=None)
+            if key is not None:
+                pitch = replace(states[key], t=t, events=states[key].events if t - key < 0.2 else [])
         dec = d.decide(i, t, tv_cards(t, goal_sees, moving), [], [], None, pitch=pitch)
         on_air.append(dec.cam)
         cuts += [e for e in dec.events if e["type"] == "CUT"]
