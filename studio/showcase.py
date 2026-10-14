@@ -4,7 +4,8 @@ Why: the live dashboard on the M1 shows a low frame rate, so viewers can't see w
 smooth 1920x1080 video from a finished `studio.stadium --aim director` run, showing the whole chain at once:
   1. the 3 STATIC cameras that are really installed (the Alfheim rig at halfway);
   2. the stitched panorama, with the boxes MAIN and CLOSE cut out of it right now (red = on air);
-  3. the MAIN and CLOSE pictures (made by software, no robotic camera);
+  3. the software cameras: MAIN and CLOSE (cut out of real pixels, no robotic camera) and GOAL L / GOAL R (behind
+     each goal, drawn in 3D from the digital twin: simulated);
   4. the PROGRAM (what the AI director puts on air), the director's reason and the latest cuts.
 Nothing is detected or decided here: it only reads the run's files (cameras.jsonl, director_log.csv, cam_*.mp4,
 program.mp4) and the source videos, so it is exactly what the run did.
@@ -95,7 +96,7 @@ def build(run: Path, from_s: float, seconds: float) -> Path:
 
     readers = {f"cam{c}": FrameReader(src.video(c), first + skip) for c in (1, 2, 3)}
     readers["pano"] = FrameReader(src.folder / "panorama.mp4", first + skip)
-    for name in ("program", "main", "close"):
+    for name in ("program", "main", "close", "goall", "goalr"):
         readers[name] = FrameReader(run / ("program.mp4" if name == "program" else f"cam_{name}.mp4"), skip)
     prefetch = Prefetch(readers)
 
@@ -153,15 +154,18 @@ def build(run: Path, from_s: float, seconds: float) -> Path:
 
             # 3. the cut-out pictures
             y3 = y2 + pano_h + 44
-            heading(canvas, "3", "The cut-outs: virtual cameras, nothing moves in the stadium", 24, y3 - 12)
-            cut_h = H - 16 - y3
+            heading(canvas, "3", "Software cameras: MAIN + CLOSE cut out of real pixels, GOAL L + R drawn in 3D", 24, y3 - 12)
+            cut_w = (LEFT_W - 3 * 16) // 4
+            cut_h = min(H - 16 - y3, round(cut_w * 9 / 16))
             cut_w = round(cut_h * 16 / 9)
-            for k, (name, colour) in enumerate((("main", YELLOW), ("close", CYAN))):
+            tiles = (("main", "MAIN", YELLOW), ("close", "CLOSE", CYAN),
+                     ("goall", "GOAL L (3D)", WHITE), ("goalr", "GOAL R (3D)", WHITE))
+            for k, (name, label, colour) in enumerate(tiles):
                 x = 24 + k * (cut_w + 16)
                 canvas[y3:y3 + cut_h, x:x + cut_w] = fit(frames[name], cut_w, cut_h)
                 live = cams["on_air"] == name
                 cv2.rectangle(canvas, (x, y3), (x + cut_w - 1, y3 + cut_h - 1), RED if live else colour, 3 if live else 1)
-                text(canvas, name.upper(), x + 8, y3 + 24, 0.6, colour, 2)
+                text(canvas, label, x + 8, y3 + 24, 0.6, colour, 2)
 
             # 4. the program + the director
             heading(canvas, "4", "AI director picks what goes on air", RIGHT_X, 72)
