@@ -55,6 +55,7 @@ class CamCard:
     action: tuple[float, float] | None = None   # where the action point is in this camera (0..1), if in view
     zone: str = "unknown"          # where the ball is on the pitch map (left_box, middle, ...), shared by all cams
     map_intensity: float = 0.0     # 0..1 from the pitch map (ball near goal, fast ball, crowded box)
+    moving_deg_s: float = 0.0      # MVP 4: how fast a robotic camera is turning right now (0 = fixed / still)
 
     def to_dict(self) -> dict:
         return asdict(self)

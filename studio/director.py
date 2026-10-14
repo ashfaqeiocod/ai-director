@@ -12,6 +12,9 @@ Always:
 
 Every decision carries a plain-English reason (director_log.csv).
 All numbers: config.yaml -> studio.director.
+
+MVP 4 adds a "tv" mode (config `mode: tv`, used by the virtual stadium; without it nothing changes): TV cutting rules
+over a T2 camera set with robotic cameras, driven by the pitch map's game situation (see `_tv`).
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from src.director import score_camera
 from studio.cards import CamCard
 
 IN_PLAY, REACTION = "IN_PLAY", "REACTION"
+PLAY, ATTACK, STOPPAGE, RESTART = "PLAY", "ATTACK", "STOPPAGE", "RESTART"     # tv mode (MVP 4)
 # Camera roles on SoccerTrack (the defaults). Other footage sets them in its own director settings:
 # follow_cams (scored like MVP 1), wide_cam / close_cam (null = this footage has no such camera).
 FOLLOW_CAMS = (1, 2, 3)
@@ -56,6 +60,15 @@ class DirectorV2:
         self.follow_cams = tuple(cfg.get("follow_cams", FOLLOW_CAMS))
         self.wide_cam = cfg.get("wide_cam", WIDE)
         self.close_cam = cfg.get("close_cam", CLOSE)
+        if cfg.get("mode") == "tv":                # MVP 4: the game situation the TV rules follow
+            self.state = PLAY
+            self.state_since = 0.0
+            self.situation = ""                     # why we are in this state (for the reasons)
+            self.attack_side: str | None = None
+            self.out_of_box_since: float | None = None
+            self.stoppage_kind = ""
+            self.last_map_t: float | None = None
+            self.lost_reported = False
 
     def start_at(self, i: int) -> None:
         """A live run that starts at frame i (not 0): the first shot starts there."""
@@ -112,7 +125,10 @@ class DirectorV2:
 
     # ------------------------------------------------------------------ decide
     def decide(self, i: int, t: float, cards: list[CamCard], story_events: list[dict],
-               story_updates: list[dict], phase: str | None) -> Decision:
+               story_updates: list[dict], phase: str | None, pitch=None) -> Decision:
+        """pitch: the pitch map's latest MapState (tv mode only)."""
+        if self.cfg.get("mode") == "tv":
+            return self._tv(i, t, cards, pitch)
         scores = self.scores(cards)
         # "usable" = a picture we may air: sharp, steady, and one of the on-air cameras.
         usable = [card.quality.usable and card.cam in self.cfg["on_air_cams"] for card in cards]
@@ -217,3 +233,95 @@ class DirectorV2:
         self.current, self.shot_start = cam, i
         self.challenger, self.challenger_frames = None, 0
         return "CUT: " + reason
+
+
+    # ------------------------------------------------------------------ MVP 4: TV rules (mode: tv)
+    def _tv(self, i: int, t: float, cards: list[CamCard], pitch) -> Decision:
+        """TV cutting rules for the T2 camera set (docs/MVP4_STADIUM_PLAN.md Step 5), as a small state machine:
+          PLAY      MAIN (the robotic camera at halfway that follows the ball): the default, ~70% of airtime
+          ATTACK    the ball is in a penalty box and play is hot: GOAL L/R (behind that goal) if its card shows
+                    the action, else BOX L/R; back to MAIN once the ball has left the box for a moment
+          STOPPAGE  the ball went out / play stopped: CLOSE (the robotic close-up) for 2-4 s, then MAIN
+          RESTART   a kick-off line-up, or a goal kick after the ball went over the goal line: WIDE until the
+                    ball moves again
+        Always: hold every shot `min_shot_seconds`; never cut TO a robotic camera that is still turning fast
+        (`settle_deg_s`: a real director waits for the operator to frame the shot)."""
+        c = self.cfg
+        role = c["roles"]
+        self._tv_situation(t, pitch)
+        target, why = self._tv_target(t, cards)
+        scores = [100.0 if card.cam == target else 0.0 for card in cards]
+        events: list[dict] = []
+        if target == self.current:
+            return Decision(self.current, self.state, scores, f"{self.state.lower()}: holding {why}", events)
+        if i - self.shot_start < self.min_shot:
+            return Decision(self.current, self.state, scores, f"{why}: waiting (min shot length)", events)
+        card = next((k for k in cards if k.cam == target), None)
+        if card is not None and target in (role["main"], role["close"]) and card.moving_deg_s > c["settle_deg_s"]:
+            return Decision(self.current, self.state, scores,
+                            f"{why}: waiting for cam{target} to settle ({card.moving_deg_s:.0f} deg/s)", events)
+        reason = self._cut(target, i, why, events)
+        return Decision(self.current, self.state, scores, reason, events)
+
+    def _tv_enter(self, state: str, t: float, situation: str) -> None:
+        self.state, self.state_since, self.situation = state, t, situation
+
+    def _tv_situation(self, t: float, pitch) -> None:
+        """Update the game situation: the map's events when it has news (5 times a second), the timers every frame."""
+        c = self.cfg
+        if pitch is None:
+            return
+        fresh = pitch.t != self.last_map_t
+        self.last_map_t = pitch.t
+        for e in pitch.events if fresh else []:
+            if e["type"] == "KICKOFF_LINEUP":
+                self._tv_enter(RESTART, t, "kick-off")
+            elif e["type"] in ("BALL_OUT", "GOAL_LINE") and self.state != RESTART:
+                self.stoppage_kind = "goal line" if e["type"] == "GOAL_LINE" else e.get("line", "touchline")
+                self._tv_enter(STOPPAGE, t, f"ball out over the {self.stoppage_kind}")
+        seen = pitch.ball is not None and pitch.ball_status != "lost"
+        if seen:
+            self.lost_reported = False
+        elif pitch.ball_age_s >= c["stoppage_lost_s"] and not self.lost_reported and self.state in (PLAY, ATTACK):
+            self.lost_reported = True                  # no ball for a while: play has (most likely) stopped
+            self.stoppage_kind = "lost"
+            self._tv_enter(STOPPAGE, t, f"no ball for {c['stoppage_lost_s']}s")
+        in_box = seen and pitch.zone in ("left_box", "right_box")
+        if self.state == PLAY and in_box and pitch.intensity >= c["attack_min_intensity"]:
+            self.attack_side = "left" if pitch.zone == "left_box" else "right"
+            self.out_of_box_since = None
+            self._tv_enter(ATTACK, t, f"attack in the {self.attack_side} box")
+        elif self.state == ATTACK:
+            if in_box:
+                self.out_of_box_since = None
+            elif self.out_of_box_since is None:
+                self.out_of_box_since = t
+            elif t - self.out_of_box_since >= c["attack_exit_s"]:
+                self._tv_enter(PLAY, t, "ball left the box")
+        elif self.state == STOPPAGE:
+            held = t - self.state_since
+            moving = seen and pitch.speed_ms >= c["restart_move_ms"]
+            if held >= c["close_max_s"] or (moving and held >= c["close_min_s"]):
+                if self.stoppage_kind == "goal line":
+                    self._tv_enter(RESTART, t, "goal kick")
+                else:
+                    self._tv_enter(PLAY, t, "play on")
+        elif self.state == RESTART:
+            held = t - self.state_since
+            if held >= c["restart_max_s"] or (seen and pitch.speed_ms >= c["restart_move_ms"] and held >= c["close_min_s"]):
+                self._tv_enter(PLAY, t, "ball in play again")
+
+    def _tv_target(self, t: float, cards: list[CamCard]) -> tuple[int, str]:
+        role = self.cfg["roles"]
+        if self.state == STOPPAGE:
+            return role["close"], f"CLOSE after a stoppage ({self.situation})"
+        if self.state == RESTART:
+            return role["wide"], f"WIDE for the {self.situation}"
+        if self.state == ATTACK:
+            goal = role["goall" if self.attack_side == "left" else "goalr"]
+            box = role["boxl" if self.attack_side == "left" else "boxr"]
+            card = next((k for k in cards if k.cam == goal), None)
+            if card is not None and (card.ball is not None or card.action_in_view):
+                return goal, f"GOAL {self.attack_side[0].upper()}: {self.situation}, action in its view"
+            return box, f"BOX {self.attack_side[0].upper()}: {self.situation}"
+        return role["main"], "MAIN follows play"

@@ -568,3 +568,9 @@ studio:
       chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" # records the 3D cameras (headless)
       chrome_flags: ["--use-angle=metal"] # draw with the Mac's GPU (software drawing, --use-angle=swiftshader, was ~10x slower)
       server: "http://localhost:8000" # the dashboard (python -m dashboard.server) the 3D page is served from
+    live: # Step 6: studio.stadium_live (the playground page's live run)
+      warmup_s: 10 # the pitch map and the robotic heads start this many seconds before the chosen start (a crew is already filming)
+      tile_width: 640 # monitor-wall pictures (MJPEG)
+      program_width: 1280
+      jpeg_quality: 70
+      state_hz: 10 # state messages per second over the WebSocket

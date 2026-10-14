@@ -588,7 +588,7 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 |---|---|---|
 | 0. Plan + camera infra guide | done | docs/MVP4_STADIUM_PLAN.md |
 | 1. Panorama | done | studio/panorama.py: 3434x1310 cylinder, 84,780 frames (62 min at 22.7 fps); seams ~1 px |
-| 2. Camera devices + real feeds | not started | |
+| 2. Camera devices + real feeds | done | studio/stadium.py: 7 camera models, PTZ heads, cards, 5 real feeds; ball in MAIN 92.3% |
 | 3. ZXY player positions | not started | |
 | 4. 3D scene (behind-goal cams) | not started | |
 | 5. Director: robotic cameras + TV rules | not started | |
@@ -602,6 +602,9 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
   median (max 0.6 / 2.1 px, few line points cross the bands); players' feet seen by both cameras in a seam band
   7.2 / 6.1 px apart (rough: detector boxes), counts 445 vs 479 and 280 vs 287. Check picture:
   data/alfheim/2013-11-03_H1/panorama_check.jpg.
+- Step 2 follow run (`studio.stadium --aim follow --start 23:40 --seconds 300`, 15.7 min at 9.5 fps): MAIN had the
+  ball in its picture at 92.3% of the 613 detection steps where the detector saw it (target >= 90%); fastest moves
+  45 deg/s (MAIN) and 60 deg/s (CLOSE) = exactly the motor limits, never faster (also a unit test).
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
@@ -618,8 +621,17 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 - Step 1: speed: 3 cameras stacked into one picture -> ONE cv2.remap for single-camera pixels, 2 small remaps +
   cv2.blendLinear for the seam bands (71 -> 22 ms per frame). panorama.json is built once and reused (`--refit`
   rebuilds it; then panorama.mp4 must be made again).
+- Step 2: every camera is a level-horizon pinhole (pan, tilt, field of view) at a position. Real-pixel views are true
+  perspective views out of the panorama (each output pixel's ray -> its panorama pixel; lookup table on an 8x8
+  grid, enlarged: ~5 ms). Cards project the map's ball/players through each camera's model: through the panorama
+  calibration for real-pixel cameras (lands where the thing IS in the picture), straight rays for 3D cameras.
+- Step 2: motor limits raised to 45 deg/s (MAIN) and 60 deg/s (CLOSE): at 30 deg/s MAIN needed ~2 s to follow a
+  48 m clearance (87% ball in MAIN on the first 20 s test). Broadcast robotic heads do 60+ deg/s.
+- Step 2: CLOSE's tightest shot is 10 m (lens limit in config): the sources are 1280x960 (honest limit). Magnified
+  views get their COLOUR (not brightness) softened over 2.5 source pixels: the camera sensor gives thin white lines
+  rainbow edges that a 5x zoom makes very visible.
 ## Problems / open issues (MVP 4)
 - MVP 3's cam1 calibration draws the left penalty box ~10-15 px (~1 m) too deep (seen on panorama_check.jpg and on
   cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
-Step 2: `studio/stadium.py` 5-minute follow run on the full panorama.
+Step 3: commit the twin (studio/zxy.py, already built and checked).
