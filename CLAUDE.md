@@ -10,11 +10,15 @@
   never commit `.env`, clips, model weights or outputs. Progress is tracked in the "MVP 2" section of `PROGRESS.md`.
   Secrets: `GEMINI_API_KEY` in `.env` (stop and ask the user if it is missing or fails).
 
-- **MVP 3 (Directed Story): CURRENT.** Full spec: `docs/MVP3_SPEC.md` (read it fully before working on MVP 3);
+- **MVP 3 (Directed Story): DONE** (open items in `PROGRESS.md`). Full spec: `docs/MVP3_SPEC.md` (read it fully before working on MVP 3);
   big picture: `docs/AI_LIVE_DIRECTOR_PLAN.md`. Combines MVP 1 + MVP 2 on real SoccerTrack v2 footage
   (5 virtual cameras, camera cards, director state machine). All MVP 3 code lives in `studio/` and only USES
   `src/` and `story/` (never change their defaults). Ground truth (`bas/`, `ball/`) is for scoring only.
   Progress: "MVP 3" section of `PROGRESS.md`. Secrets: `HF_TOKEN` in `.env` (never print it).
+- **MVP 4 (Virtual Stadium): CURRENT.** Full plan: `docs/MVP4_STADIUM_PLAN.md` (read it fully before working on
+  MVP 4). Simulates a T2 camera setup on the Alfheim half (real panorama cameras + 3D behind-goal cameras, robotic
+  MAIN/CLOSE steered by the director). Code in `studio/` and the dashboard; `src/` and `story/` defaults unchanged.
+  Progress: "MVP 4" section of `PROGRESS.md`.
 
 The rest of this file is the MVP 1 brief; the Working mode, Hardware rules and Coding style sections apply to MVP 2 and MVP 3 too.
 

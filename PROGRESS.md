@@ -579,3 +579,26 @@ Mac NOT free (IDE + 2 other Claude sessions running); runs were still valid. Det
 Proof runs done (cached detector, Hybrid, valid). Open: the match was 0-0, so the confirmed goal at 5:36 is false:
 tighten the kick-off line-up rule (each team in its own half) and the goal look (stadium big screen); Colab detector "Later tests" A-D
 (docs/MVP3_LIVE_TEST_PLAN.md); repeat the full half with the Mac free for clean fps/delay numbers.
+
+# MVP 4 — Virtual Stadium (T2 camera setup)
+Plan: `docs/MVP4_STADIUM_PLAN.md`.
+
+## Status
+| Step | Status | Notes |
+|---|---|---|
+| 0. Plan + camera infra guide | done | docs/MVP4_STADIUM_PLAN.md |
+| 1. Panorama | not started | |
+| 2. Camera devices + real feeds | not started | |
+| 3. ZXY player positions | not started | |
+| 4. 3D scene (behind-goal cams) | not started | |
+| 5. Director: robotic cameras + TV rules | not started | |
+| 6. Playground page | not started | |
+| 7. Test runs | not started | |
+
+## Key results (MVP 4)
+## Decisions made (MVP 4)
+- Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
+  behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
+## Problems / open issues (MVP 4)
+## Next action (MVP 4)
+Step 1: `studio/panorama.py`.
