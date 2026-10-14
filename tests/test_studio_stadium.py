@@ -399,3 +399,13 @@ def test_crowd_roars_after_an_attack_and_is_quiet_in_replays():
     env = crowd_envelope({"fps": 30, "states": states, "replays": []}, cfg)
     assert env[16 * 30 + 15] > env[5 * 30] + 0.4          # louder right after the attack than in open play
     assert env.max() <= 1.0
+
+
+def test_enforce_min_shot_merges_short_live_shots():
+    from studio.broadcast import enforce_min_shot
+
+    on_air = [0] * 100 + [1] * 30 + [2] * 100       # a 1 s TIGHT shot between two long ones
+    src = list(range(len(on_air)))
+    enforce_min_shot(on_air, src, 75)
+    s = program_summary(on_air, src, IDS, 30, 2.5)
+    assert s["shots_under_min"] == 0 and on_air[110] == 0

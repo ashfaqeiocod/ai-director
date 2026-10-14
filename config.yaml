@@ -659,6 +659,10 @@ studio:
       murmur_gain: 0.25
       cheer_gain: 0.35
       volume: 0.9
+    render: # program.mp4 (studio.broadcast --render): H.264 bitrate
+      short_s: 600 # clips up to this long ...
+      mbps_short: 16 # ... at this many Mbit/s (5 min = 0.6 GB)
+      mbps_long: 6 # longer ones (a half = ~2.1 GB; the disk was nearly full)
     director: # DirectorV2 tv mode (studio.director._tv), same rules as MVP 4 with this camera set's roles
       mode: tv
       start_cam: 1

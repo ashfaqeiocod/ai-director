@@ -701,11 +701,11 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 | Step | Status | Notes |
 |---|---|---|
 | VB1. Camera plan + camera paths | done | studio/broadcast.py: T2 set (MAIN, TIGHT, WIDE, HIGH 18 L/R, GOAL L/R), fluid-head motion |
-| VB2. 3D renderer page | in progress | dashboard/static/broadcast.html: rigged animated players in kits, stadium, shadows; preview ~60 fps |
+| VB2. 3D renderer page | done | dashboard/static/broadcast.html: rigged animated players in kits, stadium, shadows; preview ~60 fps |
 | VB3. Twin v2 (data) | done | teams from shirt colours, cleaned tracks, painted-spot balls removed, ball carried through gaps |
-| VB4. Operators v2 | in progress | MAIN framing with lead room + nearest players, TIGHT on the ball carrier (sticky) |
-| VB5. Intensity (crowd sound, replays, graphics) | not started | |
-| VB6. 1080p render: 5 min, then the half | not started | |
+| VB4. Operators v2 | done | MAIN framing with lead room + nearest players, TIGHT on the ball carrier (sticky), gantry positions |
+| VB5. Intensity (crowd sound, replays, graphics) | done | slow-motion replays with a wipe, crowd sound that follows the play, TV graphics |
+| VB6. 1080p render: 5 min, then the half | in progress | 5 min done (9000/9000 frames, 2.6 min to render); the half is rendering |
 
 ## Key results
 - Preview: the browser renders the program + 7-camera wall from precomputed camera paths at ~60 fps (MVP 4's live
@@ -713,6 +713,10 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 - Twin v2 (23:40-28:40): away players per moment median 12 (was 21: home players seen twice + ghosts), referees ~3
   (was 4-7), ball median 1.4 m from the nearest player (was 2.3 m; > 8 m away 3.7%, was 11%), ball present 70% of the
   clip (the rest mostly stoppages). Home players still 1.58 m median from the detector.
+- 5-minute clip (23:40, outputs/broadcast/alfheim-2013-11-03-H1/20261014-202820/program.mp4): 1920x1080, 30 fps,
+  9000 of 9000 frames, crowd sound; rendered in 2.6 min (headless Chrome, ~2x real time). Airtime MAIN 73.0%,
+  GOAL L 7.9%, TIGHT 7.0%, HIGH 18 L 5.9%, HIGH 18 R 3.0%, GOAL R 1.7%, WIDE 1.6%; 33 cuts, average shot 8.8 s,
+  shots < 2.5 s: 0; 2 slow-motion replays; no camera faster than its fluid-head limit.
 - The detector's "ball" was a PAINTED SPOT in 21% of all sightings: right penalty spot 698x, left 446x (a real ball
   stays in a 1 m cell at most ~15x per half). Learned as hotspots and dropped in the twin.
 
@@ -726,6 +730,16 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
   and the 1080p render is frame-exact. Any engine could render the same paths later.
 - Players: the three.js example figure "Xbot" (Mixamo rig: idle / walk / run, blended by speed), kept in data/models/
   (not in git), kits painted by body zone in a shader (Tromsø red-white stripes, Strømsgodset blue, keepers, referee).
+- Rendering: frame-exact through WebCodecs (the browser's hardware H.264 encoder; the page waits when the encoder
+  is busy, so no frame is ever dropped) -> the server appends the stream and wraps it at exactly 30 fps (ffmpeg
+  setts). MediaRecorder at 1080p dropped 23% of the frames. 16 Mbit/s for clips, 6 Mbit/s for a half (disk: ~7 GB
+  free on this Mac).
+- Main-stand cameras hang on a gantry at the front of the stand roof (y = 45, 11 m behind the touchline): at 24 m
+  behind it (inside the stand) the nearest spectators filled the bottom of MAIN's picture.
+- Replays: an attack that ends in a stoppage within 8 s is shown again 1 s into the stoppage (after the running
+  shot's minimum length), <= 6 s of play at 0.6x, from the HIGH 18 camera if GOAL showed it live, else GOAL; live
+  play goes on unseen meanwhile (as on TV). Crowd sound: murmur + cheering layer driven by the director's state, a
+  roar when an attack ends in a stoppage, quieter in replays (studio.broadcast.crowd_sound, soft limiter).
 - Twin v2: shirt colour (Lab) of every detection (`studio.zxy --shirts`, 2.6 min); the 3 kit colours learned from
   the data (home = detections on a sensor position, referee = detector class, away = the rest), k-means refined;
   only the detector's "referee" class makes a referee (bright white Tromsø shirts matched the referee colour).
@@ -739,7 +753,8 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 - Up close the players are mannequins (free rigged figure); real-looking footballers need better models.
 
 ## Next action
-VB4 operators tuning + VB5 intensity, then render the 5-minute clip (VB6).
+Finish the full-half render; then possible next steps: better player models (real-looking footballers), a live
+director run that streams decisions to the page, crowd chants/real stadium audio.
 
 # Arm MVP — AI director on real footage (a 5-phone arm-wrestling match)
 Last updated: 2026-10-14. Spec: `docs/ARM_MVP_SPEC.md`. Testing: `TESTING_ARM.md`. Code: `arm/`.

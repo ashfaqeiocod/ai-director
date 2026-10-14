@@ -101,3 +101,51 @@ rm outputs/program.mp4 && venv/bin/python src/main.py
   detection of the map.
 - All real-pixel cameras share one viewpoint (true for T1/T2 too). MVP 3's cam1 calibration puts the left box ~1 m
   too deep.
+
+---
+
+# Virtual Broadcast (MVP 4 part 2): every camera in 3D
+
+Plan: `docs/VIRTUAL_BROADCAST_PLAN.md`. Every camera of a TV crew's camera plan (MAIN and TIGHT on a gantry at
+halfway, HIGH 18 L/R, GOAL L/R behind the goals, WIDE) is rendered in 3D from the match data, so every shot is
+sharp and the cameras move like fluid heads. The director and the camera operators decide beforehand
+(`studio.broadcast`); the page renders their decisions.
+
+## A. One-time: the player figure (not in git)
+```bash
+mkdir -p data/models && curl -L -o data/models/Xbot.glb https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/models/gltf/Xbot.glb
+```
+
+## B. Better match data (twin v2, ~3 min)
+```bash
+venv/bin/python -m studio.zxy --shirts     # shirt colour of every detected player (~3 min)
+venv/bin/python -m studio.zxy              # twin.jsonl: teams from shirts, clean tracks, ball without painted spots
+```
+It prints the 3 shirt colours it learned and "fixed false 'balls' (painted spots)" (the penalty spots).
+
+## C. A 5-minute broadcast: preview, then a 1080p video
+```bash
+venv/bin/python -m studio.broadcast --start 23:40 --seconds 300            # decisions + camera paths (~5 s)
+```
+With the dashboard running (`venv/bin/python -m dashboard.server`), open **http://localhost:8000/studio/broadcast**
+and press **Play**: the program (scorebug, LIVE / REPLAY, camera name), the monitor wall of all cameras, and the
+timeline coloured by camera. It should play smoothly (the fps counter shows ~60 on an M1). Click the timeline to jump;
+around 1:27 and 1:58 into the clip you see slow-motion replays with a red REPLAY wipe.
+
+The 1080p video with crowd sound (the dashboard must be running; ~3 min for 5 minutes):
+```bash
+venv/bin/python -m studio.broadcast --start 23:40 --seconds 300 --render
+```
+Open `outputs/broadcast/alfheim-2013-11-03-H1/<run>/program.mp4` (1920x1080, 30 fps, with sound).
+`summary.json` has the airtime per camera (MAIN ~70-75%), cuts, average shot, `shots_under_min: 0`, replays.
+
+## D. The whole half (~30 min to render, ~2.1 GB)
+```bash
+venv/bin/python -m studio.broadcast --start 0:00 --seconds 2826 --render
+```
+
+## Honest limits
+- The players are mannequins (a free rigged figure in painted kits): fine at TV distances, visible in close-ups.
+- Away players, referees and the ball come from our detector: the ball is missing ~30% of the time (mostly while
+  play is stopped) and is then not drawn; the cameras follow the player who had it.
+- No real crowd recording: the sound is generated (a murmur and cheers that follow the play).

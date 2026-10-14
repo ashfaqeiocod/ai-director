@@ -511,7 +511,8 @@ async function record() {
   const enc = new VideoEncoder({
     output: chunk => { const b = new Uint8Array(chunk.byteLength); chunk.copyTo(b); pending.push(b); bytes += b.length; },
     error: e => { failed = e; } });
-  enc.configure({ codec: 'avc1.640028', width: 1920, height: 1080, bitrate: 16e6, framerate: fps,
+  const mbps = Number(q.get('mbps') || 16);                        // a whole half: lower (disk space)
+  enc.configure({ codec: 'avc1.640028', width: 1920, height: 1080, bitrate: mbps * 1e6, framerate: fps,
                   hardwareAcceleration: 'prefer-hardware', avc: { format: 'annexb' } });
   const t0 = performance.now();
   try {

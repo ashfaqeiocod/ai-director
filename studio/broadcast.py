@@ -269,6 +269,7 @@ def run(segment: str, start_s: float, seconds: float) -> Path:
     dlog.close()
     ids = [c.id for c in stadium.cameras]
     src, replays = add_replays(on_air, states, ids, cfg["replays"], fps, cfg["director"]["min_shot_seconds"])
+    enforce_min_shot(on_air, src, round(cfg["director"]["min_shot_seconds"] * fps))
     for r in replays:
         cuts.append({"type": "REPLAY", "frame": r["at"], "t": round(start_s + r["at"] / fps, 2), "to_id": ids[r["cam"]],
                      "reason": f"replay of the attack at {fmt_time(start_s + r['from'] / fps)} from {stadium.cameras[r['cam']].name}"})
@@ -390,7 +391,8 @@ def render(segment: str, run_id: str, server: str, seconds: float) -> bool:
     chrome = load_config()["studio"]["stadium"]["program"]["chrome"]
     flags = load_config()["studio"]["stadium"]["program"]["chrome_flags"]
     profile = tempfile.mkdtemp(prefix="broadcast-chrome-")
-    url = f"{server}/studio/broadcast?segment={segment}&run={run_id}&render=1"
+    mbps = cfg["render"]["mbps_short"] if seconds <= cfg["render"]["short_s"] else cfg["render"]["mbps_long"]
+    url = f"{server}/studio/broadcast?segment={segment}&run={run_id}&render=1&mbps={mbps}"
     print(f"[broadcast] rendering program.mp4 (1080p) in headless Chrome...", flush=True)
     proc = subprocess.Popen([chrome, "--headless=new", *flags, "--window-size=1700,1200", f"--user-data-dir={profile}",
                              "--remote-debugging-port=0", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -405,6 +407,39 @@ def render(segment: str, run_id: str, server: str, seconds: float) -> bool:
     print(f"[broadcast] program.mp4 {'rendered' if ok else 'NOT rendered (timeout)'} in {(time.time() - t0) / 60:.1f} min",
           flush=True)
     return ok
+
+
+def enforce_min_shot(on_air: list[int], src: list[float], min_frames: int) -> None:
+    """A last safety pass after the replays: a LIVE shot shorter than the minimum (a replay was put over the start of
+    a director's shot) is merged into the live shot before it (or after it, if a replay comes before). Every camera
+    has a path at every moment, so any camera can simply stay on air longer."""
+    n = len(on_air)
+    replay = [abs(src[i] - i) > 0.5 for i in range(n)]
+    changed = True
+    while changed:
+        changed = False
+        shots, k = [], 0
+        while k < n:
+            j = k
+            while j < n and on_air[j] == on_air[k] and replay[j] == replay[k]:
+                j += 1
+            shots.append((k, j))
+            k = j
+        for idx, (a, b) in enumerate(shots[:-1]):
+            if replay[a] or b - a >= min_frames:
+                continue
+            before = shots[idx - 1] if idx > 0 else None
+            after = shots[idx + 1]
+            if before is not None and not replay[before[0]]:
+                cam = on_air[before[0]]
+            elif not replay[after[0]]:
+                cam = on_air[after[0]]
+            else:
+                continue                                # between two replays: leave it (very rare)
+            for i in range(a, b):
+                on_air[i] = cam
+            changed = True
+            break
 
 
 def program_summary(on_air: list[int], src: list[float], ids: list[str], fps: float, min_shot: float) -> dict:
