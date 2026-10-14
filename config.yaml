@@ -490,3 +490,81 @@ studio:
     pitch_hsv_high: [90, 255, 255] # stands and stewards are not); OpenCV HSV, hue 0-180
     pitch_min_share: 0.5 # share of green pixels needed in the small patch under the feet
     pressure_per_second: max # max: a keeper hidden for a moment in a crowded box doesn't erase the pressure
+  stadium: # MVP 4 (docs/MVP4_STADIUM_PLAN.md): the simulated T2 camera set on the Alfheim half
+    panorama: # studio.panorama: the 3 real Alfheim cameras stitched into one cylinder panorama (they share one spot)
+      focal_scale: 1.5 # panorama pixels per radian = this x the cameras' own focal length (~790 px); the cameras' picture edges hold ~1.5x more detail than their centres
+      stand_m: 7 # keep this much stand above the far touchline (metres of height at the far side)
+      margin_m: 2 # keep this much ground around the pitch
+      feather_px: 40 # seam blend half-width (source pixels); wider hides small misalignments of players
+      match_moments: 40 # cameras are lined up from feature matches at this many moments spread over the half
+      seam_agreement: 0.1 # joint re-calibration: how strongly neighbours must agree in the seam bands vs sitting on their own lines (tried 0-1: 0.1 best; more pulls cam1 off the left box)
+      crf: 20 # H.264 quality of panorama.mp4 (lower = better, bigger)
+      threads: 4 # ffmpeg encoder threads
+    output_size: [1280, 720] # every camera feed
+    outputs_dir: "outputs/stadium" # runs: outputs/stadium/<segment>/<run_id>/
+    # The T2 camera set (docs/MVP4_STADIUM_PLAN.md section 5). position "rig" = the Alfheim camera platform, fitted
+    # by studio.panorama (~12 m high, ~8 m behind the near touchline at halfway). Other positions: [x, y, height] m.
+    # field_width_m = how many metres across the picture is at the point the camera looks at.
+    # kind ptz = a robotic head the director aims and zooms (motor limits below); fixed = never moves.
+    # built_from: panorama (cut out of panorama.mp4), source (one real Alfheim camera as-is), 3d (Three.js, Step 4).
+    cameras:
+      main: { name: "MAIN", kind: ptz, built_from: panorama, position: rig, look_at: [0, 0], field_width_m: 40,
+              min_field_width_m: 15, max_field_width_m: 75, max_pan_deg_s: 45, max_zoom_ratio_s: 1.5,
+              dead_zone_deg: 1.0, smoothing_s: 0.5 }
+      close: { name: "CLOSE", kind: ptz, built_from: panorama, position: rig, look_at: [0, 0], field_width_m: 14,
+               min_field_width_m: 10, max_field_width_m: 30, max_pan_deg_s: 60, max_zoom_ratio_s: 1.8,
+               dead_zone_deg: 0.4, smoothing_s: 0.4 }
+      wide: { name: "WIDE", kind: fixed, built_from: panorama, position: rig, look_at: [0, 0] } # the whole panorama
+      boxl: { name: "BOX L", kind: fixed, built_from: source, source_cam: 1, position: rig, crop: [0, 60, 1280, 720] }
+      boxr: { name: "BOX R", kind: fixed, built_from: source, source_cam: 3, position: rig, crop: [0, 60, 1280, 720] }
+      goall: { name: "GOAL L", kind: fixed, built_from: 3d, position: [-60.5, 0, 6], look_at: [-36, 0], field_width_m: 48 }
+      goalr: { name: "GOAL R", kind: fixed, built_from: 3d, position: [60.5, 0, 6], look_at: [36, 0], field_width_m: 48 }
+    colour_soften: 2.5 # magnified views: blur only the colour over this many SOURCE pixels (the sensor gives thin white lines rainbow edges; 3 washes out red shirts)
+    shot_types: { wide_above_m: 50, close_below_m: 25 } # field width -> shot type: wide > 50 m, medium 25-50, close < 25
+    follow: # Step 2's simple aim (studio.stadium --aim follow): the map's ball, else the main group of players
+      main_field_width_m: 40
+      close_field_width_m: 14
+    twin: # studio.zxy: players + ball 10x per second for the 3D scene (home team from ZXY sensors, the rest detected)
+      step_s: 0.1
+      align_minutes: [2, 12] # clock offset + axis directions measured on this part of the half
+      align_every_s: 5
+      align_search_s: 6 # search this many seconds around the file names' offset (measured: the sensor clock is ~3.5 s off it, the same all half)
+      align_cap_m: 6 # a ZXY player further than this from every detection counts as this far (robust mean)
+      home_match_m: 4.0 # each ZXY home player claims the ONE nearest detection within this (that detection is him)
+      track_gate_m: 3.0 # away/referee tracker: a detection this close to a track's predicted spot continues it
+      track_hold_s: 1.0 # a lost away player / referee is held (moving on at his last speed) this long
+      track_smooth: 0.5 # 0..1: how far a track jumps to a new detection (lower = smoother, slower)
+      track_min_hits: 2 # a track is drawn once it was seen this many times (no one-frame ghosts)
+      ball_gap_s: 2.0 # fill gaps between two ball sightings up to this long (straight line)
+      lofted_speed_ms: 15 # a gap crossed faster than this ...
+      lofted_min_m: 20 # ... and longer than this was in the air: give it a parabola
+      lofted_max_m: 15 # highest a lofted ball goes in the drawing
+      check_minutes: [1, 10, 23.7, 35, 45]
+    director: # Step 5: DirectorV2 in "tv" mode (studio.director._tv), merged over studio.director for stadium runs
+      mode: tv
+      start_cam: 1
+      min_shot_seconds: 2.0
+      roles: { main: 1, close: 2, wide: 3, boxl: 4, boxr: 5, goall: 6, goalr: 7 } # card number of each camera (order of `cameras` above)
+      attack_min_intensity: 0.45 # ball in a penalty box + map intensity at least this = an attack: GOAL / BOX camera
+      attack_exit_s: 1.0 # ball out of the box this long -> back to MAIN
+      stoppage_lost_s: 2.5 # no ball for this long = play has stopped -> CLOSE
+      close_min_s: 2.0 # CLOSE after a stoppage: at least this long ...
+      close_max_s: 4.0 # ... at most this long
+      restart_move_ms: 6 # the ball moving this fast again = play is back on (ends a stoppage / restart)
+      restart_max_s: 8 # WIDE for a kick-off / goal kick at most this long
+      settle_deg_s: 12 # never cut TO a robotic camera turning faster than this
+    operators: # Step 5: how MAIN and CLOSE are aimed and zoomed (studio.stadium.TVOperators)
+      main_open_m: 40 # MAIN field width in open play ...
+      main_attack_m: 28 # ... in an attack in a box
+      main_restart_m: 60 # ... at a kick-off / goal kick
+      lead_s: 0.6 # MAIN aims this far ahead of the ball (seconds of its movement): room in the direction of play
+      lead_max_m: 8
+      keep_margin: 0.35 # the ball further than this share of the shot width from MAIN's centre -> MAIN zooms out to keep it
+      close_m: 12 # CLOSE field width (on the player nearest the ball, or the group)
+      close_player_m: 6 # CLOSE picks the player nearest the ball if he is within this
+    program: # Step 5/7: program.mp4 of a stadium run
+      scorebug: true
+      teams_short: ["TIL", "SIF"] # Tromsø IL, Strømsgodset IF
+      chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" # records the 3D cameras (headless)
+      chrome_flags: ["--use-angle=metal"] # draw with the Mac's GPU (software drawing, --use-angle=swiftshader, was ~10x slower)
+      server: "http://localhost:8000" # the dashboard (python -m dashboard.server) the 3D page is served from

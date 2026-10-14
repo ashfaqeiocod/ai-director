@@ -18,11 +18,11 @@ from src.common import ffmpeg_exe
 class VideoWriter:
     """Write BGR frames (all the same size) to an H.264 mp4, one frame at a time."""
 
-    def __init__(self, path: Path, width: int, height: int, fps: float):
+    def __init__(self, path: Path, width: int, height: int, fps: float, crf: int = 23, threads: int = 2):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.part = path.with_name(path.stem + ".part.mp4")    # renamed when complete
-        encoder = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2"]
+        encoder = ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-threads", str(threads)]
         cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
                "-s", f"{width}x{height}", "-r", str(fps), "-i", "-", *encoder, "-pix_fmt", "yuv420p",
                "-g", str(round(fps)), "-movflags", "+faststart", str(self.part)]

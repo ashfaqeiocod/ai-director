@@ -587,7 +587,7 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | Step | Status | Notes |
 |---|---|---|
 | 0. Plan + camera infra guide | done | docs/MVP4_STADIUM_PLAN.md |
-| 1. Panorama | not started | |
+| 1. Panorama | done | studio/panorama.py: 3434x1310 cylinder, 84,780 frames (62 min at 22.7 fps); seams ~1 px |
 | 2. Camera devices + real feeds | not started | |
 | 3. ZXY player positions | not started | |
 | 4. 3D scene (behind-goal cams) | not started | |
@@ -596,9 +596,30 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 7. Test runs | not started | |
 
 ## Key results (MVP 4)
+- Step 1 panorama (`venv/bin/python -m studio.panorama --check`): the 3 cameras share one spot, fitted at
+  x=-2.9, y=42.3 m, 11.9 m high (8 m behind the near touchline; fit error 3 px median). Cameras lined up from SIFT
+  matches over 40 moments: 0.66 / 0.69 px median (cam2->cam1 / cam2->cam3). Seams: white-line jump 0.5 / 0.9 px
+  median (max 0.6 / 2.1 px, few line points cross the bands); players' feet seen by both cameras in a seam band
+  7.2 / 6.1 px apart (rough: detector boxes), counts 445 vs 479 and 280 vs 287. Check picture:
+  data/alfheim/2013-11-03_H1/panorama_check.jpg.
 ## Decisions made (MVP 4)
 - Setup T2 chosen (panorama rig + 2 behind-goal cameras + 1 robotic close-up); real pixels for the rig, 3D for
   behind-goal. The 3D scene may use the dataset's ZXY positions (home team only); the director stays cameras-only.
+- Step 1: the panorama's rows are angles too (equirectangular cylinder): a "height" cylinder made the grass right
+  under the rig 3x taller (2188 px instead of 1312) for no detail.
+- Step 1: the cameras are lined up from the PICTURES (feature matches), not from `H_N @ inv(H_2)`: the calibrations
+  disagree by 15-40 px in the overlaps (each is best near its own lines; the dataset page says the 4 mm lenses
+  have barrel distortion, which no single homography models). One homography per camera pair fits pitch AND
+  stands to ~1 px, so the 3 cameras really share one spot.
+- Step 1: pitch <-> panorama uses each camera's OWN calibration in its part of the panorama, blended over the
+  seams; the 3 calibrations are re-fitted together first (`refine_calibrations`, weight 0.1: 0.3-1.0 pulled cam1
+  off the left box). Seam disagreement cam1|cam2 4.3 -> ~2-3 m far half, 2.6 -> ~1-2 m near half (cam2|cam3
+  ~1-2 m / 0.6 m). Refined calibrations live in panorama.json only (MVP 3's calibration.json unchanged).
+- Step 1: speed: 3 cameras stacked into one picture -> ONE cv2.remap for single-camera pixels, 2 small remaps +
+  cv2.blendLinear for the seam bands (71 -> 22 ms per frame). panorama.json is built once and reused (`--refit`
+  rebuilds it; then panorama.mp4 must be made again).
 ## Problems / open issues (MVP 4)
+- MVP 3's cam1 calibration draws the left penalty box ~10-15 px (~1 m) too deep (seen on panorama_check.jpg and on
+  cam1 itself). Inherited; a pitch-size-aware or lens-distortion-aware calibration could fix it.
 ## Next action (MVP 4)
-Step 1: `studio/panorama.py`.
+Step 2: `studio/stadium.py` 5-minute follow run on the full panorama.
