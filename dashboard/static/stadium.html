@@ -141,7 +141,7 @@
 const SEGMENT = new URLSearchParams(location.search).get('segment') || 'alfheim-2013-11-03-H1';
 const FPS = 30;
 const S = { setup: null, chunks: {}, loading: {}, t: 1420, playing: false, speed: 1, wall: 0, startT: 0,
-            recording: false, live: null, liveAt: 0, logFilter: { cut: true, ptz: true, info: true } };
+            recording: false, wallOrder: [], live: null, liveAt: 0, logFilter: { cut: true, ptz: true, info: true } };
 const $ = id => document.getElementById(id);
 const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(1).padStart(4, '0')}`;
 const parseTime = s => { const p = s.split(':').map(Number); return p.length === 2 ? p[0] * 60 + p[1] : p[0]; };
@@ -398,7 +398,8 @@ function buildViews() {
   const [W, H] = S.setup.output_size;
   for (const id of ['goall', 'goalr']) {
     const cam = S.setup.cameras.find(c => c.id === id);
-    views[id] = { cam: threeCamera(cam, W / H), renderer: makeRenderer($('cv-' + id), W, H, true) };
+    // watching: 960x540 (lighter for the Mac); recording switches to the full output size (setRecordSize)
+    views[id] = { cam: threeCamera(cam, W / H), renderer: makeRenderer($('cv-' + id), 960, 540, true) };
     pitchTex.anisotropy = views[id].renderer.capabilities.getMaxAnisotropy();
   }
   // the director's free view: orbit around the centre spot
@@ -451,6 +452,7 @@ function tick() {
     placeEveryone(S.t);
     renderAll();
     programOverlay();
+    drawWall();
     $('clock').textContent = fmt(S.t);
     if (document.activeElement !== $('slider')) $('slider').value = S.t;
     $('status').textContent = row(S.t) ? '' : 'loading positions…';
@@ -467,7 +469,8 @@ function buildWall() {
     tile.className = 'tile'; tile.id = 'tile-' + cam.id;
     tile.innerHTML = cam.built_from === '3d'
       ? `<canvas id="cv-${cam.id}"></canvas><span class="label">${cam.name} · 3D</span><span class="sub" id="sub-${cam.id}"></span>`
-      : `<div class="off">not live</div><img data-stream="${cam.id}" alt=""><span class="label">${cam.name}</span><span class="sub" id="sub-${cam.id}"></span>`;
+      : `<div class="off">not live</div><canvas data-wall="${S.wallOrder.length}" width="640" height="360"></canvas><span class="label">${cam.name}</span><span class="sub" id="sub-${cam.id}"></span>`;
+    if (cam.built_from !== '3d') S.wallOrder.push(cam.id);
     wall.appendChild(tile);
   }
   const info = document.createElement('div');
@@ -476,9 +479,20 @@ function buildWall() {
     <div id="dreason" class="text-slate-400 mt-1"></div><div id="dstats" class="text-slate-500 mt-1 mono"></div>`;
   wall.appendChild(info);
 }
-function startStreams() {                    // (re)connect every MJPEG <img>; a stream ends ~60 s after a run
+// The 5 real-pixel pictures come as ONE mosaic stream (rows of 3 tiles; a browser opens only 6 connections to a
+// server, so 6 streams would block the data requests); each frame the tiles are cut out of it onto their canvases.
+const wallImg = new Image();
+function drawWall() {
+  if (!liveNow() || !wallImg.naturalWidth) return;
+  const tw = wallImg.naturalWidth / 3, th = tw * 9 / 16;
+  for (const cv of document.querySelectorAll('canvas[data-wall]')) {
+    const k = Number(cv.dataset.wall);
+    cv.getContext('2d').drawImage(wallImg, (k % 3) * tw, Math.floor(k / 3) * th, tw, th, 0, 0, cv.width, cv.height);
+  }
+}
+function startStreams() {                    // (re)connect the MJPEG streams; a stream ends ~60 s after a run
   const r = Date.now();
-  for (const img of document.querySelectorAll('img[data-stream]')) img.src = `/studio/live/stream/${img.dataset.stream}?r=${r}`;
+  wallImg.src = `/studio/live/stream/wall?r=${r}`;
   $('prog-img').src = `/studio/live/stream/program?r=${r}`;
   for (const el of document.querySelectorAll('.tile .off')) el.style.display = 'none';
   $('prog-off').style.display = 'none';
@@ -587,16 +601,19 @@ function drawMap(m) {
 
 // ------------------------------------------------------------------------------------------------ recording
 // Frame-exact: for every 1/30 s of match time, place everyone, render, and hand the frame to the recorder.
-async function record() {
-  const from = parseTime($('rec-from').value), secs = Number($('rec-secs').value), run = $('rec-run').value.trim();
-  if (!(secs > 0)) return;
-  S.recording = true; S.playing = false; $('play').textContent = 'Play';
-  $('rec').disabled = true;
+// Long recordings go in parts of PART_S seconds (the browser keeps a recording in memory until it is uploaded);
+// the server joins the parts into one cam_<id>.mp4 per camera.
+const PART_S = 120;
+function setRecordSize(on) {
+  const [W, H] = on ? S.setup.output_size : [960, 540];
+  for (const id of ['goall', 'goalr']) views[id].renderer.setSize(W, H, false);
+}
+async function recordPart(from, secs, run, part) {
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
   const rec = {};
   for (const id of ['goall', 'goalr']) {
     const stream = $('cv-' + id).captureStream(0);           // 0 = a frame only when we ask for one
-    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12e6 });
+    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8e6 });
     const parts = []; r.ondataavailable = e => e.data.size && parts.push(e.data);
     r.start(1000);
     rec[id] = { r, parts, track: stream.getVideoTracks()[0] };
@@ -611,19 +628,44 @@ async function record() {
     renderAll(false);
     for (const id in rec) rec[id].track.requestFrame();
     await new Promise(res => requestAnimationFrame(res));       // let the recorder take the frame
-    if (k % FPS === 0) $('rec-status').textContent = `recording ${fmt(t)}  (${Math.round(100 * k / n)}%)`;
+    if (k % FPS === 0) $('rec-status').textContent = `recording ${fmt(t)}  (part ${part ?? 0}: ${Math.round(100 * k / n)}%)`;
   }
   await new Promise(res => setTimeout(res, 300));               // ... and take the last frames before stopping
   const blobs = await Promise.all(Object.entries(rec).map(([id, x]) => new Promise(res => {
     x.r.onstop = () => res([id, new Blob(x.parts, { type: 'video/webm' })]); x.r.stop(); })));
-  S.recording = false;
   for (const [id, blob] of blobs) {
     $('rec-status').textContent = `uploading ${id} (${(blob.size / 1e6).toFixed(1)} MB)…`;
-    const q = new URLSearchParams({ cam: id, start: from, seconds: secs }); if (run) q.set('run', run);
+    const q = new URLSearchParams({ cam: id, start: from, seconds: secs });
+    if (run) q.set('run', run);
+    if (part != null) q.set('part', part);
     const res = await fetch(`/studio/stadium/upload/${SEGMENT}?${q}`, { method: 'POST', body: blob });
     const out = await res.json();
     $('rec-status').textContent = res.ok ? `saved ${out.file} (${out.recorded_frames} of ${out.frames} frames recorded)` : `error: ${out.detail}`;
+    if (!res.ok) throw new Error(out.detail);
   }
+}
+async function record() {
+  const from = parseTime($('rec-from').value), secs = Number($('rec-secs').value);
+  let run = $('rec-run').value.trim();
+  if (!(secs > 0)) return;
+  S.recording = true; S.playing = false; $('play').textContent = 'Play';
+  $('rec').disabled = true;
+  setRecordSize(true);
+  try {
+    if (secs <= PART_S) await recordPart(from, secs, run, null);
+    else {
+      run = run || `3d-${from}-${secs}s`;                       // parts must land in one folder
+      const n = Math.ceil(secs / PART_S);
+      for (let k = 0; k < n; k++) await recordPart(from + k * PART_S, Math.min(PART_S, secs - k * PART_S), run, k);
+      for (const id of ['goall', 'goalr']) {
+        const res = await fetch(`/studio/stadium/join/${SEGMENT}?cam=${id}&run=${encodeURIComponent(run)}`, { method: 'POST' });
+        const out = await res.json();
+        $('rec-status').textContent = res.ok ? `saved ${out.file} (${out.parts} parts)` : `error: ${out.detail}`;
+      }
+    }
+  } catch (e) { $('rec-status').textContent = 'recording failed: ' + e.message; }
+  setRecordSize(false);
+  S.recording = false;
   $('rec').disabled = false;
   setTime(S.t);
 }

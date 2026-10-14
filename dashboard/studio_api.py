@@ -658,9 +658,11 @@ def stadium_twin(segment: str, start: float = 0.0, seconds: float = 60.0) -> lis
 
 @router.post("/stadium/upload/{segment}")
 async def stadium_upload(segment: str, request: Request, cam: str, start: float, seconds: float,
-                         run: str | None = None) -> dict:
+                         run: str | None = None, part: int | None = None) -> dict:
     """A 3D camera's recording (WebM from the page's MediaRecorder, one video frame per 1/fps of match time)
-    -> cam_<cam>.mp4 in outputs/stadium/<segment>/<run> (default run: 3d-<start>-<seconds>s)."""
+    -> cam_<cam>.mp4 in outputs/stadium/<segment>/<run> (default run: 3d-<start>-<seconds>s).
+    part: a long recording comes in parts (the browser keeps a recording in memory): cam_<cam>_part<NNN>.mp4,
+    joined by `POST /stadium/join`."""
     import subprocess
 
     from src.common import ffmpeg_exe
@@ -671,25 +673,53 @@ async def stadium_upload(segment: str, request: Request, cam: str, start: float,
     fps = json.loads((folder / "meta.json").read_text())["fps"]
     out = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / (run or f"3d-{start:g}-{seconds:g}s")
     out.mkdir(parents=True, exist_ok=True)
-    webm = out / f"cam_{cam}.webm"
+    name = f"cam_{cam}" if part is None else f"cam_{cam}_part{part:03d}"
+    webm = out / f"{name}.webm"
     webm.write_bytes(await request.body())
-    mp4 = out / f"cam_{cam}.mp4"
+    mp4 = out / f"{name}.mp4"
     # Frames were recorded one per step of match time, not by the wall clock: renumber them at a steady fps, and
     # make the count exact (a recorder can drop a frame at the very start or end: the last one is repeated).
     frames = round(seconds * fps)
     cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(webm),
            "-vf", f"setpts=N/({fps}*TB),fps={fps},tpad=stop_mode=clone:stop=30", "-frames:v", str(frames),
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-           str(mp4)]
+           str(mp4.with_suffix(".part.mp4"))]           # renamed when complete: a waiting run never reads half a file
     done = subprocess.run(cmd, capture_output=True, text=True)
     if done.returncode != 0:
         raise HTTPException(500, f"ffmpeg failed: {done.stderr[-300:]}")
+    mp4.with_suffix(".part.mp4").replace(mp4)
     count = subprocess.run([ffmpeg_exe(), "-i", str(webm), "-f", "null", "-"], capture_output=True, text=True).stderr
     recorded = int(count.rsplit("frame=", 1)[1].split()[0]) if "frame=" in count else None
     print(f"[stadium] {cam}: {recorded} of {frames} frames recorded -> {mp4.relative_to(ROOT)}", flush=True)
     webm.unlink()
     return {"file": str(mp4.relative_to(ROOT)), "start": start, "seconds": seconds, "frames": frames,
             "recorded_frames": recorded}
+
+
+@router.post("/stadium/join/{segment}")
+def stadium_join(segment: str, cam: str, run: str) -> dict:
+    """cam_<cam>_part000.mp4, part001 ... -> cam_<cam>.mp4 (no re-encoding), then the parts are deleted."""
+    import subprocess
+
+    from src.common import ffmpeg_exe
+
+    if not cam.isalnum() or ".." in run or "/" in run:
+        raise HTTPException(400, "bad name")
+    out = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / run
+    parts = sorted(out.glob(f"cam_{cam}_part*.mp4"))
+    if not parts:
+        raise HTTPException(404, "no parts")
+    listing = out / f"cam_{cam}_parts.txt"
+    listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
+    done = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+                           "-c", "copy", "-movflags", "+faststart", str(out / f"cam_{cam}.part.mp4")],
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        raise HTTPException(500, f"ffmpeg failed: {done.stderr[-300:]}")
+    (out / f"cam_{cam}.part.mp4").replace(out / f"cam_{cam}.mp4")
+    for p in [*parts, listing]:
+        p.unlink()
+    return {"file": str((out / f"cam_{cam}.mp4").relative_to(ROOT)), "parts": len(parts)}
 
 
 @router.post("/stadium/live/start")

@@ -3,7 +3,8 @@
 The match plays at real speed (the wall clock). Every shown frame:
   - the pitch map gets the detections of every 1/5 s that has passed (studio.multicam via StadiumPipeline);
   - the operators aim MAIN / CLOSE, the robotic heads move (motor limits), the TV director picks what is on air;
-  - the 5 real-pixel feeds (MAIN, CLOSE, WIDE, BOX L, BOX R) and the program go out as JPEGs (MJPEG <img> streams),
+  - the 5 real-pixel feeds (MAIN, CLOSE, WIDE, BOX L, BOX R) go out as ONE mosaic JPEG ("wall": a browser opens at
+    most 6 connections to one server; 6 separate streams blocked the page's data requests), the program as another,
     the state (time, on air, every camera's view, the map) goes out ~10 times a second over the WebSocket, and every
     cut and robotic-camera move at once.
 The 3D cameras (GOAL L / GOAL R) are drawn by the page itself, at the time this loop sends.
@@ -25,6 +26,57 @@ import numpy as np
 from src.common import load_config
 from studio.panorama import Panorama
 from studio.stadium import Stadium, StadiumPipeline, placeholder, program_picture, settings
+
+
+class ParallelReader:
+    """One video decoded in its own thread up to the frame the live loop asks for (OpenCV decodes outside Python's
+    lock, so the 3 videos decode at the same time: the panorama alone takes ~21 ms per frame)."""
+
+    def __init__(self, path, start: int):
+        self.cap = cv2.VideoCapture(str(path))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        self.next = start                          # the next frame number the video will give
+        self.want = start - 1
+        self.frame: np.ndarray | None = None
+        self.have = start - 1                      # the frame number of self.frame
+        self.cond = threading.Condition()
+        self.done = False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        while True:
+            with self.cond:
+                while self.want < self.next and not self.done:
+                    self.cond.wait()
+                if self.done:
+                    return
+                want = self.want
+            while self.next < want:                # frames in between: decoded but not converted (cheaper)
+                self.cap.grab()
+                self.next += 1
+            ok, frame = self.cap.read()
+            self.next += 1
+            with self.cond:
+                self.frame, self.have = (frame if ok else None), want
+                if not ok:
+                    self.done = True
+                self.cond.notify_all()
+
+    def request(self, frame: int) -> None:
+        with self.cond:
+            self.want = frame
+            self.cond.notify_all()
+
+    def get(self, frame: int) -> np.ndarray | None:
+        with self.cond:
+            while self.have < frame and not self.done:
+                self.cond.wait()
+            return self.frame
+
+    def close(self) -> None:
+        with self.cond:
+            self.done = True
+            self.cond.notify_all()
 
 
 class StadiumLive:
@@ -89,25 +141,24 @@ class StadiumLive:
         pipe = StadiumPipeline(src, stadium, "director")
         w, h = stadium.size
         real = [c for c in stadium.cameras if c.built_from in ("panorama", "source")]
-        caps = {"pano": cv2.VideoCapture(str(src.folder / "panorama.mp4"))}
+        readers = {"pano": ParallelReader(src.folder / "panorama.mp4", self.start_frame)}
         for c in real:
             if c.built_from == "source":
-                caps[c.source_cam] = cv2.VideoCapture(str(src.video(c.source_cam)))
-        for cap in caps.values():
-            cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
+                readers[c.source_cam] = ParallelReader(src.video(c.source_cam), self.start_frame)
         # warm up the map + heads on the last few seconds before the start (a crew is already filming)
         for d in range(max(0, self.start_frame - round(live_cfg["warmup_s"] * fps)), self.start_frame):
             if d % src.step == 0:
                 pipe.detections(d, d / fps, detector=src.detection_at(d))
         credit = "Alfheim dataset (Simula), non-commercial research"
         self.status["state"] = "live"
-        self.publish({"type": "info", "message": f"stadium live from {self.start_frame / fps / 60:.0f}:"
-                                                 f"{self.start_frame / fps % 60:02.0f}"})
+        start_s = self.start_frame / fps
+        self.publish({"type": "info", "message": f"stadium live from {int(start_s // 60)}:{int(start_s % 60):02d}"})
         wall0 = time.time()
         i = self.start_frame - 1                  # the last frame read
         next_det = self.start_frame + (-self.start_frame) % src.step
         shown, skipped, last_state = 0, 0, 0.0
         widths = {cid: head.target_width for cid, head in stadium.heads.items()}
+        zoom_logged = {cid: -1e9 for cid in stadium.heads}    # (wall time) a zoom is logged at most every 3 s
         fast = {cid: False for cid in stadium.heads}
         on_air = None
         while not self.stop_flag.is_set():
@@ -118,10 +169,9 @@ class StadiumLive:
                 time.sleep(0.003)
                 continue
             # skipped frames are decoded (grab) but not drawn: the videos stay in step with the clock
-            for cap in caps.values():
-                for _ in range(target - i - 1):
-                    cap.grab()
-            frames = {k: cap.read()[1] for k, cap in caps.items()}
+            for reader in readers.values():
+                reader.request(target)
+            frames = {k: reader.get(target) for k, reader in readers.items()}
             if any(f is None for f in frames.values()):
                 break
             skipped += target - i - 1
@@ -131,16 +181,16 @@ class StadiumLive:
                 pipe.detections(next_det, next_det / fps, detector=src.detection_at(next_det))
                 next_det += src.step
             decision, cards, shots = pipe.frame(i, t, dt)
-            pictures = {}
-            for c in real:
-                pictures[c.id] = stadium.picture(shots[c.id], frames["pano"], frames)
-                self._put_jpeg(c.id, pictures[c.id], live_cfg["tile_width"], live_cfg["jpeg_quality"])
+            pictures = {c.id: stadium.picture(shots[c.id], frames["pano"], frames) for c in real}
+            self._put_jpeg("wall", self._mosaic([pictures[c.id] for c in real], live_cfg["tile_width"]),
+                           3 * live_cfg["tile_width"], live_cfg["jpeg_quality"])
             cam = stadium.cameras[decision.cam - 1]
             picture = pictures.get(cam.id)
             if picture is None:                   # a 3D camera: the page draws it over the program
                 picture = placeholder(cam.name, w, h)
             self._put_jpeg("program", program_picture(picture, cam, t, getattr(pipe.base, "score", [0, 0]),
-                                                      {**cfg, "program": {**cfg["program"], "scorebug": False}}, credit),
+                                                      {**cfg, "program": {**cfg["program"], "scorebug": False}}, credit,
+                                                      label=False),
                            live_cfg["program_width"], live_cfg["jpeg_quality"])
             shown += 1
             # events: cuts at once, robotic camera moves (a new zoom, the start of a fast move)
@@ -150,7 +200,8 @@ class StadiumLive:
                     self.publish({"type": "cut", "t": round(t, 2), "from": a.id, "to": b.id,
                                   "shot_s": e["shot_seconds"], "message": f"{a.name} -> {b.name}: {decision.reason[5:]}"})
             for cid, head in stadium.heads.items():
-                if abs(head.target_width - widths[cid]) >= 2:
+                if abs(head.target_width - widths[cid]) >= 5 and time.time() - zoom_logged[cid] >= 3:
+                    zoom_logged[cid] = time.time()
                     self.publish({"type": "ptz", "t": round(t, 2), "cam": cid,
                                   "message": f"{head.cam.name} zooms to {head.target_width:.0f} m"})
                     widths[cid] = head.target_width
@@ -168,10 +219,22 @@ class StadiumLive:
                 self.status.update({"t": round(t, 2), "lag_s": round(elapsed - (t - self.start_frame / fps), 2),
                                     "shown_fps": round(shown / max(elapsed, 1e-6), 1), "skipped": skipped})
                 self.publish(self._state(t, decision, shots, pipe))
-        for cap in caps.values():
-            cap.release()
+        for reader in readers.values():
+            reader.close()
         self.status["state"] = "ended"
-        self.publish({"type": "info", "message": f"stadium live ended at {i / fps / 60:.0f}:{i / fps % 60:02.0f}"})
+        self.publish({"type": "info", "message": f"stadium live ended at {int(i / fps // 60)}:{int(i / fps % 60):02d}"})
+
+    @staticmethod
+    def _mosaic(pictures: list[np.ndarray], tile_w: int) -> np.ndarray:
+        """The monitor wall in one picture: tiles of tile_w x 9/16 in rows of 3 (the page cuts it up again)."""
+        tile_h = tile_w * 9 // 16
+        rows = -(-len(pictures) // 3)
+        out = np.zeros((rows * tile_h, 3 * tile_w, 3), np.uint8)
+        for k, pic in enumerate(pictures):
+            r, c = divmod(k, 3)
+            out[r * tile_h:(r + 1) * tile_h, c * tile_w:(c + 1) * tile_w] = cv2.resize(
+                pic, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+        return out
 
     def _state(self, t: float, decision, shots: dict, pipe: StadiumPipeline) -> dict:
         """What the page draws ~10x per second: the clock, what is on air, every camera's view, the pitch map."""
