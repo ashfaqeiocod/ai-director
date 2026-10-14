@@ -596,6 +596,9 @@ Plan: `docs/MVP4_STADIUM_PLAN.md`.
 | 7. Test runs | in progress | 5 min done (all 8 videos 9000 frames, MAIN 69%, 0 < 2 s, ball in MAIN 91.5%); full half running |
 
 ## Key results (MVP 4)
+- Showcase video (`venv/bin/python -m studio.showcase --seconds 60`, 2026-10-14): one pre-rendered 1920x1080
+  "how it works" video of a director run (3 static cams -> panorama with MAIN/CLOSE cut-out boxes -> cut-outs ->
+  program + director reason + cuts) -> `<run>/showcase.mp4`; smooth demo instead of the slow live page (~4 fps render).
 - Step 1 panorama (`venv/bin/python -m studio.panorama --check`): the 3 cameras share one spot, fitted at
   x=-2.9, y=42.3 m, 11.9 m high (8 m behind the near touchline; fit error 3 px median). Cameras lined up from SIFT
   matches over 40 moments: 0.66 / 0.69 px median (cam2->cam1 / cam2->cam3). Seams: white-line jump 0.5 / 0.9 px
