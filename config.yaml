@@ -682,6 +682,37 @@ studio:
       restart_move_ms: 6
       restart_max_s: 8
       settle_deg_s: 10
+    play: # studio.play: the game reconstruction (who has the ball, passes, touches, 11 + 11 + 3 figures) -> play.jsonl
+      run_max_ms: 8.5 # nobody runs faster: two pieces of a player's track further apart than this allows are 2 people
+      join_slack_m: 3 # ... plus this much detector error
+      away_slots: 10 # away outfield players (+ 1 keeper)
+      keeper_box_m: 22 # a keeper is the deepest person within this of his goal line (|y| < keeper_wide_m) ...
+      keeper_wide_m: 24
+      keeper_jump_m: 4 # ... and the keeper track only moves on to a new dot this close to where he was
+      sighting_sigma_m: 2.0 # how far a ball sighting may be from the player who really has the ball (detector + map error)
+      sighting_floor: 0.02 # a sighting can be plain wrong: its weight never drops below this (false balls cost little)
+      switch_cost: 5.0 # "the ball goes to another player" costs this much (log-odds): fewer, surer passes
+      loose_r_m: 4.5 # a loose ball (nobody on it) explains a sighting as well as a player this far from it would ...
+      loose_cost: 2.5 # ... and the ball becoming loose / being picked up costs this much each
+      loose_per_s: 1.5 # ... plus this much per second it stays loose (a loose ball is soon picked up)
+      max_pass_m: 65 # longest pass
+      pass_speed: { base_ms: 8, per_m: 0.35, max_ms: 24 } # pass speed = base + per_m * length (short passes are slower)
+      pass_time_s: [0.25, 3.0] # a pass takes at least / at most this long
+      pass_speed_tolerance: 1.3 # a pass that would need more than max_ms * this is impossible: that "touch" did not happen
+      release_near_m: 2.0 # the passer's last sighting this close = the moment he kicked
+      lofted_m: 28 # passes longer than this go through the air
+      lofted_max_m: 12 # highest a lofted pass goes
+      foot_m: 0.4 # the ball sits this far in front of the player who has it
+      touch_every_m: 3.0 # a dribbler touches the ball every this many metres ...
+      touch_push: { per_ms: 0.12, max_m: 1.0 } # ... pushing it ahead by per_ms * speed (at most max_m)
+      dead_gap_s: 6 # no sighting for longer than this = the ball is out of play (the director's stoppage) ...
+      out_m: 0.3 # ... and so is a ball this far over a line
+      smooth_s: 0.3 # player tracks are smoothed over +- this
+      sensor_gap_s: 3 # a home sensor that drops out this long is bridged with a straight line (longer = off the pitch)
+      assistant_y_m: 30 # a referee detected this close to a touchline is an assistant (they run the line at the offside line)
+      max_hold_s: 6 # a blind stretch (no sighting says who has it) longer than this gets guessed passes ...
+      guess_hold_s: 2.5 # ... one every this long ...
+      guess_mate_m: [5, 25] # ... to the nearest team-mate this far away
 
 # ---------------------------------------------------------------------------------------------------------------
 # Arm MVP: AI director on REAL footage — a home-made arm-wrestling match filmed by 5 phones.

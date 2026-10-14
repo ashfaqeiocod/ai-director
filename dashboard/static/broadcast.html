@@ -96,7 +96,9 @@ const S = { B: null, segment: null, run: null, c: 0, playing: false, speed: 1, l
 const CHUNK = 60, STEP = 0.1;
 function loadChunk(k) {
   if (k < 0 || S.chunks[k] || S.loading[k]) return S.loading[k];
-  S.loading[k] = fetch(`/studio/stadium/twin/${S.segment}?start=${k * CHUNK}&seconds=${CHUNK + 1}`).then(r => r.json())
+  const url = kind => `/studio/stadium/twin/${S.segment}?start=${k * CHUNK}&seconds=${CHUNK + 1}&kind=${kind}`;
+  // the rebuilt game (studio.play: 11 v 11, who has the ball, passes); the raw twin if it was not built
+  S.loading[k] = fetch(url('play')).then(r => r.ok ? r : fetch(url('twin'))).then(r => r.json())
     .then(rows => { S.chunks[k] = rows; delete S.loading[k];
       for (const key of Object.keys(S.chunks)) if (Math.abs(key - k) > 2) delete S.chunks[key]; });
   return S.loading[k];
@@ -121,13 +123,23 @@ function people(t) {
     for (const p of a[team]) {
       const n = next.get(p.id) || p, x = p.x + (n.x - p.x) * s, y = p.y + (n.y - p.y) * s;
       if (team === 'home' && (Math.abs(x) > 53 || Math.abs(y) > 34.6) && (p.speed ?? 0) < 0.5) continue;  // bench
-      out.push({ key: team + p.id, team, x, y });
+      out.push({ key: team + p.id, team, x, y, gk: !!p.gk });
     }
   }
   let ball = null;
   if (a.ball) { const n = (b && b.ball) || a.ball;
     ball = { x: a.ball.x + (n.x - a.ball.x) * s, y: a.ball.y + (n.y - a.ball.y) * s, z: a.ball.z + (n.z - a.ball.z) * s }; }
-  return { people: out, ball };
+  return { people: out, ball, own: a.own };
+}
+// The passes kicked between two moments (each twin row of play.jsonl can carry one `kick`).
+function kicksBetween(t0, t1) {
+  const out = [];
+  if (!(t1 > t0) || t1 - t0 > 1) return out;                  // paused, going back, or a jump (cut to a replay)
+  for (let t = Math.floor(t0 / STEP + 1e-6) * STEP + STEP; t <= t1 + 1e-6; t += STEP) {
+    const r = row(t);
+    if (r && r.kick && Math.abs(r.t - t) < STEP / 2) out.push(r.kick);
+  }
+  return out;
 }
 
 // ================================================================================================ the stadium
@@ -309,7 +321,8 @@ function makeFigure(kit) {
     act[name].time = Math.random() * act[name].getClip().duration;
   }
   scene.add(root);
-  return { root, mixer, act, kit, heading: 0, last: null, speed: 0 };
+  const leg = { up: root.getObjectByName('mixamorigRightUpLeg'), low: root.getObjectByName('mixamorigRightLeg') };
+  return { root, mixer, act, kit, heading: 0, last: null, speed: 0, leg, kick: 9, kickDir: 0 };
 }
 // The keeper of each team = its player nearest its own goal (checked now and then, so it doesn't flicker).
 const keepers = { home: null, away: null };
@@ -331,14 +344,32 @@ const ball = new THREE.Mesh(new THREE.SphereGeometry(0.12, 20, 14), new THREE.Me
     for (let k = 0; k < 10; k++) { g.beginPath(); g.arc((k * 37) % 128, (k * 23) % 64, 6, 0, 7); g.fill(); } }), roughness: 0.5 }));
 ball.castShadow = true; scene.add(ball);
 
+// A pass or a shot: the right leg swings back and through (the figure has no kick animation of its own).
+const KICK_S = 0.45, KICK_LEAD = 0.25;
+function kickPose(f) {
+  if (f.kick >= KICK_S || !f.leg.up) return;
+  const u = f.kick / KICK_S;
+  const swing = u < 0.45 ? -0.9 * Math.sin(Math.PI * u / 0.9) : 1.3 * Math.sin(Math.PI * (u - 0.45) / 0.55);
+  f.leg.up.rotation.x += swing;                       // thigh: back, then through the ball
+  if (f.leg.low) f.leg.low.rotation.x += u < 0.45 ? 1.1 * Math.sin(Math.PI * u / 0.45) : 0;   // knee bends on the back-swing
+}
+let lastT = null;
+const ballSpin = new THREE.Quaternion(), spinAxis = new THREE.Vector3();
 function placeEveryone(t, dt) {
   const now = people(t);
   const seen = new Set();
+  // the swing starts KICK_LEAD before the ball leaves, so the foot meets it
+  for (const k of kicksBetween(lastT == null ? null : lastT + KICK_LEAD, t + KICK_LEAD)) {
+    const f = figures.get(k.who), to = now && now.people.find(p => p.key === k.to);
+    if (f) { f.kick = 0; f.kickDir = to ? Math.atan2(to.x - f.root.position.x, to.y - f.root.position.z) : f.heading; }
+  }
+  lastT = t;
   if (now) {
     pickKeepers(t, now.people);
     for (const p of now.people) {
       seen.add(p.key);
-      const kit = p.team === 'ref' ? 'ref' : keepers[p.team] === p.key ? p.team + 'gk' : p.team;
+      const gk = now.people.some(q => q.gk) ? p.gk : keepers[p.team] === p.key;      // play.jsonl names its keepers
+      const kit = p.team === 'ref' ? 'ref' : gk ? p.team + 'gk' : p.team;
       let f = figures.get(p.key);
       if (!f) { f = makeFigure(kit); figures.set(p.key, f); }
       if (f.kit !== kit) { f.root.traverse(o => { if (o.isMesh) o.material = kitMats[kit]; }); f.kit = kit; }
@@ -346,7 +377,8 @@ function placeEveryone(t, dt) {
       if (f.last && dt > 0) {
         const vx = (p.x - f.last.x) / dt, vy = (p.y - f.last.y) / dt;
         speed = Math.hypot(vx, vy);
-        if (speed > 0.5) { let d = Math.atan2(vx, vy) - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 5); }
+        if (f.kick < KICK_S) { let d = f.kickDir - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 12); }
+        else if (speed > 0.5) { let d = Math.atan2(vx, vy) - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 5); }
         else if (now.ball) { let d = Math.atan2(now.ball.x - p.x, now.ball.y - p.y) - f.heading; d = Math.atan2(Math.sin(d), Math.cos(d)); f.heading += d * Math.min(1, dt * 2); }
       }
       f.speed += (Math.min(speed, 9) - f.speed) * Math.min(1, dt * 4);   // smoothed: no twitching between animations
@@ -358,12 +390,19 @@ function placeEveryone(t, dt) {
       f.act.walk.setEffectiveTimeScale(Math.min(1.6, Math.max(0.6, s / 1.4)));
       f.act.run.setEffectiveTimeScale(Math.min(1.5, Math.max(0.8, s / 5)));
       f.mixer.update(dt);
+      f.kick += dt; kickPose(f);
     }
   }
   for (const [k, f] of figures) if (!seen.has(k)) { scene.remove(f.root); figures.delete(k); }
   const b = now && now.ball;
   ball.visible = !!b;
-  if (b) { ball.position.set(b.x, (b.z || 0) + 0.12, b.y); ball.rotation.x += dt * 6; }
+  if (b) {
+    const dx = b.x - ball.position.x, dz = b.y - ball.position.z, d = Math.hypot(dx, dz);
+    if (d > 1e-4 && d < 5) {                            // rolls: turns by distance / radius about the axis across its path
+      spinAxis.set(dz / d, 0, -dx / d); ballSpin.setFromAxisAngle(spinAxis, d / 0.12); ball.quaternion.premultiply(ballSpin);
+    }
+    ball.position.set(b.x, (b.z || 0) + 0.12, b.y);
+  }
 }
 
 // ================================================================================================ cameras

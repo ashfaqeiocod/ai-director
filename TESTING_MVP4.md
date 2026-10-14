@@ -123,6 +123,15 @@ venv/bin/python -m studio.zxy              # twin.jsonl: teams from shirts, clea
 ```
 It prints the 3 shirt colours it learned and "fixed false 'balls' (painted spots)" (the penalty spots).
 
+Then rebuild the game so it plays like football (~10 s):
+```bash
+venv/bin/python -m studio.play             # play.jsonl: 11 v 11 + 3 referees, who has the ball, passes, touches
+```
+It prints its checks: `ball_drawn_pct` 100, `ball_faster_than_35ms_steps` near 0, `sightings_within_3m_pct` ~78,
+`players_per_row` 11 / 11 / 3, ~15 passes a minute. The director and the page use play.jsonl when it exists.
+In the video: every pass starts with the passer's leg swinging, the ball rolls and slows to the receiver's feet,
+a dribbler pushes the ball ahead every few steps, nobody pops in or out, the assistants run their touchlines.
+
 ## C. A 5-minute broadcast: preview, then a 1080p video
 ```bash
 venv/bin/python -m studio.broadcast --start 23:40 --seconds 300            # decisions + camera paths (~5 s)
@@ -146,6 +155,7 @@ venv/bin/python -m studio.broadcast --start 0:00 --seconds 2826 --render
 
 ## Honest limits
 - The players are mannequins (a free rigged figure in painted kits): fine at TV distances, visible in close-ups.
-- Away players, referees and the ball come from our detector: the ball is missing ~30% of the time (mostly while
-  play is stopped) and is then not drawn; the cameras follow the player who had it.
+- Away players, referees and the ball come from our detector, rebuilt by studio.play: who has the ball is the best
+  guess from the sightings (78% of them are within 3 m of the drawn ball); when the cameras lose the ball in open
+  play for over 6 s the passes there are guessed. Away players not seen for a while move with their team.
 - No real crowd recording: the sound is generated (a murmur and cheers that follow the play).

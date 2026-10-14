@@ -641,15 +641,21 @@ def stadium_setup(segment: str) -> dict:
 
 
 @router.get("/stadium/twin/{segment}")
-def stadium_twin(segment: str, start: float = 0.0, seconds: float = 60.0) -> list[dict]:
-    """The twin rows (one per 0.1 s) from `start` for `seconds` (the page asks for the next minute ahead of time)."""
+def stadium_twin(segment: str, start: float = 0.0, seconds: float = 60.0, kind: str = "twin") -> list[dict]:
+    """The twin rows (one per 0.1 s) from `start` for `seconds` (the page asks for the next minute ahead of time).
+    kind=play: the rebuilt game (studio.play: fixed figures, who has the ball, passes) instead of the raw twin."""
     folder = _stadium_folder(segment)
-    if segment not in _twin_cache:
-        path = folder / "twin.jsonl"
-        if not path.exists():
-            raise HTTPException(404, "twin.jsonl missing: run `venv/bin/python -m studio.zxy`")
-        _twin_cache[segment] = path.read_text().splitlines()
-    lines = _twin_cache[segment]
+    if kind not in ("twin", "play"):
+        raise HTTPException(400, "kind must be twin or play")
+    path = folder / f"{kind}.jsonl"
+    if not path.exists():
+        raise HTTPException(404, f"{kind}.jsonl missing: run `venv/bin/python -m studio.{'zxy' if kind == 'twin' else 'play'}`")
+    key = f"{segment}/{kind}/{path.stat().st_mtime}"               # a rebuilt file is read again
+    if key not in _twin_cache:
+        for old in [k for k in _twin_cache if k.startswith(f"{segment}/{kind}/")]:
+            del _twin_cache[old]
+        _twin_cache[key] = path.read_text().splitlines()
+    lines = _twin_cache[key]
     step = json.loads(lines[1])["t"] - json.loads(lines[0])["t"]
     a = max(0, int(start / step))
     b = min(len(lines), a + int(min(seconds, 300) / step) + 1)

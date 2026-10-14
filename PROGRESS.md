@@ -709,6 +709,7 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 | VB4. Operators v2 | done | MAIN framing with lead room + nearest players, TIGHT on the ball carrier (sticky), gantry positions |
 | VB5. Intensity (crowd sound, replays, graphics) | done | slow-motion replays with a wipe, crowd sound that follows the play, TV graphics |
 | VB6. 1080p render: 5 min, then the half | done | 5 min (2.6 min to render) and the whole half (84,780/84,780 frames, 23 min) |
+| VB7. Game reconstruction (feels like football) | done | studio/play.py -> play.jsonl: 11 v 11 + 3 fixed figures, owner search, passes, touches, kicks |
 
 ## Key results
 - Preview: the browser renders the program + 7-camera wall from precomputed camera paths at ~60 fps (MVP 4's live
@@ -727,7 +728,22 @@ Decisions (the plan's recommendations, user: "do all you recommended"): Three.js
 - The detector's "ball" was a PAINTED SPOT in 21% of all sightings: right penalty spot 698x, left 446x (a real ball
   stays in a 1 m cell at most ~15x per half). Learned as hotspots and dropped in the twin.
 
+- VB7 game reconstruction (user, 2026-10-14: "ball moves without a touch, sometimes not visible, players missed;
+  make it feel like real passes and touches"). Measured on the old twin: ball missing 28.5%, 442 jumps > 35 m/s
+  (max 686 m/s), ball > 2 m from every player 38% of the time, 3,575 away tracks (median life 5 s), away 7-15 per
+  moment. After studio.play (whole half): ball drawn 100%, fastest ball 37 m/s (3 steps > 35), 78% of sightings
+  within 3 m of the drawn ball (57% when the ball must always be at a player), always 11 + 11 + 3 figures, fastest
+  player 8.5 m/s (p99.9), ~690 passes (15/min incl. loose balls), 62 lofted, ~80 guessed passes in blind stretches,
+  loose ball 8%, out of play 33% (real football: ~35-40%). Away figures move like the sensor team (median 1.7 m/s).
+
 ## Decisions made
+- Game reconstruction (studio.play, offline within the broadcast delay): track pieces -> fixed figures (no overlap in
+  time, jumps possible at 8.5 m/s, best fit by place in the team); gaps filled by moving with the team; keepers =
+  deepest dot at each goal; assistants run their touchline at the offside line. The owner of the ball is a Viterbi
+  search over the half (sightings near a player vs a cost per change of owner, plus a "loose ball" state that follows
+  the sightings); impossible touches (a pass faster than 31 m/s) are removed; blind stretches > 6 s get guessed
+  passes to the nearest team-mate. The ball sits at the owner's feet with a touch every 3 m of running, passes roll
+  and slow down (long ones fly). The page swings the passer's right leg on each kick and rolls the ball by distance.
 - Every camera is a level-horizon pinhole at a TV position (config studio.broadcast.cameras): MAIN / TIGHT at
   halfway 18 m high in the main stand, HIGH 18 at the box edges, GOAL L/R 21 m behind the goals 12 m high, WIDE.
   Heads have acceleration limits too (PTZHead `max_accel_deg_s2`, `max_zoom_accel`; 0 = MVP 4 behaviour): moves

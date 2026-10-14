@@ -46,11 +46,16 @@ def settings() -> dict:
 # 1. The twin as a time series
 # ---------------------------------------------------------------------------------------------------------------
 class Twin:
-    """twin.jsonl rows (one per 0.1 s) for a stretch of the match; `at(t)` = the row at or before t."""
+    """The rebuilt game (play.jsonl from studio.play, else the raw twin.jsonl), one row per 0.1 s, for a stretch
+    of the match; `at(t)` = the row at or before t."""
 
     def __init__(self, folder: Path, start_s: float, end_s: float):
         self.rows = []
-        with open(folder / "twin.jsonl") as f:
+        path = folder / "play.jsonl"
+        if not path.exists():
+            path = folder / "twin.jsonl"
+        self.kind = path.stem
+        with open(path) as f:
             for line in f:
                 t = float(line[5:line.index(",")])          # '{"t":123.4,...' : cheap peek at the time
                 if t < start_s - 30:
@@ -235,7 +240,8 @@ def run(segment: str, start_s: float, seconds: float) -> Path:
         row = twin.at(t)
         if k % every == 0:
             b = row["ball"]
-            pitch = pitch_map.update(t, (b["x"], b["y"]) if b else None, [p[:2] for p in people(row)])
+            seen = b is not None and not b.get("dead")          # play.jsonl: the ball out of play = no ball on the map
+            pitch = pitch_map.update(t, (b["x"], b["y"]) if seen else None, [p[:2] for p in people(row)])
             ops.update(t, row, pitch, director.state)
             cards = None
         if k == -round(warm * fps):                             # start already framing the play
@@ -276,7 +282,7 @@ def run(segment: str, start_s: float, seconds: float) -> Path:
     cuts.sort(key=lambda c: c["frame"])
     data = {"segment": segment, "start_s": start_s, "seconds": seconds, "fps": fps, "frames": n,
             "src": src, "replays": replays,
-            "home_attacks": home_dir, "teams": ["Tromsø IL", "Strømsgodset"],
+            "home_attacks": home_dir, "teams": ["Tromsø IL", "Strømsgodset"], "twin": twin.kind,
             "cameras": [{"id": c.id, "name": c.name, "kind": c.kind, "position_m": list(c.position_m)}
                         for c in stadium.cameras],
             "paths": paths, "on_air": on_air, "states": states, "cuts": cuts,

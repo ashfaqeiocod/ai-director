@@ -554,6 +554,9 @@ def build(match: str, half: int) -> Path:
     # cleaned away / referee tracks, the ball carried by a player through longer gaps
     sightings, hotspots = drop_hotspots(sightings, cfg)
     print(f"  ball: {len(sightings)} sightings kept; fixed false 'balls' (painted spots) at {hotspots}", flush=True)
+    # the raw sightings, for the game reconstruction (studio.play)
+    (folder / "ball_sightings.json").write_text(json.dumps([[round(t, 3), round(float(p[0]), 2), round(float(p[1]), 2)]
+                                                           for t, p in sightings]))
     ball = ball_track(sightings, cfg)
     all_rows = [json.loads(line) for line in out.read_text().splitlines()]
     for row in all_rows:
