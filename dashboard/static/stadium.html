@@ -32,42 +32,108 @@
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
+    html, body { height: 100%; overflow: hidden; }
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: #020617; }
     .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+    /* a control room that fits the window: nothing scrolls, every picture shrinks to its space */
+    #app { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; padding: 8px; }
+    #main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(280px, 30vw, 560px); gap: 8px; min-height: 0; }
+    #side { display: grid; grid-template-rows: auto minmax(0, 0.9fr) minmax(80px, 1fr); gap: 8px; min-height: 0; }
+    .panel { background: #0b1222; border: 1px solid #1e293b; border-radius: 6px; min-height: 0; position: relative; }
+    .ptag { position: absolute; top: 3px; left: 6px; font-size: 10px; letter-spacing: .08em; color: #64748b; z-index: 2; }
     .tile { position: relative; border: 2px solid #1e293b; background: #000; aspect-ratio: 16 / 9; overflow: hidden; }
     .tile.live { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
-    .tile canvas, .tile img { display: block; width: 100%; height: 100%; object-fit: contain; }
-    .tile .label { position: absolute; left: 6px; top: 4px; font-size: 12px; font-weight: 600; color: #fff;
-      background: rgba(2, 6, 23, .7); padding: 1px 6px; border-radius: 4px; }
-    .tile .sub { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #cbd5e1;
-      background: rgba(2, 6, 23, .7); padding: 0 5px; border-radius: 4px; }
+    .tile canvas, .tile img, .tile video { display: block; width: 100%; height: 100%; object-fit: contain; }
+    #program { aspect-ratio: auto; width: 100%; height: 100%; border: none; }
+    #program > img, #program > video, #program > canvas { position: absolute; inset: 0; }
+    .tile .label { position: absolute; left: 4px; top: 3px; font-size: 10px; font-weight: 600; color: #fff;
+      background: rgba(2, 6, 23, .7); padding: 0 5px; border-radius: 3px; z-index: 1; }
+    .tile .sub { position: absolute; right: 4px; bottom: 3px; font-size: 10px; color: #cbd5e1;
+      background: rgba(2, 6, 23, .7); padding: 0 4px; border-radius: 3px; z-index: 1; }
     .tile .off { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      font-size: 12px; color: #475569; }
-    .bug { position: absolute; left: 3%; top: 5%; display: flex; font-weight: 700; font-size: clamp(11px, 1.4vw, 18px); }
+      font-size: 11px; color: #475569; text-align: center; padding: 4px; }
+    .bug { position: absolute; left: 3%; top: 5%; display: flex; font-weight: 700; font-size: clamp(11px, 1.4vw, 18px); z-index: 1; }
     .bug .teams { background: rgba(15, 23, 42, .92); color: #fff; padding: .2em .7em; }
     .bug .clock { background: #b91c1c; color: #fff; padding: .2em .6em; }
-    .chipf.on { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    #wall { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 16px 4px 4px; }
+    #map { width: 100%; height: 100%; }
+    #timeline { width: 100%; height: 30px; cursor: pointer; border-radius: 4px; }
+    .chipf { color: #64748b; } .chipf.on { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
     .scroll::-webkit-scrollbar { width: 6px; } .scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .badge { padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; letter-spacing: .05em; }
+    .stat { margin-right: 14px; white-space: nowrap; } .stat b { color: #e2e8f0; font-weight: 600; }
+    #tools { position: fixed; inset: 6vh 4vw; z-index: 20; overflow: auto; display: none; box-shadow: 0 20px 60px #000; }
+    #tools.open { display: block; }
+    .engine-only { display: none; } body.engine .engine-only { display: inline-flex; } body.engine .run-only { display: none; }
     button:disabled, input:disabled, select:disabled { opacity: .4; cursor: not-allowed; }
   </style>
 </head>
-<body class="text-slate-200 min-h-screen">
-<div class="p-3 flex flex-col gap-3 max-w-[1800px] mx-auto">
-  <header class="flex flex-wrap items-center gap-3">
-    <h1 class="text-lg font-semibold">Virtual Stadium <span class="text-slate-500 font-normal">· T2 camera set, Alfheim</span></h1>
-    <span id="teams" class="text-sm text-slate-400"></span>
+<body class="text-slate-200">
+<div id="app">
+  <header class="flex flex-wrap items-center gap-2 min-w-0">
+    <h1 class="text-base font-semibold whitespace-nowrap">Virtual Stadium <span class="text-slate-500 font-normal">· control room · real footage</span></h1>
+    <select id="source" class="bg-slate-900 border border-slate-700 rounded px-1 text-xs max-w-[360px]" title="what to play"></select>
+    <span id="teams" class="text-xs text-slate-500 hidden xl:inline"></span>
     <span class="flex-1"></span>
-    <a href="/studio" class="text-sm text-sky-400 hover:underline">Studio</a>
+    <span id="mode" class="badge bg-slate-700">READY</span>
+    <span class="mono text-lg" id="rclock">--:--</span>
+    <button id="full" class="text-xs px-2 py-1 rounded border border-slate-700 hover:bg-slate-800">⛶ Full screen</button>
+    <button id="toolsbtn" class="text-xs px-2 py-1 rounded border border-slate-700 hover:bg-slate-800" title="3D director view, 3D clock, record the goal cameras">Tools</button>
+    <a href="/studio/broadcast" class="text-xs text-sky-400 hover:underline">Virtual Broadcast</a>
   </header>
 
-  <!-- controls: live run + the page's own clock (used when not live) -->
-  <div class="flex flex-wrap items-center gap-2 text-sm">
-    <span class="font-semibold text-slate-400">LIVE</span>
-    <label class="flex items-center gap-1">from <input id="live-from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
-    <button id="golive" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Go live</button>
-    <button id="stop" class="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700">Stop</button>
-    <span id="livestatus" class="text-xs text-slate-400 mono min-w-[260px]">not live</span>
-    <span class="w-px h-5 bg-slate-700 mx-1"></span>
+  <div id="main">
+    <div class="panel bg-black overflow-hidden">
+      <div class="tile" id="program">
+        <div class="off" id="prog-off">PROGRAM · choose a recorded run (top) and press Go live</div>
+        <video id="prog-vid" muted playsinline preload="auto" style="display:none"></video>
+        <img id="prog-img" alt="" style="display:none">
+        <canvas id="prog-3d" width="1280" height="720" style="display:none"></canvas>
+        <div class="bug" id="bug"><span class="teams" id="bug-teams">TIL 0-0 SIF</span><span class="clock mono" id="bug-clock">00:00</span></div>
+        <span class="label" id="prog-live" style="left:auto;right:6px;top:6px;font-size:12px;background:#dc2626">LIVE</span>
+        <span class="sub" id="prog-cam" style="left:6px;right:auto;font-size:12px"></span>
+        <span class="sub" id="prog-credit"></span>
+      </div>
+    </div>
+    <div id="side">
+      <div class="panel"><span class="ptag">MONITOR WALL</span><div id="wall"></div></div>
+      <div class="panel"><span class="ptag">PITCH · where every camera looks (red = on air)</span>
+        <svg id="map" viewBox="-68 -44 136 96" preserveAspectRatio="xMidYMid meet"></svg></div>
+      <div class="panel flex flex-col p-2 pt-5"><span class="ptag">DIRECTOR LOG</span>
+        <div class="flex items-center gap-1 text-xs mb-1">
+          <span id="dstate" class="font-semibold text-sm text-rose-300 flex-1 truncate">-</span>
+          <button class="chipf on border border-slate-700 rounded px-1" data-k="cut">cuts</button>
+          <button class="chipf on border border-slate-700 rounded px-1" data-k="ptz">camera moves</button>
+          <button class="chipf on border border-slate-700 rounded px-1" data-k="info">play</button></div>
+        <div id="log" class="scroll overflow-y-auto text-[11px] mono flex-1 min-h-0"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="flex flex-col gap-1.5">
+    <canvas id="timeline" width="1600" height="30"></canvas>
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <span class="run-only flex items-center gap-2">
+        <button id="rplay" class="px-4 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">Go live</button>
+        <button id="tolive" class="px-2 py-1 rounded border border-rose-700 text-rose-300 text-xs hover:bg-rose-950" title="back to the live moment">● LIVE</button>
+        <select id="rspeed" class="bg-slate-900 border border-slate-700 rounded px-1 text-xs">
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></span>
+      <span class="engine-only items-center gap-2">
+        <label class="text-xs flex items-center gap-1">from <input id="live-from" value="23:40" class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1"></label>
+        <button id="golive" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Go live</button>
+        <button id="stop" class="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700">Stop</button>
+        <span id="livestatus" class="text-xs text-slate-400 mono">not live</span></span>
+      <div id="stats" class="flex flex-wrap gap-y-0.5 text-xs text-slate-400 mono flex-1 min-w-0"></div>
+    </div>
+    <div class="text-[11px] text-slate-500 truncate"><span id="credit"></span> <span id="reason" class="mono"></span></div>
+  </footer>
+</div>
+
+<!-- Tools: the free 3D director view, the page's own 3D clock, recording the behind-goal 3D cameras -->
+<div id="tools" class="panel p-3">
+  <div class="flex items-center mb-2"><span class="font-semibold flex-1">Tools</span>
+    <button id="toolsclose" class="text-xs px-2 py-1 rounded border border-slate-700">Close</button></div>
+  <div class="flex flex-wrap items-center gap-2 text-sm mb-2">
     <span class="font-semibold text-slate-400">3D CLOCK</span>
     <button id="play" class="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white">Play</button>
     <label class="flex items-center gap-1">from <input id="from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
@@ -78,62 +144,24 @@
     <input id="slider" type="range" min="0" max="2826" step="0.1" value="1420" class="flex-1 min-w-[160px]">
     <span id="status" class="text-xs text-slate-400"></span>
   </div>
-
-  <!-- program + monitor wall -->
-  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3">
-    <div class="xl:col-span-7 flex flex-col gap-1">
-      <div class="tile" id="program">
-        <div class="off" id="prog-off">PROGRAM · not live (press Go live)</div>
-        <img id="prog-img" alt="">
-        <canvas id="prog-3d" width="1280" height="720" style="position:absolute;inset:0;display:none"></canvas>
-        <div class="bug"><span class="teams" id="bug-teams">TIL 0-0 SIF</span><span class="clock mono" id="bug-clock">00:00</span></div>
-        <span class="label" style="left:auto;right:6px;background:#dc2626">LIVE</span>
-        <span class="sub" id="prog-cam" style="left:6px;right:auto"></span>
-        <span class="sub" id="prog-credit"></span>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+    <div class="tile"><canvas id="cv-free"></canvas>
+      <span class="label">DIRECTOR · drag to turn, scroll to zoom ·
+        <select id="viewpick" class="bg-slate-900 border border-slate-700 rounded text-xs"><option value="">free</option></select></span></div>
+    <div class="text-sm">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold">Record the 3D cameras</span>
+        <label>from <input id="rec-from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
+        <label>for <input id="rec-secs" value="60" class="mono w-12 bg-slate-900 border border-slate-700 rounded px-1"> s</label>
+        <label>run <input id="rec-run" placeholder="(new folder)" class="mono w-40 bg-slate-900 border border-slate-700 rounded px-1"></label>
+        <button id="rec" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Record</button>
       </div>
-      <div class="text-xs text-slate-400 mono truncate" id="reason">&nbsp;</div>
-    </div>
-    <div class="xl:col-span-5 grid grid-cols-2 gap-2 content-start" id="wall"></div>
-  </div>
-
-  <!-- pitch map, log, director view -->
-  <div class="grid grid-cols-1 xl:grid-cols-12 gap-3">
-    <div class="xl:col-span-4 rounded border border-slate-800 p-2">
-      <div class="text-sm font-semibold mb-1">Pitch map · cameras and their views</div>
-      <svg id="map" viewBox="-68 -44 136 96" class="w-full bg-slate-950"></svg>
-      <div class="text-xs text-slate-500 mt-1">red = on air · pink = robotic (MAIN, CLOSE) · blue = fixed · white dot = ball</div>
-    </div>
-    <div class="xl:col-span-3 rounded border border-slate-800 p-2 flex flex-col">
-      <div class="flex items-center gap-1 text-sm mb-1"><span class="font-semibold flex-1">Log</span>
-        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="cut">cuts</button>
-        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="ptz">camera moves</button>
-        <button class="chipf on text-xs border border-slate-700 rounded px-1" data-k="info">info</button></div>
-      <div id="log" class="scroll overflow-y-auto text-xs mono flex-1 max-h-[360px] min-h-[200px]"></div>
-    </div>
-    <div class="xl:col-span-5 flex flex-col gap-2">
-      <div class="tile"><canvas id="cv-free"></canvas>
-        <span class="label">DIRECTOR · drag to turn, scroll to zoom ·
-          <select id="viewpick" class="bg-slate-900 border border-slate-700 rounded text-xs"><option value="">free</option></select></span></div>
-      <div class="rounded border border-slate-800 p-2 text-sm">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="font-semibold">Record the 3D cameras</span>
-          <label>from <input id="rec-from" value="23:40" class="mono w-16 bg-slate-900 border border-slate-700 rounded px-1"></label>
-          <label>for <input id="rec-secs" value="60" class="mono w-12 bg-slate-900 border border-slate-700 rounded px-1"> s</label>
-          <label>run <input id="rec-run" placeholder="(new folder)" class="mono w-40 bg-slate-900 border border-slate-700 rounded px-1"></label>
-          <button id="rec" class="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white">Record</button>
-        </div>
-        <div id="rec-status" class="text-xs text-slate-400 mt-1 mono"></div>
-        <div class="text-xs text-slate-500 mt-1 leading-relaxed">
-          <span class="inline-block w-3 h-3 align-middle rounded-sm" style="background:#f8fafc;border:2px solid #dc2626"></span> home (ZXY sensors)
-          <span class="inline-block w-3 h-3 align-middle rounded-sm ml-2" style="background:#1e3a8a"></span> away (detections)
-          <span class="inline-block w-3 h-3 align-middle rounded-sm ml-2" style="background:#d9f99d"></span> referees ·
-          The behind-goal views are drawn from data, so they look like a video game; away players come from the detector
-          (less smooth than sensors); the ball has no real height (long fast balls get a made-up arc). CLOSE and zoomed MAIN
-          are soft: the sources are 1280x960. <span id="twininfo" class="mono"></span></div>
-      </div>
+      <div id="rec-status" class="text-xs text-slate-400 mt-1 mono"></div>
+      <div class="text-xs text-slate-500 mt-2 leading-relaxed">
+        The behind-goal views are drawn from data, so they look like a video game; CLOSE and zoomed MAIN are soft (the
+        sources are 1280x960). <span id="twininfo" class="mono"></span></div>
     </div>
   </div>
-  <footer id="credit" class="text-xs text-slate-500"></footer>
 </div>
 
 <script>
@@ -152,7 +180,9 @@ const CHUNK = 60, STEP = 0.1;
 function chunkOf(t) { return Math.floor(t / CHUNK); }
 async function loadChunk(k) {
   if (k < 0 || S.chunks[k] || S.loading[k]) return S.loading[k];
-  S.loading[k] = fetch(`/studio/stadium/twin/${SEGMENT}?start=${k * CHUNK}&seconds=${CHUNK + 1}`)
+  // the rebuilt game (studio.play: 11 v 11, the ball always with a player or rolling) if it exists, else the raw twin
+  const url = kind => `/studio/stadium/twin/${SEGMENT}?start=${k * CHUNK}&seconds=${CHUNK + 1}&kind=${kind}`;
+  S.loading[k] = fetch(url('play')).then(r => r.ok ? r : fetch(url('twin')))
     .then(r => r.json()).then(rows => { S.chunks[k] = rows; delete S.loading[k];
       // keep memory small: forget chunks far from now
       for (const key of Object.keys(S.chunks)) if (Math.abs(key - k) > 3) delete S.chunks[key]; });
@@ -445,6 +475,7 @@ function renderAll(includeFree = true) {
 function setTime(t) { S.t = Math.max(0, Math.min(S.setup.duration, t)); S.startT = S.t; S.wall = performance.now(); lastT = null; ensure(S.t); }
 const liveNow = () => S.live && performance.now() - S.liveAt < 2000;   // live state arrived in the last 2 s
 function tick() {
+  if (S.R) { runTick(); requestAnimationFrame(tick); return; }
   if (!S.recording) {
     if (liveNow()) S.t = S.live.t + (performance.now() - S.liveAt) / 1000;  // the live loop's clock
     else if (S.playing) S.t = Math.min(S.setup.duration, S.startT + (performance.now() - S.wall) / 1000 * S.speed);
@@ -467,17 +498,13 @@ function buildWall() {
   for (const cam of S.setup.cameras) {
     const tile = document.createElement('div');
     tile.className = 'tile'; tile.id = 'tile-' + cam.id;
-    tile.innerHTML = cam.built_from === '3d'
-      ? `<canvas id="cv-${cam.id}"></canvas><span class="label">${cam.name} · 3D</span><span class="sub" id="sub-${cam.id}"></span>`
-      : `<div class="off">not live</div><canvas data-wall="${S.wallOrder.length}" width="640" height="360"></canvas><span class="label">${cam.name}</span><span class="sub" id="sub-${cam.id}"></span>`;
+    tile.innerHTML = (cam.built_from === '3d'
+      ? `<canvas id="cv-${cam.id}"></canvas><span class="label">${cam.name} · 3D</span>`
+      : `<div class="off">not live</div><canvas data-wall="${S.wallOrder.length}" width="640" height="360"></canvas><span class="label">${cam.name}</span>`)
+      + `<canvas data-run="${cam.id}" width="640" height="360" style="display:none;position:absolute;inset:0"></canvas><span class="sub" id="sub-${cam.id}"></span>`;
     if (cam.built_from !== '3d') S.wallOrder.push(cam.id);
     wall.appendChild(tile);
   }
-  const info = document.createElement('div');
-  info.className = 'tile p-2 text-xs';
-  info.innerHTML = `<div class="font-semibold text-sm mb-1">Director</div><div id="dstate" class="mono text-base text-rose-400">-</div>
-    <div id="dreason" class="text-slate-400 mt-1"></div><div id="dstats" class="text-slate-500 mt-1 mono"></div>`;
-  wall.appendChild(info);
 }
 // The 5 real-pixel pictures come as ONE mosaic stream (rows of 3 tiles; a browser opens only 6 connections to a
 // server, so 6 streams would block the data requests); each frame the tiles are cut out of it onto their canvases.
@@ -494,6 +521,7 @@ function startStreams() {                    // (re)connect the MJPEG streams; a
   const r = Date.now();
   wallImg.src = `/studio/live/stream/wall?r=${r}`;
   $('prog-img').src = `/studio/live/stream/program?r=${r}`;
+  $('prog-img').style.display = 'block';
   for (const el of document.querySelectorAll('.tile .off')) el.style.display = 'none';
   $('prog-off').style.display = 'none';
 }
@@ -533,12 +561,13 @@ function onLive(m) {
     const onAir = S.setup.cameras.find(c => c.id === m.on_air);
     $('prog-cam').textContent = onAir ? onAir.name + (onAir.built_from === '3d' ? ' (3D)' : '') : '';
     $('bug-teams').textContent = `TIL ${m.score[0]}-${m.score[1]} SIF`;
-    $('dstate').textContent = m.director_state; $('dreason').textContent = m.reason;
+    $('dstate').textContent = `${m.director_state} · on air: ${onAir ? onAir.name : '-'}`;
+    engineTrack(m);
     $('reason').textContent = `${m.director_state} · ${m.reason}`;
     drawMap(m);
     return;
   }
-  if (['cut', 'ptz', 'info', 'live_error'].includes(m.type)) addLog(m);
+  if (['cut', 'ptz', 'info', 'live_error'].includes(m.type)) { addLog(m); if (m.type === 'cut') S.E.cuts++; }
 }
 function addLog(m) {
   const kind = m.type === 'live_error' ? 'info' : m.type;
@@ -547,10 +576,166 @@ function addLog(m) {
   row.className = `${colour} py-px`; row.dataset.k = kind;
   row.textContent = `${m.t != null ? fmt(m.t).slice(0, 5) : '     '}  ${m.message}`;
   row.style.display = S.logFilter[kind] ? '' : 'none';
-  const log = $('log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
-  log.appendChild(row);
-  while (log.children.length > 400) log.removeChild(log.firstChild);
-  if (atEnd) log.scrollTop = log.scrollHeight;
+  const log = $('log');
+  log.prepend(row);                                             // newest on top
+  while (log.children.length > 400) log.removeChild(log.lastChild);
+}
+
+// ------------------------------------------------------------------------------------------------ a recorded run, played as live
+// The program video is the clock. Every camera's video follows it (re-synced when it drifts more than 0.2 s). The
+// director's log, the timeline and the stats are revealed only up to the live moment (S.head): like a real live
+// broadcast, nothing that has not happened yet is shown. Clicking the timeline looks back (PLAYBACK).
+const CAM_COLOURS = { main: '#e11d48', close: '#f59e0b', wide: '#64748b', boxl: '#0ea5e9', boxr: '#06b6d4', goall: '#22c55e', goalr: '#84cc16' };
+const STATE_NAMES = { PLAY: 'play on', ATTACK: 'ATTACK', STOPPAGE: 'ball out of play', RESTART: 'restart', KICKOFF: 'kick-off' };
+// all 7 cameras come as ONE mosaic video (wall.mp4, 3 x 3 tiles, made once per run by the server)
+const WALL_CAMS = ['main', 'close', 'wide', 'boxl', 'boxr', 'goall', 'goalr'];
+const wallVid = document.createElement('video');
+wallVid.muted = true; wallVid.playsInline = true; wallVid.preload = 'auto';
+const vids = () => (wallVid.src ? [wallVid] : []);
+function drawRunWall() {
+  if (wallVid.readyState < 2) return;
+  for (const cv of document.querySelectorAll('canvas[data-run]')) {
+    const k = WALL_CAMS.indexOf(cv.dataset.run);
+    if (k >= 0) cv.getContext('2d').drawImage(wallVid, (k % 3) * 640, Math.floor(k / 3) * 360, 640, 360, 0, 0, 640, 360);
+  }
+}
+async function openRun(segment, run) {
+  stopRun();
+  S.R = await (await fetch(`/studio/stadium/run/${segment}/${run}`)).json();
+  S.head = 0; S.logged = -1; S.viewLogged = -1; S.lastState = null;
+  for (const el of [...$('log').children]) el.remove();
+  const url = name => `/studio/stadium/video/${segment}/${run}/${name}`;
+  const pv = $('prog-vid');
+  pv.src = url('program.mp4'); pv.style.display = 'block'; pv.currentTime = 0;
+  for (const id of ['prog-off', 'prog-img', 'prog-3d', 'bug']) $(id).style.display = 'none';   // the scorebug is in the video
+  wallVid.src = url('wall.mp4'); wallVid.currentTime = 0;
+  for (const cv of document.querySelectorAll('canvas[data-run]')) cv.style.display = S.R.videos.includes(cv.dataset.run) ? 'block' : 'none';
+  for (const el of document.querySelectorAll('#wall .off')) el.style.display = 'none';
+  for (const id of ['prog-cam', 'prog-credit']) $(id).style.display = 'none';           // also in the video
+  $('rplay').textContent = 'Go live'; S.rplaying = false;
+  addLog({ type: 'info', t: S.R.start_s, message: `ready: ${fmt(S.R.start_s).slice(0, 5)} +${S.R.seconds} s · press Go live` });
+  await ensure(S.R.start_s);
+}
+function stopRun() {
+  if (!S.R) return;
+  S.R = null;
+  for (const v of [$('prog-vid'), wallVid]) { v.pause(); v.removeAttribute('src'); v.load(); }
+  $('prog-vid').style.display = 'none';
+  for (const cv of document.querySelectorAll('canvas[data-run]')) cv.style.display = 'none';
+  for (const id of ['prog-off', 'bug', 'prog-cam', 'prog-credit']) $(id).style.display = '';
+}
+function runPlay(on) {
+  S.rplaying = on;
+  for (const v of [$('prog-vid'), ...vids()]) { if (!v.src) continue; v.playbackRate = S.rspeed || 1; on ? v.play().catch(() => {}) : v.pause(); }
+  $('rplay').textContent = on ? 'Pause' : 'Play';
+}
+function runSeek(c) {
+  for (const v of [$('prog-vid'), ...vids()]) if (v.src) v.currentTime = c;
+}
+let mapTick = 0, statTick = 0;
+function runTick() {
+  const R = S.R, pv = $('prog-vid'), c = pv.currentTime, n = R.on_air.length;
+  const f = Math.min(n - 1, Math.floor(c * R.fps + 1e-6));
+  for (const v of vids()) {                                   // every camera stays on the program's clock
+    if (!v.src || v.readyState < 2) continue;
+    if (Math.abs(v.currentTime - c) > 0.2) v.currentTime = c;
+    if (S.rplaying && v.paused && !pv.paused) v.play().catch(() => {});
+  }
+  drawRunWall();
+  const atLive = c >= S.head - 0.3;
+  if (atLive && S.rplaying) { revealUpTo(f); S.head = Math.max(S.head, c); }
+  if (pv.ended && S.rplaying) runPlay(false);
+  const onAir = R.on_air[f], t = R.start_s + c;
+  S.t = t; ensure(t);
+  for (const cam of S.setup.cameras) $('tile-' + cam.id).classList.toggle('live', cam.id === onAir);
+  const cam = S.setup.cameras.find(x => x.id === onAir);
+  $('prog-cam').textContent = cam ? cam.name : '';
+  $('rclock').textContent = fmt(t).slice(0, 5);
+  $('dstate').textContent = `${STATE_NAMES[R.states[f]] || R.states[f]} · on air: ${cam ? cam.name : '-'}`;
+  const mode = !S.rplaying && S.head === 0 ? ['READY', 'bg-slate-700'] : atLive ? [S.rplaying ? '● LIVE' : 'PAUSED', S.rplaying ? 'bg-red-600' : 'bg-slate-600']
+    : [`PLAYBACK −${fmt(S.head - c).slice(0, 5)}`, 'bg-sky-700'];
+  $('mode').textContent = mode[0]; $('mode').className = 'badge ' + mode[1];
+  $('prog-live').textContent = atLive ? 'LIVE' : 'PLAYBACK'; $('prog-live').style.background = atLive ? '#dc2626' : '#0369a1';
+  if (mapTick++ % 3 === 0) drawMap(runMapState(f, onAir, t));
+  drawRunTimeline(c);
+  if (statTick++ % 15 === 0) drawRunStats(Math.min(n - 1, Math.floor(S.head * R.fps)));
+  if ($('tools').classList.contains('open')) { placeEveryone(t); renderAll(); }
+}
+function revealUpTo(f) {
+  const R = S.R;
+  for (let k = S.logged + 1; k <= f; k++) {
+    const st = R.states[k];
+    if (st !== S.lastState) {
+      if (S.lastState !== null && st !== 'PLAY') addLog({ type: 'info', t: R.start_s + k / R.fps, message: STATE_NAMES[st] || st });
+      S.lastState = st;
+    }
+  }
+  for (const cut of R.cuts) if (cut.frame > S.logged && cut.frame <= f) {
+    const cam = S.setup.cameras.find(x => x.id === cut.to);
+    addLog({ type: 'cut', t: R.start_s + cut.frame / R.fps, message: `CUT → ${cam ? cam.name : cut.to} · ${cut.reason}` });
+  }
+  // robotic cameras: a big zoom change is logged as a camera move
+  const every = R.views_every;
+  for (let k = (S.viewLogged ?? -1) + 1; k <= Math.floor(f / every); k++) {
+    S.viewLogged = k;
+    const a = R.views[k - 10], b = R.views[k];
+    if (!a || !b || k % 10) continue;
+    for (const id of ['main', 'close']) {
+      const wa = a[id] && a[id][1], wb = b[id] && b[id][1];
+      if (wa && wb && Math.abs(wb - wa) / wa > 0.35)
+        addLog({ type: 'ptz', t: R.start_s + k * every / R.fps, message: `${id.toUpperCase()} zooms ${wb < wa ? 'in' : 'out'} (${Math.round(wa)}° → ${Math.round(wb)}°)` });
+    }
+  }
+  S.logged = Math.max(S.logged, f);
+}
+function runMapState(f, onAir, t) {
+  const R = S.R, v = R.views[Math.min(R.views.length - 1, Math.floor(f / R.views_every))] || {}, cams = {};
+  for (const id in v) cams[id] = { pan: v[id][0], hfov: v[id][1], look_at: v[id][2] };
+  const now = people(t);
+  return { cams, on_air: onAir, players: now ? now.people.filter(p => p.team !== 'ref').map(p => [p.x, p.y, p.team]) : [],
+           ball: now && now.ball ? [now.ball.x, now.ball.y] : null, ball_status: 'seen' };
+}
+// timeline: coloured by the camera on air, only up to the live moment; the future is dark
+function paintTimeline(colourAt, upto, here, total, marks) {
+  const tl = $('timeline'), g = tl.getContext('2d'), W = tl.width, H = tl.height;
+  g.fillStyle = '#0f172a'; g.fillRect(0, 0, W, H);
+  const reached = Math.floor(upto / total * W);
+  for (let x = 0; x < reached; x++) { g.fillStyle = colourAt(x / W * total) || '#334155'; g.fillRect(x, 4, 1, H - 8); }
+  g.fillStyle = '#334155';
+  for (let m = 60; m < total; m += 60) g.fillRect(Math.floor(m / total * W), 0, 1, 6);
+  g.fillStyle = 'rgba(255,255,255,0.8)';
+  for (const m of marks) if (m <= upto) g.fillRect(Math.floor(m / total * W), 0, 1, 5);
+  g.fillStyle = '#ef4444'; g.fillRect(Math.max(0, reached - 2), 0, 3, H);
+  if (here != null) { g.fillStyle = '#fff'; g.fillRect(Math.floor(here / total * W), 0, 2, H); }
+}
+function drawRunTimeline(c) {
+  const R = S.R;
+  paintTimeline(sec => CAM_COLOURS[R.on_air[Math.min(R.on_air.length - 1, Math.floor(sec * R.fps))]], S.head, c, R.seconds,
+                R.cuts.map(x => x.frame / R.fps));
+}
+function drawRunStats(f) {
+  const R = S.R, n = f + 1, air = {};
+  for (let k = 0; k < n; k++) air[R.on_air[k]] = (air[R.on_air[k]] || 0) + 1;
+  const cuts = R.cuts.filter(x => x.frame <= f).length;
+  let attacks = 0; for (let k = 1; k < n; k++) if (R.states[k] === 'ATTACK' && R.states[k - 1] !== 'ATTACK') attacks++;
+  const top = Object.entries(air).sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([id, v]) => `<span style="color:${CAM_COLOURS[id]}">■</span> ${S.setup.cameras.find(x => x.id === id)?.name || id} ${Math.round(100 * v / n)}%`).join(' ');
+  $('stats').innerHTML = `<span class="stat">on air <b>${fmt(n / R.fps).slice(0, 5)}</b></span><span class="stat">cuts <b>${cuts}</b></span>` +
+    `<span class="stat">avg shot <b>${(n / R.fps / (cuts + 1)).toFixed(1)}s</b></span><span class="stat">attacks <b>${attacks}</b></span><span class="stat">${top}</span>`;
+}
+// The live engine (studio.stadium_live): the timeline grows with the on-air history it sends.
+S.E = { hist: [], cuts: 0, t0: null };
+function engineTrack(m) {
+  const E = S.E;
+  if (E.t0 === null || m.t < E.t0 || m.t - (E.hist.at(-1)?.[0] ?? m.t) > 30) { E.t0 = m.t; E.hist = []; E.cuts = 0; }
+  E.hist.push([m.t, m.on_air]);
+  const span = Math.max(300, m.t - E.t0), at = sec => { const t = E.t0 + sec; let lo = 0, hi = E.hist.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (E.hist[mid][0] <= t) lo = mid; else hi = mid - 1; } return CAM_COLOURS[E.hist[lo][1]]; };
+  paintTimeline(at, m.t - E.t0, null, span, []);
+  $('rclock').textContent = fmt(m.t).slice(0, 5);
+  $('mode').textContent = '● LIVE ENGINE'; $('mode').className = 'badge bg-red-600';
+  $('stats').innerHTML = `<span class="stat">on air <b>${fmt(m.t - E.t0).slice(0, 5)}</b></span><span class="stat">cuts <b>${E.cuts}</b></span>` +
+    `<span class="stat">fps shown <b>${m.status?.shown_fps ?? '-'}</b></span><span class="stat">lag <b>${m.status?.lag_s ?? '-'}s</b></span>`;
 }
 
 // ------------------------------------------------------------------------------------------------ pitch map (SVG)
@@ -595,7 +780,7 @@ function drawMap(m) {
   svg('text', { x: -60.5, y: -4, 'font-size': 3, fill: '#94a3b8', 'text-anchor': 'middle' }, g).textContent = 'GOAL L';
   svg('text', { x: 60.5, y: -4, 'font-size': 3, fill: '#94a3b8', 'text-anchor': 'middle' }, g).textContent = 'GOAL R';
   if (!m) return;
-  for (const q of m.players) svg('circle', { cx: q[0], cy: q[1], r: 0.9, fill: '#e2e8f0', 'fill-opacity': 0.75 }, g);
+  for (const q of m.players) svg('circle', { cx: q[0], cy: q[1], r: 1.6, fill: q[2] === 'home' ? '#f87171' : q[2] === 'away' ? '#60a5fa' : '#e2e8f0', 'fill-opacity': 0.9 }, g);
   if (m.ball) svg('circle', { cx: m.ball[0], cy: m.ball[1], r: 1.3, fill: m.ball_status === 'seen' ? '#fff' : '#fde047', stroke: '#000', 'stroke-width': 0.3 }, g);
 }
 
@@ -689,12 +874,35 @@ async function main() {
   $('speed').onchange = e => { S.speed = Number(e.target.value); setTime(S.t); };
   $('slider').oninput = e => setTime(Number(e.target.value));
   $('rec').onclick = record;
+  // what to play: a recorded director run (smooth, played as live) or the live engine (slow on a laptop)
+  const runs = await (await fetch('/studio/stadium/runs')).json();
+  for (const r of runs.filter(r => r.segment === SEGMENT))
+    $('source').add(new Option(`Recorded run · ${fmt(r.start_s).slice(0, 5)} +${Math.round(r.seconds / 60)} min · ${r.run}`, r.run));
+  $('source').add(new Option('Live engine (studio.stadium_live, ~6 fps on an M1)', ''));
+  const pick = async () => {
+    const run = $('source').value;
+    document.body.classList.toggle('engine', !run);
+    if (run) await openRun(SEGMENT, run);
+    else { stopRun(); $('prog-off').textContent = 'PROGRAM · press Go live (bottom) to start the live engine'; $('mode').textContent = 'READY'; $('mode').className = 'badge bg-slate-700'; }
+  };
+  $('source').onchange = pick;
+  $('rplay').onclick = () => runPlay(!S.rplaying);
+  $('tolive').onclick = () => { runSeek(S.head); if (!S.rplaying) runPlay(true); };
+  $('rspeed').onchange = e => { S.rspeed = Number(e.target.value); for (const v of [$('prog-vid'), ...vids()]) v.playbackRate = S.rspeed; };
+  // only what was already broadcast can be looked at again
+  $('timeline').onclick = e => { if (!S.R) return; const r = e.target.getBoundingClientRect(); runSeek(Math.min(S.head, (e.clientX - r.left) / r.width * S.R.seconds)); };
+  $('full').onclick = () => document.fullscreenElement ? document.exitFullscreen() : $('app').requestFullscreen();
+  $('toolsbtn').onclick = () => $('tools').classList.add('open');
+  $('toolsclose').onclick = () => $('tools').classList.remove('open');
+  if (q.get('run') !== '') { if (q.get('run')) $('source').value = q.get('run'); await pick(); }
+  if (q.get('golive') && S.R) runPlay(true);
   $('golive').onclick = async () => {
     for (const el of document.querySelectorAll('#log > div')) el.remove();
     const res = await fetch('/studio/stadium/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ segment: SEGMENT, start_s: parseTime($('live-from').value) }) });
     const out = await res.json();
     if (!res.ok) { addLog({ type: 'info', message: 'could not start: ' + out.detail }); return; }
+    $('prog-img').style.display = 'block';
     startStreams();
   };
   $('stop').onclick = () => fetch('/studio/live/stop', { method: 'POST' });

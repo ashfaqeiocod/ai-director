@@ -755,6 +755,104 @@ def stadium_live_start(body: dict) -> dict:
 
 
 
+# A finished director run (studio.stadium --aim director: program.mp4 + every camera's mp4 + director_log.csv +
+# cameras.jsonl), played back by stadium.html as if it were live: the videos play in sync (smooth on any Mac), and
+# the timeline, log and stats only show what has happened so far.
+def _stadium_run_dir(segment: str, run: str) -> Path:
+    if ".." in segment + run or "/" in segment + run:
+        raise HTTPException(404, "run not found")
+    folder = ROOT / load_config()["studio"]["stadium"]["outputs_dir"] / segment / run
+    if not (folder / "program.mp4").exists() or not (folder / "director_log.csv").exists():
+        raise HTTPException(404, "run not found (needs program.mp4 + director_log.csv)")
+    return folder
+
+
+@router.get("/stadium/runs")
+def stadium_runs() -> list[dict]:
+    """Finished director runs with a program, newest first."""
+    root = ROOT / load_config()["studio"]["stadium"]["outputs_dir"]
+    out = []
+    for path in sorted(root.glob("*/*/summary.json"), key=lambda p: p.parent.name, reverse=True):
+        if not (path.parent / "program.mp4").exists() or not (path.parent / "director_log.csv").exists():
+            continue
+        info = json.loads(path.read_text())
+        out.append({"segment": path.parent.parent.name, "run": path.parent.name, "start_s": info["start_s"],
+                    "seconds": info["seconds"], "cuts": info.get("cuts"),
+                    "videos": sorted(p.stem[4:] for p in path.parent.glob("cam_*.mp4"))})
+    return out
+
+
+@router.get("/stadium/run/{segment}/{run}")
+def stadium_run(segment: str, run: str) -> dict:
+    """The run as time series for the page: per frame the camera on air + the director's state; the cuts with the
+    director's reason; the robotic cameras' views 10x per second (for the pitch map)."""
+    folder = _stadium_run_dir(segment, run)
+    on_air, states, cuts = [], [], []
+    with open(folder / "director_log.csv") as f:
+        for k, r in enumerate(csv.DictReader(f)):
+            cam = r["cam_name"].lower().replace(" ", "")
+            if on_air and cam != on_air[-1]:
+                cuts.append({"frame": k, "to": cam, "reason": r["reason"].split(": ", 1)[-1]})
+            on_air.append(cam)
+            states.append(r["state"])
+    views = []
+    with open(folder / "cameras.jsonl") as f:
+        for k, line in enumerate(f):
+            if k % 3 == 0:
+                cams = json.loads(line)["cams"]
+                views.append({c: [v.get("pan"), v.get("hfov"), v.get("look_at")] for c, v in cams.items()
+                              if c in ("main", "close")})
+    info = json.loads((folder / "summary.json").read_text())
+    return {"segment": segment, "run": run, "start_s": info["start_s"], "seconds": info["seconds"], "fps": 30,
+            "on_air": on_air, "states": states, "cuts": cuts, "views": views, "views_every": 3,
+            "videos": sorted(p.stem[4:] for p in folder.glob("cam_*.mp4"))}
+
+
+WALL_CAMS = ["main", "close", "wide", "boxl", "boxr", "goall", "goalr"]   # tile k = column k % 3, row k // 3
+
+
+def stadium_wall_video(folder: Path) -> Path:
+    """wall.mp4: all 7 camera videos of a run in one 3 x 3 mosaic (640x360 tiles, 1920x1080). The page plays ONE video
+    for the whole monitor wall: a browser opens at most 6 connections to a server, and one decoder is far lighter
+    than seven. Made once per run (~1 min, the Mac's hardware encoder)."""
+    import subprocess
+
+    from src.common import ffmpeg_exe
+
+    out = folder / "wall.mp4"
+    if out.exists():
+        return out
+    inputs, chains, tiles = [], [], []
+    for k, cam in enumerate(WALL_CAMS):
+        path = folder / f"cam_{cam}.mp4"
+        if path.exists():
+            inputs += ["-i", str(path)]
+            n = len(tiles)
+            chains.append(f"[{n}:v]scale=640:360,setsar=1[t{n}]")
+            tiles.append((n, k))
+    layout = "|".join(f"{(k % 3) * 640}_{(k // 3) * 360}" for _, k in tiles)
+    graph = ";".join(chains) + ";" + "".join(f"[t{n}]" for n, _ in tiles) + \
+        f"xstack=inputs={len(tiles)}:layout={layout}:fill=black,scale=1920:1080[w]"
+    tmp = folder / "wall.tmp.mp4"
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", *inputs, "-filter_complex", graph, "-map", "[w]",
+                    "-c:v", "h264_videotoolbox", "-b:v", "6M", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                    str(tmp)], check=True)
+    tmp.rename(out)
+    return out
+
+
+@router.get("/stadium/video/{segment}/{run}/{name}")
+def stadium_video(segment: str, run: str, name: str) -> FileResponse:
+    """program.mp4 or cam_<id>.mp4 of a run (the browser fetches it in ranges, so it can jump around)."""
+    folder = _stadium_run_dir(segment, run)
+    if name == "wall.mp4":
+        stadium_wall_video(folder)
+    path = folder / name
+    if "/" in name or ".." in name or not name.endswith(".mp4") or not path.exists():
+        raise HTTPException(404, "no such video")
+    return FileResponse(path, media_type="video/mp4")
+
+
 # ---------------------------------------------------------------- Virtual Broadcast (MVP 4 part 2)
 # dashboard/static/broadcast.html renders EVERY camera in 3D from the twin, following the camera paths and director
 # decisions of studio.broadcast (outputs/broadcast/<segment>/<run>/broadcast.json).
