@@ -137,9 +137,12 @@ a dribbler pushes the ball ahead every few steps, nobody pops in or out, the ass
 venv/bin/python -m studio.broadcast --start 23:40 --seconds 300            # decisions + camera paths (~5 s)
 ```
 With the dashboard running (`venv/bin/python -m dashboard.server`), open **http://localhost:8000/studio/broadcast**
-and press **Play**: the program (scorebug, LIVE / REPLAY, camera name), the monitor wall of all cameras, and the
-timeline coloured by camera. It should play smoothly (the fps counter shows ~60 on an M1). Click the timeline to jump;
-around 1:27 and 1:58 into the clip you see slow-motion replays with a red REPLAY wipe.
+and press **Go live**. The page is a control room that fits the window (⛶ = full screen): the program (scorebug,
+LIVE / REPLAY, camera name), the monitor wall of all cameras, the pitch from above with each camera's view (the one on
+air in red), the director log and the stats. It plays like a live broadcast: the log (cuts with the director's
+reason, attacks, ball out of play), the timeline and the stats (cuts, average shot, replays, passes, possession,
+airtime) only show what has happened so far; the timeline is dark beyond the live moment. Clicking the timeline looks
+back at what was already shown (PLAYBACK), **● LIVE** returns. It should play smoothly (~60 fps on an M1).
 
 The 1080p video with crowd sound (the dashboard must be running; ~3 min for 5 minutes):
 ```bash
