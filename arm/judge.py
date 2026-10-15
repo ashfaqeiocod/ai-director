@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 from pydantic import BaseModel
 
-from arm.common import cache_dir, cam_letters, settings, synced_video
+from arm.common import for_this_match, cache_dir, cam_letters, settings, synced_video
 from arm.gemini import BudgetExceeded, ask, calls_used, jpeg
 
 
@@ -78,7 +78,7 @@ def run_judge(duration: float) -> list[dict]:
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(round(t * fps)))
             frames[cam] = cap.read()[1]
         try:
-            answer, info = ask("judge", [jpeg(contact_sheet(frames), cfg["sheet_width"])], PROMPT, Judgement,
+            answer, info = ask("judge", [jpeg(contact_sheet(frames), cfg["sheet_width"])], for_this_match(PROMPT), Judgement,
                                cache_key_extra=f"t={t:.2f}")
         except BudgetExceeded as error:
             print(f"  judge stopped: {error}")

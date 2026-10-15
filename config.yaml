@@ -874,3 +874,18 @@ arm:
     moment_window_s: 1.5 # a moment is "caught" if its content is on screen within this long after it starts
     crowd_face_share: 0.035 # an audience face is readable if at least this share of the picture height
     grip_share: 0.15 # the grip is readable if the forearm is at least this share of the picture height
+
+# Other recorded arm-wrestling matches (Arm MVP). Run one with: ARM_MATCH=match2 venv/bin/python -m arm.main
+# Each block is laid on top of `arm:` above (only what differs). Same 5 phones in the same places.
+arm_matches:
+  match2: # 2nd match, 15:52 (~57 s): the same black-shirt athlete vs an athlete in a BLUE shirt
+    raw_dir: data/arm2/raw
+    work_dir: data/arm2
+    cameras:
+      A: {file: "20261014_155233.mp4"}
+      B: {file: "IMG_5458 2.MOV"}
+      C: {file: "IMG_5645.MOV"}
+      D: {file: "IMG_8126.MOV"}
+      E: {file: "IMG_8659.MOV"}
+    athlete_words: {tan: BLUE} # inside the code the 2nd athlete is still "tan"; on screen he is "BLUE"
+    prompt_words: {"TAN\n(light brown / beige) polo shirt": "BLUE (denim) button shirt", "TAN (beige) polo shirt": "BLUE (denim) button shirt", "tan shirt": "blue shirt", "TAN athlete": "BLUE-shirt athlete", "TAN": "BLUE"}

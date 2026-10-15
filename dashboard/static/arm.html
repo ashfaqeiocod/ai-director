@@ -5,210 +5,512 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Arm Director</title>
 <!--
-  arm.html — the Arm MVP viewer (real footage: a 5-phone arm-wrestling match).
-  The program video is the clock. The 5 synced cameras follow it; the one on air has a red border.
-  Everything else comes from /arm/run (written by `python -m arm.main`) and is drawn for the current time.
+  arm.html — the Arm MVP dashboard (real footage: a 5-phone arm-wrestling match).
+  The big video is the clock: the 5 synced phones follow it, and everything else (what is on air, why, the phase,
+  tension, moments, Gemini) is drawn for its current time from /arm/run (written by `python -m arm.main`).
+  ?match=match2 shows another recorded match (the match menu in the header does that).
 -->
 <style>
-  :root { --bg:#111418; --panel:#1b2027; --text:#e8eaed; --muted:#9aa3ad; --accent:#e5484d; --line:#2c333c;
+  :root { --bg:#0e1116; --panel:#171b22; --panel2:#1e242d; --text:#eef1f4; --muted:#98a2ad; --line:#2a313b;
+          --accent:#e5484d; --good:#3fb950; --warn:#f0b72f;
           --A:#4e9af1; --B:#f0b72f; --C:#3fb950; --D:#bc8cff; --E:#ff8c42; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
-  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0; }
-  header a { color:var(--muted); }
-  button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
-  button.on { background:var(--accent); border-color:var(--accent); }
-  main { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:12px; padding:12px 16px; }
-  @media (max-width: 1000px) { main { grid-template-columns:1fr; } }
-  #program { width:100%; background:#000; display:block; aspect-ratio:16/9; }
-  .cams { display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:6px; margin-top:8px; }
-  @media (max-width: 700px) { .cams { grid-template-columns:repeat(3, minmax(0,1fr)); } }
-  .tile { position:relative; border:3px solid transparent; border-radius:4px; background:#000; }
-  .tile.live { border-color:var(--accent); }
-  .tile video { width:100%; display:block; aspect-ratio:16/9; }
-  .tile span { position:absolute; left:6px; top:3px; font-size:12px; font-weight:600; text-shadow:0 0 4px #000; }
-  .timeline { margin-top:10px; background:var(--panel); border-radius:8px; padding:8px; }
-  .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
-  .row label { width:70px; color:var(--muted); font-size:12px; flex:none; }
-  .bar { position:relative; flex:1; height:20px; background:#0c0f12; border-radius:4px; overflow:hidden; cursor:pointer; }
-  .seg { position:absolute; top:0; bottom:0; border-right:1px solid #0c0f12; font-size:10px; color:#111; padding-left:2px; overflow:hidden; white-space:nowrap; }
-  .head { position:absolute; top:0; bottom:0; width:2px; background:#fff; pointer-events:none; }
-  canvas { width:100%; height:60px; display:block; }
-  aside { background:var(--panel); border-radius:8px; padding:12px; max-height:calc(100vh - 90px); overflow:auto; }
-  aside h2 { font-size:14px; margin:12px 0 6px; }
-  .now { font-size:13px; }
-  .now b { color:#fff; }
-  .log div { padding:4px 6px; border-left:3px solid transparent; font-size:12px; cursor:pointer; }
-  .log div.cur { background:#232a33; border-left-color:var(--accent); }
-  .muted { color:var(--muted); }
-  table { border-collapse:collapse; width:100%; font-size:12px; }
-  td, th { padding:3px 4px; border-bottom:1px solid var(--line); text-align:right; }
-  td:first-child, th:first-child { text-align:left; }
-  .legend span { display:inline-block; margin-right:10px; font-size:12px; }
-  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  html, body { height:100%; }
+  /* Everything fits in the window: the page never scrolls, only the cut log does. */
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, -apple-system, sans-serif;
+         display:flex; flex-direction:column; overflow:hidden; }
+  a { color:var(--muted); }
+  header { flex:none; padding:8px 14px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 6px 0 0; }
+  .group { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .group button { border:0; border-radius:0; }
+  button, select { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px;
+                   padding:5px 11px; font:inherit; cursor:pointer; }
+  button.on { background:var(--accent); }
+  .spacer { flex:1; }
+  main { flex:1; min-height:0; padding:10px 14px; display:grid; gap:10px;
+         grid-template-columns:minmax(0,1fr) clamp(320px, 26vw, 420px);
+         grid-template-rows:minmax(0,1fr) auto auto; }
+  .card { background:var(--panel); border-radius:10px; padding:10px 12px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 5px; font-weight:600; }
+
+  /* the big program: takes whatever height is left */
+  .stage { grid-column:1; grid-row:1; position:relative; background:#000; border-radius:10px; overflow:hidden; min-height:0;
+           height:100%; aspect-ratio:16/9; max-width:100%; justify-self:center; }
+  #program { width:100%; height:100%; display:block; object-fit:contain; background:#000; }
+  .loading { position:absolute; inset:0; display:flex; flex-direction:column; gap:12px; align-items:center; justify-content:center;
+             background:rgba(0,0,0,.85); font-size:18px; z-index:4; }
+  .loading .bar { width:50%; height:8px; background:#2a313b; border-radius:4px; overflow:hidden; }
+  .loading .bar div { height:100%; width:0; background:var(--accent); transition:width .2s; }
+  .onair { position:absolute; left:12px; top:12px; display:flex; gap:8px; align-items:center; pointer-events:none; }
+  .onair .live { background:var(--accent); font-weight:700; padding:2px 8px; border-radius:5px; font-size:12px; letter-spacing:.05em; }
+  .onair .what { background:rgba(0,0,0,.65); padding:2px 9px; border-radius:5px; font-size:13px; }
+
+  /* right column: what is happening now + the cut log */
+  .side { grid-column:2; grid-row:1 / span 3; display:flex; flex-direction:column; gap:10px; min-height:0; }
+  .now { flex:none; display:flex; flex-direction:column; gap:9px; }
+  .top { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .clock { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .clock small { font-size:13px; color:var(--muted); font-weight:400; }
+  .phase { display:inline-block; padding:3px 12px; border-radius:999px; font-weight:700; font-size:15px; color:#111; }
+  .shotline { display:flex; gap:8px; align-items:center; }
+  .chip { display:inline-flex; align-items:center; justify-content:center; min-width:26px; height:26px; padding:0 7px;
+          border-radius:6px; font-weight:800; color:#111; flex:none; }
+  .big { font-size:17px; font-weight:700; }
+  .why { background:var(--panel2); border-left:4px solid var(--accent); padding:7px 10px; border-radius:6px; }
+  .why .raw { color:var(--muted); font-size:11px; margin-top:3px; font-family:ui-monospace, monospace; }
+  .meter { display:grid; grid-template-columns:58px 1fr 30px; gap:8px; align-items:center; font-size:13px; }
+  .meter .track { height:10px; background:#0b0e12; border-radius:5px; overflow:hidden; }
+  .meter .fill { height:100%; border-radius:5px; transition:width .15s; }
+  .tug { position:relative; height:10px; background:#0b0e12; border-radius:5px; }
+  .tug .mid { position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:#555; }
+  .tug .fill { position:absolute; top:0; bottom:0; border-radius:5px; transition:all .15s; }
+  .tuglabels { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:3px; }
+  .moment { font-size:16px; font-weight:700; min-height:22px; }
+  .gem { font-size:12.5px; color:var(--muted); }
+  .gem b { color:var(--text); }
+  .logcard { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .log { flex:1; min-height:0; overflow:auto; }
+  .cut { display:grid; grid-template-columns:46px 28px minmax(0,1fr); gap:8px; padding:6px 4px; border-bottom:1px solid var(--line);
+         cursor:pointer; border-left:3px solid transparent; animation:pop .35s ease-out; }
+  @keyframes pop { from { background:#3a2328; } to { background:transparent; } }
+  .cut:hover { background:var(--panel2); }
+  .cut.cur { background:#25202a; border-left-color:var(--accent); animation:none; }
+  .cut .t { font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px; }
+  .cut .chip { height:22px; min-width:22px; font-size:12px; }
+  .cut .s { font-weight:600; }
+  .cut .s em { font-style:normal; font-weight:400; color:var(--muted); font-size:11px; margin-left:5px; }
+  .cut .r { font-size:12px; color:var(--muted); }
+  .waiting { color:var(--muted); font-size:13px; padding:8px 4px; }
+
+  /* the 5 phones */
+  .cams { grid-column:1; grid-row:2; display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:8px; }
+  .tile { position:relative; border-radius:7px; overflow:hidden; background:#000; outline:4px solid transparent; outline-offset:-4px;
+          height:clamp(70px, 13vh, 150px); cursor:pointer; }
+  .tile.live { outline-color:var(--accent); }
+  .tile video { width:100%; height:100%; display:block; object-fit:cover; }
+  .tile .name { position:absolute; left:0; right:0; bottom:0; padding:3px 7px; font-size:12px; font-weight:600;
+                background:linear-gradient(transparent, rgba(0,0,0,.85)); display:flex; gap:6px; align-items:center; white-space:nowrap; overflow:hidden; }
+  .tile .name i { width:9px; height:9px; border-radius:3px; display:inline-block; flex:none; }
+  .tile .badge { position:absolute; right:6px; top:6px; background:var(--accent); font-size:11px; font-weight:700;
+                 padding:1px 6px; border-radius:4px; display:none; }
+  .tile.live .badge { display:block; }
+
+  /* the timeline: the future is covered until the video gets there */
+  .timeline { grid-column:1; grid-row:3; }
+  .tl { display:grid; grid-template-columns:96px minmax(0,1fr); gap:4px 10px; align-items:center; }
+  .tl .lab { color:var(--muted); font-size:12px; text-align:right; }
+  .track { position:relative; height:20px; background:#0b0e12; border-radius:4px; overflow:hidden; cursor:pointer; }
+  .track.tall { height:clamp(28px, 5vh, 50px); }
+  .track.lanes { height:38px; }
+  .seg { position:absolute; top:0; bottom:0; border-right:1px solid #0b0e12; font-size:11px; color:#111; font-weight:600;
+         padding:3px 0 0 4px; overflow:hidden; white-space:nowrap; }
+  .head { position:absolute; top:0; bottom:0; width:2px; background:#fff; box-shadow:0 0 4px #000; pointer-events:none; z-index:3; }
+  .future { position:absolute; top:0; bottom:0; right:0; z-index:2; pointer-events:none;
+            background:repeating-linear-gradient(135deg, #0b0e12 0 6px, #11151b 6px 12px); }
+  .ruler { position:relative; height:16px; font-size:10px; color:var(--muted); }
+  .ruler span { position:absolute; top:0; transform:translateX(-50%); }
+  .mk { position:absolute; height:16px; font-size:10.5px; font-weight:700; padding:0 6px; border-radius:8px; color:#111;
+        white-space:nowrap; transform:translateX(-4px); line-height:16px; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:11px; color:var(--muted); margin-top:6px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:-1px; }
+  canvas { width:100%; height:100%; display:block; }
+
+  /* scorecard: a pop-up over the page */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.7); display:none; align-items:center; justify-content:center; z-index:10; padding:16px; }
+  .overlay.open { display:flex; }
+  .overlay .card { max-width:1100px; width:100%; max-height:90vh; overflow:auto; padding:18px 20px; }
+  .overlay .close { float:right; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th { text-align:right; font-weight:600; color:var(--muted); font-size:12px; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:bottom; }
+  td { text-align:right; padding:7px 8px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; }
+  tr.ai td { background:#1f2a22; }
+  tr.ai td:first-child { font-weight:700; }
+  td.best { color:var(--good); font-weight:700; }
+  td.bad { color:var(--accent); font-weight:700; }
+  .note { font-size:13px; color:var(--muted); margin-top:10px; }
+  .note b { color:var(--text); }
+  .msg { padding:40px; text-align:center; color:var(--muted); grid-column:1 / -1; }
+
+  /* small windows: stack, and let the page scroll */
+  @media (max-width:900px) {
+    body { overflow:auto; height:auto; }
+    main { display:flex; flex-direction:column; }
+    #program { height:auto; aspect-ratio:16/9; }
+    .cams { grid-template-columns:repeat(3, minmax(0,1fr)); }
+    .log { max-height:50vh; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>AI director: arm wrestling, 5 phones</h1>
-  <button id="btn-live" class="on">AI live (past only)</button>
-  <button id="btn-edit">AI editor (whole match)</button>
-  <a href="/arm/label">label the match</a>
+  <h1>AI Director · Arm wrestling, 5 phones</h1>
+  <select id="match" title="which recorded match"></select>
+  <div class="group">
+    <button id="btn-live" class="on" title="the AI's broadcast, decided as it happened (it only knows the past)">AI broadcast</button>
+    <button id="btn-proof" title="the broadcast + what the AI sees on all 5 phones">Behind the AI's eyes</button>
+  </div>
+  <button id="btn-score">Scorecard</button>
+  <span class="spacer"></span>
+  <span class="gem">space = play / pause · click the timeline to jump</span>
+  <a href="/arm/label">label</a>
   <a href="/arm/vote">blind vote</a>
-  <span class="legend" id="legend"></span>
 </header>
-<main>
-  <section>
+
+<main id="main">
+  <div class="stage">
     <video id="program" controls playsinline preload="auto"></video>
-    <div class="cams" id="cams"></div>
-    <div class="timeline">
-      <div class="row"><label>AI live</label><div class="bar" id="bar-live"></div></div>
-      <div class="row"><label>AI editor</label><div class="bar" id="bar-edit"></div></div>
-      <div class="row"><label>phase</label><div class="bar" id="bar-phase"></div></div>
-      <div class="row"><label>tension<br>crowd</label><div style="flex:1;position:relative"><canvas id="curve"></canvas></div></div>
-      <div class="row"><label>moments</label><div class="bar" id="bar-events"></div></div>
-      <div class="row"><label>Gemini</label><div class="bar" id="bar-judge"></div></div>
+    <div class="loading" id="loading"><div id="loading-text">Loading the videos…</div><div class="bar"><div id="loading-bar"></div></div></div>
+  </div>
+
+  <div class="cams" id="cams"></div>
+
+  <div class="card timeline">
+    <div class="tl" id="tl">
+      <span></span><div class="ruler" id="ruler"></div>
+      <span class="lab">AI cuts</span><div class="track" id="tr-live"></div>
+      <span class="lab">Match phase</span><div class="track" id="tr-phase"></div>
+      <span class="lab">Tension / crowd</span><div class="track tall" id="tr-curve"><canvas id="curve"></canvas></div>
+      <span class="lab">Moments</span><div class="track lanes" id="tr-moments"></div>
+      <span class="lab">Gemini</span><div class="track" id="tr-gemini"></div>
     </div>
-  </section>
-  <aside>
-    <div class="now" id="now">Loading... (run <code>venv/bin/python -m arm.main</code> first)</div>
-    <h2>Cuts and why</h2>
-    <div class="log" id="log"></div>
-    <h2>Gemini (one still of the 5 cameras every 2 s)</h2>
-    <div id="judge" class="muted"></div>
-    <h2>Scorecard</h2>
-    <div id="metrics"></div>
-  </aside>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="side">
+    <div class="card now">
+      <div class="top"><span class="clock" id="clock">0.0 s</span><span class="phase" id="phase">-</span><span id="phase-desc" class="gem"></span></div>
+      <div>
+        <h2>On air now</h2>
+        <div class="shotline"><span class="chip" id="now-chip">-</span><span class="big" id="now-shot">-</span></div>
+      </div>
+      <div class="why"><div id="why">-</div><div class="raw" id="why-raw"></div></div>
+      <div>
+        <div class="meter"><span>Tension</span><div class="track"><div class="fill" id="m-tension" style="background:var(--accent)"></div></div><span id="v-tension"></span></div>
+        <div class="meter" style="margin-top:5px"><span>Crowd</span><div class="track"><div class="fill" id="m-crowd" style="background:var(--good)"></div></div><span id="v-crowd"></span></div>
+        <div style="margin-top:9px" class="tug"><div class="mid"></div><div class="fill" id="tug"></div></div>
+        <div class="tuglabels"><span id="tug-left">◀ black winning</span><span id="tug-now">even</span><span id="tug-right">tan winning ▶</span></div>
+      </div>
+      <div><h2>Latest moment</h2><div class="moment" id="moment">-</div></div>
+      <div><h2>Gemini's second opinion</h2><div class="gem" id="gem">no answer yet</div></div>
+    </div>
+    <div class="card logcard">
+      <h2 id="log-title">The AI's cuts so far and why (new ones appear as it decides)</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
 </main>
+
+<div class="overlay" id="overlay"><div class="card">
+  <button class="close" id="close-score">Close</button>
+  <h2>Scorecard · the AI (live) vs simple alternatives (whole match)</h2>
+  <div id="score"></div>
+</div></div>
+
 <script>
-const PHASE_COLORS = { SETUP:"#555", STRUGGLE:"#2f6f9f", SURGE:"#f0b72f", NEAR_PIN:"#ff8c42", PIN:"#e5484d", REACTION:"#bc8cff" };
-let run = null, mode = "live";
+// The demo shows ONE program: the AI live broadcast (it decides every 0.1 s knowing only the past).
+// It plays like a simulation: a cut, its reason, a moment or a Gemini answer appears only once the video reaches it.
+const PHASE = {
+  SETUP:    { color:"#8a929c", text:"Getting ready", desc:"no grip yet" },
+  STRUGGLE: { color:"#5aa7e6", text:"Struggle",      desc:"an even fight" },
+  SURGE:    { color:"#f0b72f", text:"Surge",         desc:"someone pushes hard" },
+  NEAR_PIN: { color:"#ff8c42", text:"Near pin!",     desc:"a hand is close to the table" },
+  PIN:      { color:"#e5484d", text:"PIN",           desc:"a hand hits the table" },
+  REACTION: { color:"#bc8cff", text:"Reaction",      desc:"after the win" },
+};
+const MATCH = new URLSearchParams(location.search).get("match") || "";
+const q = MATCH ? `?match=${encodeURIComponent(MATCH)}` : "";
+let run = null, mode = "live", MOMENTS = [];
 const camVideos = {};
 const program = document.getElementById("program");
-const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const camColor = c => css("--" + c);
+const pct = t => (100 * Math.max(0, Math.min(run.duration, t)) / run.duration) + "%";
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const nameOf = who => cap((run.names?.[who] || who).toLowerCase());
+const shots = () => run.programs.live.shots;
 
-function pct(t) { return (100 * t / run.duration) + "%"; }
-
-function drawBar(id, items, colorOf, labelOf) {
-  const bar = document.getElementById(id);
-  bar.innerHTML = "";
-  for (const it of items) {
-    const d = document.createElement("div");
-    d.className = "seg";
-    d.style.left = pct(it.start);
-    d.style.width = `calc(${pct(it.end - it.start)} + 1px)`;
-    d.style.background = colorOf(it);
-    d.textContent = labelOf ? labelOf(it) : "";
-    d.title = it.title || "";
-    bar.append(d);
+// ---- plain-English words for the AI's internal names ----
+function shotText(kind) {
+  return { WIDE:"Wide shot", TWO:"Both athletes", GRIP:"Hands close-up", CROWD:"The crowd",
+           FACE_BLACK:`${nameOf("black")}'s face`, FACE_TAN:`${nameOf("tan")}'s face` }[kind] || kind;
+}
+const camName = cam => cap(run.labels[cam].toLowerCase());
+function eventText(e) {
+  const [word, who] = e.split(" ");
+  const w = who ? nameOf(who) : "";
+  return { LOOK_UP:`${w} looks up`, GESTURE:`${w} waves to the crowd`, CHEER:"The crowd cheers",
+           SURGE:`${w} pushes hard`, NEAR_PIN:`${w} is close to a pin`, PIN:`${w} WINS!`,
+           REACTION:`${w} celebrates` }[word] || null;
+}
+function eventColor(e) {
+  return { CHEER:"#3fb950", LOOK_UP:"#7fd3ff", GESTURE:"#bc8cff", SURGE:"#f0b72f", NEAR_PIN:"#ff8c42",
+           PIN:"#e5484d", REACTION:"#e7a6ff" }[e.split(" ")[0]] || "#999";
+}
+function whyText(shot) {
+  const r = shot.reason || "";
+  let m;
+  if (r.startsWith("open on")) return "Opening shot: first show the whole scene.";
+  if (r.startsWith("event:")) {
+    const ev = MOMENTS.filter(x => x.t <= shot.start + 0.05 && x.t >= shot.start - 3).pop();
+    return ev ? `${eventText(ev.e)}: the AI cut to the camera that shows it best.`
+              : "A moment just happened and this camera shows it best.";
   }
-  const head = document.createElement("div"); head.className = "head"; bar.append(head);
-  bar.onclick = e => { const r = bar.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * run.duration); };
+  if ((m = r.match(/better for ([\d.]+) s \((\d+) vs (\d+)\)/)))
+    return `This shot scored clearly higher (${m[2]} vs ${m[3]} out of 100) for ${m[1]} s in a row` +
+           (r.includes("getting old") ? ", and the old shot had been on long enough." : ".");
+  if (r.includes("face turned away")) return "The old shot was lost (the face turned away), so the AI moved to the next best shot.";
+  if (r.includes("can't be used")) return "The old shot became unusable (blurred, shaky or blocked), so the AI moved on.";
+  return r;
 }
 
+// ---- building the page (everything is drawn once; the "future" cover and the log follow the clock) ----
+function trackBase(tr) {
+  const fut = document.createElement("div"); fut.className = "future";
+  const head = document.createElement("div"); head.className = "head";
+  tr.append(fut, head);
+  tr.onclick = e => { const r = tr.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * run.duration); };
+}
+function segTrack(id, items, color, label, title) {
+  const tr = $(id); tr.innerHTML = "";
+  for (const it of items) {
+    const d = document.createElement("div"); d.className = "seg";
+    d.style.left = pct(it.start); d.style.width = `calc(${pct(it.end - it.start)} + 1px)`;
+    d.style.background = color(it); d.textContent = label ? label(it) : ""; d.title = title ? title(it) : "";
+    tr.append(d);
+  }
+  trackBase(tr);
+}
 function phases() {
   const out = [];
   for (const s of run.states) {
-    if (!out.length || out[out.length - 1].phase !== s.phase) out.push({ phase: s.phase, start: s.t, end: s.t + 0.1, title: s.phase });
-    else out[out.length - 1].end = s.t + 0.1;
+    const last = out[out.length - 1];
+    if (!last || last.phase !== s.phase) out.push({ phase:s.phase, start:s.t, end:s.t + 0.1 }); else last.end = s.t + 0.1;
   }
   return out;
 }
-
-function drawCurve() {
-  const c = document.getElementById("curve");
-  c.width = c.clientWidth * devicePixelRatio; c.height = 60 * devicePixelRatio;
-  const g = c.getContext("2d"), W = c.width, H = c.height;
-  g.fillStyle = "#0c0f12"; g.fillRect(0, 0, W, H);
-  for (const [key, color] of [["tension", "#e5484d"], ["crowd", "#3fb950"]]) {
-    g.strokeStyle = color; g.lineWidth = 2 * devicePixelRatio; g.beginPath();
-    run.states.forEach((s, i) => { const x = W * s.t / run.duration, y = H - H * s[key];
-      i ? g.lineTo(x, y) : g.moveTo(x, y); });
-    g.stroke();
+function drawRuler() {
+  const r = $("ruler"); r.innerHTML = "";
+  const step = run.duration > 40 ? 10 : 5;
+  for (let t = 0; t <= run.duration; t += step) {
+    const s = document.createElement("span"); s.style.left = pct(t); s.textContent = t + " s"; r.append(s);
   }
+}
+function drawCurve() {
+  const c = $("curve"), dpr = devicePixelRatio;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+  const g = c.getContext("2d"), W = c.width, H = c.height;
+  for (const [key, color] of [["crowd", "#3fb950"], ["tension", "#e5484d"]]) {
+    g.beginPath(); g.moveTo(0, H);
+    run.states.forEach(s => g.lineTo(W * s.t / run.duration, H - H * 0.9 * s[key]));
+    g.lineTo(W, H); g.closePath(); g.fillStyle = color + "33"; g.fill();
+    g.beginPath();
+    run.states.forEach((s, i) => { const x = W * s.t / run.duration, y = H - H * 0.9 * s[key]; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.strokeStyle = color; g.lineWidth = 2 * dpr; g.stroke();
+  }
+}
+function drawMoments() {
+  const tr = $("tr-moments"); tr.innerHTML = "";
+  const lanes = [-1, -1];
+  MOMENTS.forEach((m, k) => {
+    const d = document.createElement("div"); d.className = "mk"; d.id = "mk-" + k;
+    d.textContent = eventText(m.e); d.style.background = eventColor(m.e); d.style.left = pct(m.t);
+    d.title = `${m.t.toFixed(1)} s: ${eventText(m.e)}`;
+    tr.append(d);
+    const x = d.offsetLeft, w = d.offsetWidth;
+    const lane = lanes[0] <= x ? 0 : lanes[1] <= x ? 1 : (lanes[0] < lanes[1] ? 0 : 1);
+    d.style.top = (2 + lane * 19) + "px"; lanes[lane] = x + w + 4;
+  });
+  trackBase(tr);
+}
+function drawScore() {
+  const res = run.metrics.results;
+  const cols = [
+    ["shots", "Shots", null], ["breaks_180", "180° rule broken", "zero"], ["jump_cuts", "Jump cuts", "zero"],
+    ["faces_pct", "Athlete faces on screen %", "max"], ["crowd_pct", "Crowd on screen %", "max"], ["moments_pct", "Moments caught", "max"],
+  ];
+  const rows = Object.entries(res).filter(([name]) => name !== "AI editor").map(([n, r]) => [n === "AI live" ? "AI director" : n, r]);
+  const best = {};
+  for (const [k, , kind] of cols) if (kind === "max") best[k] = Math.max(...rows.map(([, r]) => r[k] || 0));
+  let html = `<table><tr><th>Program</th>${cols.map(c => `<th>${c[1]}</th>`).join("")}</tr>`;
+  for (const [name, r] of rows) {
+    html += `<tr class="${name.startsWith("AI") ? "ai" : ""}"><td>${name}</td>`;
+    for (const [k, , kind] of cols) {
+      let v = r[k], cls = "";
+      if (k === "moments_pct") v = r.moments ? `${r.moments_caught}/${r.moments}` : "-";
+      if (kind === "zero" && r[k] > 0) cls = "bad";
+      if (kind === "max" && r[k] === best[k]) cls = "best";
+      html += `<td class="${cls}">${v}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += `</table><div class="note"><b>How to read it.</b> Green = best in the column, red = a TV rule broken.
+    <b>180° rule</b>: cameras A and D film from opposite sides; cutting between them makes the athletes swap sides on screen.
+    <b>Jump cut</b>: two cuts on the same camera that look almost the same. <b>Faces / crowd %</b>: share of the time a readable
+    athlete face with emotion / audience faces are on screen. <b>Moments caught</b>: the moment is on screen within 1.5 s.</div>
+    <div class="note">Moments used: ${run.metrics.source}</div>`;
+  $("score").innerHTML = html;
 }
 
 function build() {
-  const legend = document.getElementById("legend");
-  legend.innerHTML = run.cams.map(c => `<span><i style="background:${css("--" + c)}"></i>${c} ${run.labels[c]}</span>`).join("");
-  const cams = document.getElementById("cams");
+  MOMENTS = run.states.flatMap(s => s.events.filter(e => eventText(e)).map(e => ({ t:s.t, e })));
+  $("tug-left").textContent = `◀ ${nameOf("black")} winning`;
+  $("tug-right").textContent = `${nameOf("tan")} winning ▶`;
   for (const cam of run.cams) {
     const tile = document.createElement("div"); tile.className = "tile"; tile.id = "tile-" + cam;
-    const v = document.createElement("video"); v.src = `/arm/media/cam${cam}.mp4`; v.muted = true; v.playsInline = true; v.preload = "auto";
-    const tag = document.createElement("span"); tag.textContent = `${cam} ${run.labels[cam]}`;
-    tile.append(v, tag); cams.append(tile); camVideos[cam] = v;
+    const v = document.createElement("video"); // its video (a small 640x360 copy) is downloaded by loadAll() v.muted = true; v.playsInline = true; v.preload = "auto";
+    tile.innerHTML = `<span class="badge">ON AIR</span><div class="name"><i style="background:${camColor(cam)}"></i>${cam} · ${camName(cam)}</div>`;
+    tile.prepend(v); tile.onclick = () => program.paused ? program.play() : program.pause();
+    $("cams").append(tile); camVideos[cam] = v;
   }
-  for (const m of ["live", "edit"])
-    drawBar("bar-" + m, run.programs[m].shots.map(s => ({ ...s, title: `${s.cam} ${s.kind} — ${s.reason}` })),
-            s => css("--" + s.cam), s => `${s.cam} ${s.kind.replace("FACE_", "").toLowerCase()}`);
-  drawBar("bar-phase", phases(), p => PHASE_COLORS[p.phase] || "#555", p => p.phase.toLowerCase());
-  const events = run.states.flatMap(s => s.events.filter(e => !["STRUGGLE", "SETUP"].includes(e))
-    .map(e => ({ start: s.t, end: s.t + 0.35, title: `${s.t.toFixed(1)} s ${e}`, e })));
-  drawBar("bar-events", events, ev => ev.e.startsWith("CHEER") ? "#3fb950" : ev.e.startsWith("LOOK") ? "#4e9af1" :
-          ev.e.startsWith("GESTURE") ? "#bc8cff" : "#e5484d");
-  drawBar("bar-judge", run.judge.map(a => ({ start: a.event_time, end: Math.min(run.duration, a.logged_at),
-          title: `asked at ${a.event_time} s, answer known at ${a.logged_at} s: ${a.phase}, best ${a.best_camera}` })),
-          () => "#3a4350", () => "");
-  drawCurve();
-  const m = run.metrics.results;
-  document.getElementById("metrics").innerHTML = `<p class="muted">${run.metrics.source}</p><table><tr><th>program</th>
-    <th>shots</th><th>180°</th><th>faces %</th><th>crowd %</th><th>moments</th></tr>` +
-    Object.entries(m).map(([k, r]) => `<tr><td>${k}</td><td>${r.shots}</td><td>${r.breaks_180}</td><td>${r.faces_pct}</td>
-    <td>${r.crowd_pct}</td><td>${r.moments ? r.moments_caught + "/" + r.moments : "-"}</td></tr>`).join("") + "</table>";
-  setMode("live");
-}
-
-function setMode(m) {
-  mode = m;
-  document.getElementById("btn-live").classList.toggle("on", m === "live");
-  document.getElementById("btn-edit").classList.toggle("on", m === "edit");
-  const t = program.currentTime || 0;
-  program.src = `/arm/media/${run.programs[m].file}`;
-  program.addEventListener("loadedmetadata", () => { program.currentTime = t; }, { once: true });
-  const log = document.getElementById("log");
-  log.innerHTML = "";
-  run.programs[m].shots.forEach((s, i) => {
-    const d = document.createElement("div"); d.id = `log-${i}`;
-    d.innerHTML = `<b>${s.start.toFixed(1)} s</b> ${s.change} → <b>${s.cam} ${s.kind}</b><br><span class="muted">${s.reason}</span>`;
+  segTrack("tr-live", shots(), s => camColor(s.cam), s => `${s.cam} ${shotText(s.kind)}`,
+           s => `${s.start.toFixed(1)}–${s.end.toFixed(1)} s · ${s.cam} ${camName(s.cam)} · ${shotText(s.kind)}`);
+  segTrack("tr-phase", phases(), p => PHASE[p.phase]?.color || "#555", p => PHASE[p.phase]?.text || p.phase,
+           p => `${p.start.toFixed(1)}–${p.end.toFixed(1)} s: ${PHASE[p.phase]?.text} (${PHASE[p.phase]?.desc})`);
+  trackBase($("tr-curve"));
+  // Gemini: a bar from the moment of the photo to when its (late) answer arrived; it shows up when the answer does.
+  segTrack("tr-gemini", run.judge.map(a => ({ ...a, start:a.event_time, end:Math.min(run.duration, a.logged_at) })),
+           a => a.drama >= 9 ? "#c98b3a" : "#4a5563", a => `drama ${a.drama}`,
+           a => `photo at ${a.event_time} s, answer arrived at ${a.logged_at} s: “${a.caption}”`);
+  drawRuler(); drawCurve(); drawMoments(); drawScore();
+  $("legend").innerHTML =
+    run.cams.map(c => `<span><i style="background:${camColor(c)}"></i>${c} ${camName(c)}</span>`).join("") +
+    `<span><i style="background:#e5484d"></i>tension</span><span><i style="background:#3fb950"></i>crowd excitement</span>` +
+    `<span><i style="background:repeating-linear-gradient(135deg,#0b0e12 0 3px,#2a313b 3px 6px)"></i>not happened yet</span>`;
+  $("btn-proof").style.display = run.has_proof ? "" : "none";
+  // The cut log: every cut is built now but stays hidden until the video reaches it.
+  const log = $("log"); log.innerHTML = "";
+  shots().forEach((s, i) => {
+    const d = document.createElement("div"); d.className = "cut"; d.id = `cut-${i}`; d.style.display = "none";
+    d.innerHTML = `<span class="t">${s.start.toFixed(1)} s</span><span class="chip" style="background:${camColor(s.cam)}">${s.cam}</span>
+      <div><div class="s">${shotText(s.kind)}<em>${s.change.toLowerCase()} · score ${Math.round(s.value)}</em></div>
+      <div class="r">${whyText(s)}</div></div>`;
     d.onclick = () => seek(s.start);
     log.append(d);
   });
+  setMode("live");
+}
+
+async function setMode(m) {
+  mode = m;
+  for (const b of ["live", "proof"]) $("btn-" + b).classList.toggle("on", b === m);
+  const t = program.currentTime || 0, playing = !program.paused;
+  program.pause();
+  try {
+    program.src = await loadAll(`/arm/media/${m === "proof" ? "proof_behind_the_ai.mp4" : run.programs.live.file}${q}`);
+  } catch (e) { $("loading-text").textContent = "Could not load the videos: " + e.message + " (is the dashboard server running?)"; return; }
+  program.addEventListener("loadedmetadata", () => { program.currentTime = t; if (playing) program.play(); }, { once:true });
+}
+
+// ---- full download before playing: each video becomes an in-memory copy (blob), so playback can't stall ----
+const blobs = {}, progress = {};
+async function download(url) {
+  if (blobs[url]) return blobs[url];
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  const total = +r.headers.get("content-length") || 0, reader = r.body.getReader(), parts = [];
+  let got = 0;
+  progress[url] = { got:0, total };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value); got += value.length; progress[url].got = got; showProgress();
+  }
+  return (blobs[url] = URL.createObjectURL(new Blob(parts, { type:"video/mp4" })));
+}
+function showProgress() {
+  const all = Object.values(progress), got = all.reduce((a, p) => a + p.got, 0), total = all.reduce((a, p) => a + p.total, 0);
+  const share = total ? got / total : 0;
+  $("loading-bar").style.width = (100 * share) + "%";
+  $("loading-text").textContent = `Loading the videos… ${Math.round(100 * share)}% (${(got / 1e6).toFixed(0)} of ${(total / 1e6).toFixed(0)} MB)`;
+}
+async function loadAll(programUrl) {
+  $("loading").style.display = "";
+  const tileUrls = run.cams.map(c => [c, `/arm/media/tile_cam${c}.mp4${q}`]);
+  const [prog, ...tiles] = await Promise.all([download(programUrl), ...tileUrls.map(([, u]) => download(u))]);
+  tileUrls.forEach(([c], k) => { if (camVideos[c].src !== tiles[k]) camVideos[c].src = tiles[k]; });
+  $("loading").style.display = "none";
+  return prog;
 }
 
 function seek(t) { program.currentTime = t; for (const v of Object.values(camVideos)) v.currentTime = t; }
 
+let shown = -1;
 function tick() {
   if (run) {
     const t = program.currentTime;
+    // Keep the small phones in step with the big video: speed up / slow down a little for small drifts,
+    // jump only for big ones (and never while a jump is still loading), so the browser is never flooded.
     for (const v of Object.values(camVideos)) {
-      if (Math.abs(v.currentTime - t) > 0.15) v.currentTime = t;
+      const drift = v.currentTime - t;
+      if (!v.seeking && Math.abs(drift) > 0.5) v.currentTime = t;
+      else v.playbackRate = Math.abs(drift) > 0.05 ? (drift > 0 ? 0.9 : 1.1) : 1;
       if (program.paused !== v.paused) program.paused ? v.pause() : v.play().catch(() => {});
     }
     document.querySelectorAll(".head").forEach(h => h.style.left = pct(t));
-    const shots = run.programs[mode].shots;
-    const i = shots.findIndex(s => t >= s.start && t < s.end);
-    const s = shots[i];
-    for (const cam of run.cams) document.getElementById("tile-" + cam).classList.toggle("live", s && s.cam === cam);
-    document.querySelectorAll(".log div").forEach((d, k) => d.classList.toggle("cur", k === i));
-    const st = run.states[Math.min(run.states.length - 1, Math.floor(t * 10))];
-    // Gemini: in the live view an answer is shown only once it has arrived (logged_at).
-    const known = run.judge.filter(a => (mode === "live" ? a.logged_at : a.event_time) <= t).pop();
-    document.getElementById("now").innerHTML = s ? `<b>${t.toFixed(1)} s</b> — on air: <b>${s.cam} ${s.kind}</b><br>
-      phase <b>${st.phase}</b>, tension ${st.tension.toFixed(2)}, crowd ${st.crowd.toFixed(2)}, lean ${st.lean >= 0 ? "+" : ""}${st.lean.toFixed(2)}
-      (${st.lean > 0.15 ? "black leads" : st.lean < -0.15 ? "tan leads" : "even"})` : "";
-    document.getElementById("judge").innerHTML = known ? `as of ${known.event_time} s (known ${known.logged_at} s):
-      ${known.phase}, leader ${known.leader}; black ${known.black_emotion}, tan ${known.tan_emotion}; crowd ${known.crowd_mood};
-      drama ${known.drama}/10; would show ${known.best_camera}: “${known.caption}”` : "no answer yet";
+    document.querySelectorAll(".future").forEach(f => f.style.left = pct(t));
+    MOMENTS.forEach((m, k) => { $("mk-" + k).style.visibility = m.t <= t ? "visible" : "hidden"; });
+
+    const list = shots();
+    let i = list.findIndex(s => t >= s.start && t < s.end);
+    if (i < 0) i = list.length - 1;
+    const s = list[i];
+    const st = run.states[Math.max(0, Math.min(run.states.length - 1, Math.floor(t * 10)))];
+
+    $("clock").innerHTML = `${t.toFixed(1)} s <small>/ ${run.duration.toFixed(1)}</small>`;
+    const ph = PHASE[st.phase] || { color:"#555", text:st.phase, desc:"" };
+    $("phase").textContent = ph.text; $("phase").style.background = ph.color; $("phase-desc").textContent = ph.desc;
+    $("now-chip").textContent = s.cam; $("now-chip").style.background = camColor(s.cam);
+    $("now-shot").textContent = `${shotText(s.kind)} · ${camName(s.cam)}`;
+    $("why").textContent = whyText(s);
+    $("why-raw").textContent = `${s.change.toLowerCase()} at ${s.start.toFixed(1)} s · AI note: ${s.reason}`;
+    for (const cam of run.cams) $("tile-" + cam).classList.toggle("live", s.cam === cam);
+    $("m-tension").style.width = (100 * st.tension) + "%"; $("v-tension").textContent = Math.round(100 * st.tension);
+    $("m-crowd").style.width = (100 * st.crowd) + "%"; $("v-crowd").textContent = Math.round(100 * st.crowd);
+    const lean = Math.max(-1, Math.min(1, st.lean));   // + = black winning (drawn to the left)
+    const tug = $("tug");
+    tug.style.left = lean > 0 ? (50 - 50 * lean) + "%" : "50%"; tug.style.width = (50 * Math.abs(lean)) + "%";
+    tug.style.background = lean > 0 ? "#cfd6de" : "#5aa7e6";
+    $("tug-now").textContent = st.lean > 0.15 ? `${nameOf("black")} leads` : st.lean < -0.15 ? `${nameOf("tan")} leads` : "even";
+    const recent = MOMENTS.filter(m => m.t <= t && t - m.t < 4).pop();
+    $("moment").textContent = recent ? `${eventText(recent.e)}  (${recent.t.toFixed(1)} s)` : "-";
+    $("moment").style.color = recent ? eventColor(recent.e) : "var(--muted)";
+    // Gemini: the live AI can only use an answer once it has arrived (logged_at).
+    const known = run.judge.filter(a => a.logged_at <= t).pop();
+    $("gem").innerHTML = known
+      ? `<b>“${known.caption}”</b> · photo at ${known.event_time} s, answer arrived ${known.logged_at} s ·
+         leader ${known.leader === "even" ? "nobody" : nameOf(known.leader)}, drama ${known.drama}/10, would show ${known.best_camera}`
+      : "no answer yet (each answer takes 3–8 s to arrive)";
+
+    // The cut log grows with the video: cuts up to now are shown, the newest at the bottom and highlighted.
+    if (i !== shown) {
+      shown = i;
+      list.forEach((_, k) => { const d = $(`cut-${k}`); d.style.display = k <= i ? "" : "none"; d.classList.toggle("cur", k === i); });
+      const log = $("log"); log.scrollTop = log.scrollHeight;
+    }
   }
   requestAnimationFrame(tick);
 }
 
-document.getElementById("btn-live").onclick = () => setMode("live");
-document.getElementById("btn-edit").onclick = () => setMode("edit");
-window.addEventListener("resize", () => run && drawCurve());
-fetch("/arm/run").then(r => r.ok ? r.json() : Promise.reject(r.statusText)).then(d => { run = d; build(); })
-  .catch(e => { document.getElementById("now").textContent = "No run yet: venv/bin/python -m arm.main (" + e + ")"; });
+$("btn-live").onclick = () => setMode("live");
+$("btn-proof").onclick = () => setMode("proof");
+$("btn-score").onclick = () => $("overlay").classList.add("open");
+$("close-score").onclick = () => $("overlay").classList.remove("open");
+$("overlay").onclick = e => { if (e.target.id === "overlay") $("overlay").classList.remove("open"); };
+program.addEventListener("ended", () => $("overlay").classList.add("open"));   // the result at the end of the demo
+$("match").onchange = e => { location.search = e.target.value ? `?match=${e.target.value}` : ""; };
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && e.target === document.body) { e.preventDefault(); program.paused ? program.play() : program.pause(); }
+  if (e.code === "Escape") $("overlay").classList.remove("open");
+});
+window.addEventListener("resize", () => run && (drawCurve(), drawMoments()));
+fetch("/arm/matches").then(r => r.json()).then(list => {
+  $("match").innerHTML = list.map(m => `<option value="${m.key}" ${m.key === MATCH ? "selected" : ""}>${m.name}</option>`).join("");
+});
+fetch(`/arm/run${q}`).then(r => r.ok ? r.json() : Promise.reject(r.statusText)).then(d => { run = d; build(); })
+  .catch(e => { $("main").innerHTML = `<div class="msg">No run yet for this match: venv/bin/python -m arm.main (${e})</div>`; });
 requestAnimationFrame(tick);
 </script>
 </body>

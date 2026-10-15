@@ -856,5 +856,17 @@ Last updated: 2026-10-14. Spec: `docs/ARM_MVP_SPEC.md`. Testing: `TESTING_ARM.md
 - Proof video: `venv/bin/python -m arm.proof` -> `data/arm/out/proof_behind_the_ai.mp4` (broadcast + the AI's
   detections on all 5 phones + every cut's reason, live knowledge only).
 
+- 2026-10-15 **Match 2** (15:52, 56.4 s, same 5 phones; black vs an athlete in a BLUE shirt): `ARM_MATCH=match2`
+  selects the `arm_matches.match2` block of config.yaml (own folder `data/arm2/`, shirt words for Gemini + captions; the
+  code still calls the 2nd athlete "tan"). Sync: worst pair 3.4 ms (phone E started 3.9 s early). One Gemini counter for
+  all matches: 64 / 200 used. AI live 27 shots, 0 breaks, 0 jumps, 23/26 own moments; editor 1 jump cut. Weaker than
+  match 1: the match timeline stays STRUGGLE until ~56 s while Gemini saw a pin at ~32 s (needs the real story).
+- 2026-10-15 **Client-demo dashboard** `/arm` rebuilt: fits one window, AI live only (+ "Behind the AI's eyes"),
+  plays like a simulation (cuts, reasons, moments, Gemini appear only when the video reaches them), plain-English
+  reasons, scorecard pop-up at the end, match menu (`?match=match2`). Videos are downloaded fully before playing
+  (no buffering stalls); tiles use 640x360 copies `synced/tile_cam*.mp4`. Own server: `venv/bin/python -m arm.demo_server`
+  (port 8010), so restarting the football dashboard on 8000 doesn't stop a demo.
+
 ## Next action (Arm MVP)
-User: label the match (`/arm/label`) and collect a few blind votes (`/arm/vote`); then re-run the report.
+User: tell the real story of match 2 (who won, when) so its phase detection can be fixed; label match 1
+(`/arm/label`) and collect a few blind votes (`/arm/vote`); then re-run the report.

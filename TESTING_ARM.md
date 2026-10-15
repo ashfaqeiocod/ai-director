@@ -35,7 +35,7 @@ on the table (31.3 s). The lower third shows the phase, a tension meter and the 
 
 ## 3. The dashboard
 ```bash
-venv/bin/python -m dashboard.server        # then open http://localhost:8000/arm
+venv/bin/python -m arm.demo_server         # then open http://localhost:8010/arm  (?match=match2 = the 2nd match)
 ```
 (If port 8000 is busy, another session's dashboard is running: use that one, the Arm pages are in it too.)
 - `/arm` — the program (switch AI live / AI editor), the 5 synced phones with the on-air one in red, timelines

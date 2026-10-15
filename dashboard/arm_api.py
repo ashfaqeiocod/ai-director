@@ -8,6 +8,8 @@ server.py includes this router next to the other tabs.
   /arm/labels         GET / POST data/arm/labels.json
   /arm/votes          GET / POST data/arm/votes.jsonl
   /arm/run            GET everything the viewer draws (shots, phases, tension, log) as one JSON
+  /arm/matches        GET the recorded matches (match 1 + the blocks under arm_matches in config.yaml)
+/arm/media and /arm/run take ?match=match2 to show another match (default: the one the server was started with).
 """
 from __future__ import annotations
 
@@ -19,7 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from arm.common import out_dir, work_dir
+from arm.common import athlete_word, out_dir, work_dir
+from src.common import load_config, path
 
 STATIC = Path(__file__).parent / "static"
 router = APIRouter(prefix="/arm")
@@ -42,12 +45,33 @@ def vote_page() -> FileResponse:
     return FileResponse(STATIC / "arm_vote.html")
 
 
+def _match_dir(match: str) -> Path:
+    """The work folder of a match: "" = the server's own match, else a block under arm_matches in config.yaml."""
+    if not match:
+        return work_dir()
+    matches = load_config().get("arm_matches", {})
+    if match not in matches:
+        raise HTTPException(404, f"unknown match {match!r}")
+    return path(matches[match]["work_dir"])
+
+
+@router.get("/matches")
+def matches() -> list[dict]:
+    """The matches the page can switch between (only those with a finished run)."""
+    out = [{"key": "", "name": "Match 1"}]
+    for i, (key, block) in enumerate(load_config().get("arm_matches", {}).items(), start=2):
+        if (path(block["work_dir"]) / "out" / "run.json").exists():
+            out.append({"key": key, "name": f"Match {i}"})
+    return out
+
+
 @router.get("/media/{name}")
-def media(name: str) -> FileResponse:
+def media(name: str, match: str = "") -> FileResponse:
     """A video or file from data/arm/synced or data/arm/out (no other folders)."""
     if "/" in name or ".." in name:
         raise HTTPException(404, "not found")
-    for folder in (work_dir() / "synced", out_dir()):
+    base = _match_dir(match)
+    for folder in (base / "synced", base / "out"):
         file = folder / name
         if file.is_file():
             return FileResponse(file)
@@ -81,12 +105,17 @@ async def save_labels(request: Request) -> dict:
 
 
 @router.get("/run")
-def run_data() -> dict:
+def run_data(match: str = "") -> dict:
     """Everything the viewer page draws, written by arm.main (data/arm/out/run.json)."""
-    file = out_dir() / "run.json"
+    file = _match_dir(match) / "out" / "run.json"
     if not file.exists():
         raise HTTPException(404, "no run yet: venv/bin/python -m arm.main")
-    return json.loads(file.read_text())
+    data = json.loads(file.read_text())
+    # What each athlete is called on screen (match 2: the second athlete wears blue, not tan).
+    words = load_config().get("arm_matches", {}).get(match, {}).get("athlete_words", {}) if match else {}
+    data["names"] = {who: words.get(who, athlete_word(who)) for who in ("black", "tan")}
+    data["has_proof"] = (file.parent / "proof_behind_the_ai.mp4").exists()
+    return data
 
 
 @router.get("/votes/pair")

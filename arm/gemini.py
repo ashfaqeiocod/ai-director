@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from arm.common import cache_dir, settings
+from src.common import path
 from story.common import gemini_keys
 
 
@@ -30,7 +31,8 @@ _out_of_quota: set[str] = set()
 
 
 def _calls_file() -> Path:
-    return cache_dir() / "gemini_calls.json"
+    """ONE counter for every recorded match (the 200 cap is for all our footage together), kept with match 1."""
+    return path(settings()["gemini"].get("calls_file", "data/arm/cache/gemini_calls.json"))
 
 
 def calls_used() -> int:

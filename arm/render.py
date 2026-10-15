@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from arm.common import cam_letters, settings, synced_video
+from arm.common import athlete_word, cam_letters, settings, synced_video
 from src.common import ffmpeg_exe
 from studio.video import VideoWriter
 
@@ -124,7 +124,7 @@ def event_caption(events: list[tuple[float, str]], t: float, hold_s: float) -> s
             word, _, who = name.partition(" ")
             text = EVENT_TEXT.get(word)
             if text and ("{who}" not in text or who):
-                return text.format(who=who.upper())
+                return text.format(who=athlete_word(who))
     return None
 
 

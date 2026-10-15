@@ -109,6 +109,7 @@ def test_editor_respects_minimum_length_and_the_line():
 def test_gemini_budget_is_a_hard_cap(tmp_path, monkeypatch):
     import arm.gemini as gem
     monkeypatch.setattr(gem, "cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(gem, "_calls_file", lambda: tmp_path / "gemini_calls.json")
     (tmp_path / "gemini_calls.json").write_text(json.dumps({"count": settings()["gemini"]["max_total_calls"], "log": []}))
     with pytest.raises(gem.BudgetExceeded):
         gem.ask("test", [b"not really a jpeg"], "hello", dict)

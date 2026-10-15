@@ -20,7 +20,7 @@ from typing import Literal
 import cv2
 from pydantic import BaseModel
 
-from arm.common import cache_dir, cam_letters, synced_video
+from arm.common import for_this_match, cache_dir, cam_letters, synced_video
 from arm.gemini import ask, jpeg
 from arm.match import iou, load_cache
 
@@ -66,7 +66,7 @@ def setup_camera(cam: str) -> dict:
     if not ok:
         raise RuntimeError(f"cannot read camera {cam}")
     H, W = frame.shape[:2]
-    answer, info = ask(f"setup_{cam}", [jpeg(frame, 1280)], PROMPT, CameraSetup)
+    answer, info = ask(f"setup_{cam}", [jpeg(frame, 1280)], for_this_match(PROMPT), CameraSetup)
     first = load_cache(cam)["frames"][0]["people"]
     result = {"view": answer["view"], "nearest": answer["nearest_to_camera"],
               "audience_faces": answer["audience_faces_visible"], "gemini": info,
