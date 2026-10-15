@@ -875,7 +875,9 @@ async function main() {
   $('slider').oninput = e => setTime(Number(e.target.value));
   $('rec').onclick = record;
   // what to play: a recorded director run (smooth, played as live) or the live engine (slow on a laptop)
-  const runs = await (await fetch('/studio/stadium/runs')).json();
+  const res = await fetch('/studio/stadium/runs');
+  const runs = res.ok ? await res.json() : [];
+  if (!res.ok) $('prog-off').textContent = 'The dashboard is running old code: stop it (Ctrl+C) and start it again with  venv/bin/python -m dashboard.server';
   for (const r of runs.filter(r => r.segment === SEGMENT))
     $('source').add(new Option(`Recorded run · ${fmt(r.start_s).slice(0, 5)} +${Math.round(r.seconds / 60)} min · ${r.run}`, r.run));
   $('source').add(new Option('Live engine (studio.stadium_live, ~6 fps on an M1)', ''));
